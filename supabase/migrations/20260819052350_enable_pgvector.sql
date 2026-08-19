@@ -1,0 +1,13 @@
+-- Enable pgvector extension.
+--
+-- Applied as its own migration, run first, so:
+--   1. it is applied identically on hosted Supabase via `supabase db push`
+--      (never enabled by hand through Studio),
+--   2. every later migration that references the `vector` type can rely on
+--      it already being present.
+--
+-- pgvector is installed into the `extensions` schema, which is already on
+-- the search_path for API roles on Supabase projects (see
+-- `extra_search_path` in supabase/config.toml), so `vector(1024)` can be
+-- referenced unqualified in subsequent migrations.
+create extension if not exists vector with schema extensions;
