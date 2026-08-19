@@ -13,6 +13,11 @@
 //   -> 400 { error: "invalid_request", details } on a malformed body
 //   -> 429 { error: "rate_limited", message, retryAfterMs } if the user is
 //      over the chat rate limit (Retry-After header set, in seconds)
+//   -> 500 { error: "provider_unavailable", message } if the configured
+//      AI_PROVIDER (or its matching *_API_KEY) is missing/invalid -- this
+//      is a server misconfiguration, not a per-request failure, so it's
+//      surfaced as a real HTTP error status with a JSON body rather than
+//      the 200 SSE `error` event used for in-stream failures below.
 //   -> 200, Content-Type: text/event-stream, on success. The body is a
 //      sequence of SSE events, each `event: <type>\ndata: <json>\n\n`:
 //        - conversation: { conversationId } -- always first; the id to use
@@ -28,7 +33,7 @@
 
 import "server-only";
 import { z } from "zod";
-import { getAIProviders } from "@/lib/ai";
+import { getAIProviders, type ChatProvider, type EmbeddingsProvider } from "@/lib/ai";
 import { getServiceRoleClient } from "@/lib/supabase/service-client";
 import { getAuthenticatedUser, getRouteHandlerSupabaseClient } from "@/lib/supabase/server-client";
 import { reserveChatRateLimitSlot } from "@/lib/rate-limit/rate-limiter";
@@ -111,7 +116,31 @@ export async function POST(request: Request): Promise<Response> {
   // safe to call unconditionally there.
   const releaseRateLimitSlot = rateLimit.release;
 
-  const { chatProvider, embeddingsProvider } = getAIProviders();
+  // getAIProviders() throws SYNCHRONOUSLY when AI_PROVIDER (or its matching
+  // *_API_KEY) is missing/invalid (see lib/ai/index.ts). Before this fix
+  // that throw happened outside any try/catch in this route, producing a
+  // bare 500 with no body/Content-Type -- reproduced live by qa-reviewer
+  // via curl. That violates this file's own documented contract (only
+  // 401/400/429/200-SSE were specified), so catch it explicitly and return
+  // a real JSON error body, consistent with the 401/400/429 branches above.
+  // The reserved rate-limit slot must still be released here: we're
+  // returning before the ReadableStream (whose `finally` normally does
+  // this) is ever constructed.
+  let chatProvider: ChatProvider;
+  let embeddingsProvider: EmbeddingsProvider;
+  try {
+    ({ chatProvider, embeddingsProvider } = getAIProviders());
+  } catch (err) {
+    releaseRateLimitSlot();
+    console.error("app/api/chat/route.ts: getAIProviders() failed:", err);
+    return Response.json(
+      {
+        error: "provider_unavailable",
+        message: "Сервис временно недоступен. Попробуйте позже.",
+      },
+      { status: 500 }
+    );
+  }
 
   const events = handleChatRequest(
     { userId: user.id, conversationId: parsed.data.conversationId, message: parsed.data.message },

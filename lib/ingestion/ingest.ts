@@ -216,9 +216,37 @@ export async function ingestDocumentWithDefaultProviders(
   doc: NormalizedDocument,
   chunkOptions?: ChunkOptions
 ): Promise<IngestResult> {
-  return ingestDocument(
-    doc,
-    { supabase: getServiceRoleClient(), embeddingsProvider: getEmbeddingsProvider() },
-    chunkOptions
-  );
+  // getServiceRoleClient() throwing here (missing Supabase env vars) is a
+  // deeper misconfiguration than a missing/invalid AI_PROVIDER: without a
+  // DB client there is no row we could even flip to 'error', so there's
+  // nothing to catch this into -- let it surface as-is, same as before.
+  const supabase = getServiceRoleClient();
+
+  let embeddingsProvider: EmbeddingsProvider;
+  try {
+    embeddingsProvider = getEmbeddingsProvider();
+  } catch (err) {
+    // getEmbeddingsProvider() (via getAIProviders()) throws SYNCHRONOUSLY
+    // when AI_PROVIDER or its matching *_API_KEY env var is missing/invalid.
+    // Before this fix that throw happened while evaluating an eagerly-
+    // computed argument to ingestDocument(doc, { ... embeddingsProvider:
+    // getEmbeddingsProvider() }, ...) -- i.e. BEFORE ingestDocument()'s own
+    // try/catch (which flips documents.processing_status to 'error') ever
+    // started running. The document row was left stuck in 'pending'
+    // forever with processing_error: null, invisible to both the UI and
+    // the user (reproduced live by qa-reviewer against POST
+    // /api/sources/upload). Fix: get the provider inside a try of our own,
+    // and on failure perform the exact same status transition
+    // ingestDocument()'s catch block would have performed, before
+    // rethrowing so the caller (document-sources-specialist's route
+    // handlers) still sees the failure.
+    const message = err instanceof Error ? err.message : String(err);
+    await setProcessingStatus(supabase, doc.documentId, {
+      processing_status: "error",
+      processing_error: message,
+    });
+    throw err;
+  }
+
+  return ingestDocument(doc, { supabase, embeddingsProvider }, chunkOptions);
 }

@@ -13,24 +13,18 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "RAG Assistant",
-  description: "AI assistant with retrieval-augmented generation over your documents.",
+  title: "RAG-ассистент",
+  description:
+    "AI-ассистент с retrieval-augmented generation поверх ваших документов: загрузка файлов, Notion, публичные страницы, Google Drive.",
 };
 
-// Placeholder root layout from project bootstrap -- nextjs-frontend owns
-// the real app shell/UI (see CLAUDE.md "Как организована работа
-// агентов"). Uses a plain `{ children: React.ReactNode }` prop type rather
-// than Next's generated `LayoutProps<"/">` helper, since the latter only
-// exists after a `next build`/`next dev` typegen pass has run at least
-// once (.next/types/routes.d.ts) -- avoiding that dependency keeps `tsc
-// --noEmit` usable in CI/fresh checkouts before any build has happened.
 export default function RootLayout({
   children,
 }: {
   children: React.ReactNode;
 }) {
   return (
-    <html lang="en" className={`${geistSans.variable} ${geistMono.variable}`}>
+    <html lang="ru" className={`${geistSans.variable} ${geistMono.variable}`}>
       <body>{children}</body>
     </html>
   );
