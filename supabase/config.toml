@@ -334,6 +334,24 @@ skip_nonce_check = false
 # If enabled, it will allow the user to successfully authenticate when the provider does not return an email address.
 email_optional = false
 
+# Google OAuth sign-in (per-user bring-your-own-key feature, see
+# CLAUDE.md / docs/spec.md). Requires a Google Cloud OAuth 2.0 Client
+# (type: Web application) created manually by the project owner in Google
+# Cloud Console -- this cannot be provisioned from code. Local dev
+# redirect URI to register on that client: http://127.0.0.1:54321/auth/v1/callback
+# `enabled = true` is safe to leave on even before real
+# SUPABASE_AUTH_EXTERNAL_GOOGLE_CLIENT_ID / _SECRET values exist in
+# .env.local -- verified locally: `supabase start` boots fine with those
+# two env vars completely unset (GoTrue just reports the google provider
+# as enabled with an empty client_id; it only fails later, at actual
+# OAuth-initiation time, if someone clicks the not-yet-built "Sign in with
+# Google" button). Set the two env vars for real before wiring/testing
+# that button in Stage C. See .env.example for where to get the values.
+[auth.external.google]
+enabled = true
+client_id = "env(SUPABASE_AUTH_EXTERNAL_GOOGLE_CLIENT_ID)"
+secret = "env(SUPABASE_AUTH_EXTERNAL_GOOGLE_SECRET)"
+
 # Allow Solana wallet holders to sign in to your project via the Sign in with Solana (SIWS, EIP-4361) standard.
 # You can configure "web3" rate limit in the [auth.rate_limit] section and set up [auth.captcha] if self-hosting.
 [auth.web3.solana]
