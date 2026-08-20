@@ -39,19 +39,46 @@ export interface OpenAICompatibleConfig {
   embeddingModel: string;
 }
 
-export class OpenAICompatibleProvider
-  implements ChatProvider, EmbeddingsProvider
-{
+/**
+ * Internal implementation shared by the chat-role and embeddings-role views
+ * returned by createOpenAICompatiblePair() below. Deliberately NOT exported
+ * and deliberately does NOT `implements ChatProvider, EmbeddingsProvider`
+ * itself.
+ *
+ * Why: ChatProvider.modelName and EmbeddingsProvider.modelName are two
+ * *semantically different* fields (chat model vs. embedding model) that
+ * happen to share the same `string` type -- TypeScript's structural typing
+ * has no way to say "this field means X when read through interface A and Y
+ * when read through interface B" on ONE object. A previous version of this
+ * file had this class implement both interfaces directly with a single
+ * `modelName` field (= chatModel), and lib/ai/index.ts handed the exact
+ * same object out as both `chatProvider` and `embeddingsProvider`. That
+ * compiled fine (both interfaces are satisfied by a `string` field) but was
+ * wrong at runtime: `embeddingsProvider.modelName` returned the CHAT model,
+ * which lib/ingestion/ingest.ts writes into
+ * document_chunks.embedding_model -- silently mislabeling every ingested
+ * row's embedding model as e.g. "gemini-3.6-flash" instead of
+ * "gemini-embedding-001" (reproduced live against a real Google Drive
+ * document under AI_PROVIDER=gemini). The actual embed() API call always
+ * used the correct `embeddingModelName` -- vectors were never wrong, only
+ * the metadata describing them. Fixed by never handing out a dual-interface
+ * object: createOpenAICompatiblePair() is the only supported way to get a
+ * provider pair out of this file, and it returns two distinct thin views
+ * (see below), each with its own correct `modelName`, both delegating to
+ * one shared instance of this class so there's still exactly one HTTP
+ * client / API key / baseURL per process.
+ */
+class OpenAICompatibleCore {
   readonly providerName: string;
-  readonly modelName: string;
+  readonly chatModelName: string;
+  readonly embeddingModelName: string;
   readonly dimensions = OPENAI_EMBEDDING_DIMENSIONS;
-  private readonly embeddingModelName: string;
   private readonly rawClient: OpenAI;
   private readonly aiSdk: ReturnType<typeof createOpenAI>;
 
   constructor(config: OpenAICompatibleConfig) {
     this.providerName = config.providerName ?? "openai";
-    this.modelName = config.chatModel;
+    this.chatModelName = config.chatModel;
     this.embeddingModelName = config.embeddingModel;
     // maxRetries: 0 -- lib/ai/retry.ts and lib/ai/stream-utils.ts are the
     // single retry layer for this project (consistent backoff, consistent
@@ -76,7 +103,7 @@ export class OpenAICompatibleProvider
     // OpenAI's newer Responses API -- required for Gemini's compatible
     // endpoint, which only implements Chat Completions, and kept the same
     // for the real OpenAI adapter so both code paths behave identically.
-    const model = this.aiSdk.chat(this.modelName);
+    const model = this.aiSdk.chat(this.chatModelName);
     return wrapAiSdkStream(
       () =>
         streamText({
@@ -119,4 +146,34 @@ export class OpenAICompatibleProvider
       },
     });
   }
+}
+
+/**
+ * The only supported way to get a {chatProvider, embeddingsProvider} pair
+ * backed by an OpenAI-Chat-Completions-API-compatible endpoint (real OpenAI,
+ * or -- via providers/gemini.ts -- Google's OpenAI-compatible endpoint).
+ * Constructs exactly ONE OpenAICompatibleCore (one HTTP client, one API
+ * key/baseURL pair) and returns two independent, correctly-labeled views
+ * over it -- see the OpenAICompatibleCore class comment for why this is two
+ * objects instead of one dual-interface object.
+ */
+export function createOpenAICompatiblePair(
+  config: OpenAICompatibleConfig
+): { chatProvider: ChatProvider; embeddingsProvider: EmbeddingsProvider } {
+  const core = new OpenAICompatibleCore(config);
+
+  const chatProvider: ChatProvider = {
+    providerName: core.providerName,
+    modelName: core.chatModelName,
+    streamChat: (input) => core.streamChat(input),
+  };
+
+  const embeddingsProvider: EmbeddingsProvider = {
+    providerName: core.providerName,
+    modelName: core.embeddingModelName,
+    dimensions: core.dimensions,
+    embed: (texts) => core.embed(texts),
+  };
+
+  return { chatProvider, embeddingsProvider };
 }

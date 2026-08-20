@@ -11,7 +11,7 @@
 // preferred approach for development speed, given Google's own
 // compatibility guarantee for this subset of the API.
 
-import { OpenAICompatibleProvider } from "./openai";
+import { createOpenAICompatiblePair } from "./openai";
 import type { ChatProvider, EmbeddingsProvider } from "../types";
 
 const GEMINI_OPENAI_COMPATIBLE_BASE_URL =
@@ -24,16 +24,23 @@ export interface GeminiConfig {
 }
 
 /**
- * Returns a single object implementing both ChatProvider and
- * EmbeddingsProvider, backed by Google's OpenAI-compatible endpoint. Kept
- * as a factory function (rather than a subclass) since there is no Gemini-
- * specific behavior beyond the constructor config -- the underlying class
- * already fully implements both interfaces.
+ * Returns a {chatProvider, embeddingsProvider} pair backed by Google's
+ * OpenAI-compatible endpoint, sharing a single underlying HTTP client (see
+ * createOpenAICompatiblePair()'s doc comment for why this is two objects
+ * with independently-correct `modelName`s rather than one object
+ * implementing both interfaces -- that used to be the shape here, and it
+ * silently reported the CHAT model as the EMBEDDING model wherever
+ * `embeddingsProvider.modelName` was read, e.g.
+ * document_chunks.embedding_model). Kept as a thin factory function (rather
+ * than a subclass) since there is no Gemini-specific behavior beyond the
+ * constructor config -- createOpenAICompatiblePair() already fully covers
+ * both roles.
  */
-export function createGeminiProvider(
-  config: GeminiConfig
-): ChatProvider & EmbeddingsProvider {
-  return new OpenAICompatibleProvider({
+export function createGeminiProvider(config: GeminiConfig): {
+  chatProvider: ChatProvider;
+  embeddingsProvider: EmbeddingsProvider;
+} {
+  return createOpenAICompatiblePair({
     providerName: "gemini",
     apiKey: config.apiKey,
     baseURL: GEMINI_OPENAI_COMPATIBLE_BASE_URL,

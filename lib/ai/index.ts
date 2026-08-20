@@ -13,7 +13,7 @@
 // openai embeddings" by accident.
 
 import { AnthropicChatProvider } from "./providers/anthropic";
-import { OpenAICompatibleProvider } from "./providers/openai";
+import { createOpenAICompatiblePair } from "./providers/openai";
 import { VoyageEmbeddingsProvider } from "./providers/voyage";
 import { createGeminiProvider } from "./providers/gemini";
 import type { AIProviderPair } from "./types";
@@ -45,14 +45,19 @@ interface ProviderRegistryEntry {
 const PROVIDER_REGISTRY = {
   openai: {
     label: "OpenAI",
-    build: (): AIProviderPair => {
-      const shared = new OpenAICompatibleProvider({
+    // createOpenAICompatiblePair() returns two distinct, correctly-labeled
+    // views (chatProvider.modelName = chat model, embeddingsProvider.modelName
+    // = embedding model) sharing one underlying HTTP client -- NOT the same
+    // object handed out twice. See providers/openai.ts's OpenAICompatibleCore
+    // comment for why a single dual-interface object was the bug here
+    // (embeddingsProvider.modelName used to silently read back the chat
+    // model, e.g. in document_chunks.embedding_model).
+    build: (): AIProviderPair =>
+      createOpenAICompatiblePair({
         apiKey: requireEnv("OPENAI_API_KEY"),
         chatModel: process.env.OPENAI_CHAT_MODEL || "gpt-4.1-mini",
         embeddingModel: process.env.OPENAI_EMBEDDING_MODEL || "text-embedding-3-small",
-      });
-      return { chatProvider: shared, embeddingsProvider: shared };
-    },
+      }),
   },
   anthropic: {
     label: "Anthropic Claude (+ Voyage AI для embeddings)",
@@ -72,14 +77,14 @@ const PROVIDER_REGISTRY = {
   },
   gemini: {
     label: "Google Gemini",
-    build: (): AIProviderPair => {
-      const shared = createGeminiProvider({
+    // Same two-views-over-one-client shape as 'openai' above -- see
+    // providers/gemini.ts's doc comment.
+    build: (): AIProviderPair =>
+      createGeminiProvider({
         apiKey: requireEnv("GEMINI_API_KEY"),
         chatModel: process.env.GEMINI_CHAT_MODEL || "gemini-3.6-flash",
         embeddingModel: process.env.GEMINI_EMBEDDING_MODEL || "gemini-embedding-001",
-      });
-      return { chatProvider: shared, embeddingsProvider: shared };
-    },
+      }),
   },
 } satisfies Record<string, ProviderRegistryEntry>;
 
