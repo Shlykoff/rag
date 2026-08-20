@@ -27,7 +27,7 @@ const DEFAULT_MODELS: Record<
 > = {
   openai: { chat: "gpt-4.1-mini", embedding: "text-embedding-3-small" },
   anthropic: { chat: "claude-sonnet-4-5", embedding: "voyage-3-large" },
-  gemini: { chat: "gemini-2.5-flash", embedding: "gemini-embedding-001" },
+  gemini: { chat: "gemini-3.6-flash", embedding: "gemini-embedding-001" },
 };
 
 function readProviderEnv(): SupportedAIProvider {
