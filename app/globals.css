@@ -157,6 +157,16 @@ select {
   color: var(--foreground);
 }
 
+.btn-danger {
+  background: var(--danger);
+  color: #fff;
+}
+
+.btn-danger:hover:not(:disabled) {
+  background: var(--danger);
+  opacity: 0.9;
+}
+
 .btn-sm {
   padding: 0.35rem 0.7rem;
   font-size: 0.8rem;
@@ -738,6 +748,21 @@ select {
   margin-top: 0.4rem;
 }
 
+.document-card-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+  flex-shrink: 0;
+}
+
+.document-card-delete-confirm {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  flex-wrap: wrap;
+}
+
 .empty-state {
   text-align: center;
   color: var(--foreground-muted);
@@ -766,5 +791,9 @@ select {
   .document-card {
     flex-direction: column;
     align-items: stretch;
+  }
+
+  .document-card-actions {
+    justify-content: flex-end;
   }
 }

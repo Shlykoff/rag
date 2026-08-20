@@ -17,7 +17,7 @@ export interface SourceRequestSuccess<T> {
 
 export interface SourceRequestFailure {
   ok: false;
-  kind: "unauthorized" | "rate_limited" | "error";
+  kind: "unauthorized" | "rate_limited" | "not_found" | "error";
   message: string;
   retryAfterMs?: number;
 }
@@ -43,6 +43,20 @@ async function normalizeResponse<T>(response: Response): Promise<SourceRequestRe
       kind: "rate_limited",
       message: body.message ?? "Слишком много запросов. Попробуйте чуть позже.",
       retryAfterMs: body.retryAfterMs,
+    };
+  }
+
+  if (response.status === 404) {
+    // Identical wire shape ({ error: "not_found" }) for "document doesn't
+    // exist" and "belongs to someone else" -- see [documentId]/route.ts and
+    // [documentId]/refresh/route.ts. Surfaced as its own kind (rather than
+    // folded into the generic "error" branch below) so callers that operate
+    // on a specific document -- delete, refresh -- can treat it as "already
+    // gone" (soft message + refresh the list) instead of a hard failure.
+    return {
+      ok: false,
+      kind: "not_found",
+      message: "Документ не найден — возможно, он уже был удалён или обновлён в другой вкладке.",
     };
   }
 
@@ -89,6 +103,22 @@ export async function postFormData<T>(url: string, formData: FormData): Promise<
 export async function postEmpty<T>(url: string): Promise<SourceRequestResult<T>> {
   try {
     const response = await fetch(url, { method: "POST" });
+    return await normalizeResponse<T>(response);
+  } catch {
+    return { ok: false, kind: "error", message: "Не удалось подключиться к серверу." };
+  }
+}
+
+/**
+ * DELETE with no body -- used by DocumentCard's delete button
+ * (`app/api/sources/{documentId}` route). `normalizeResponse` already
+ * tolerates an empty response body (`response.json().catch(() => ({}))`),
+ * so this works whether the route responds 200 with a JSON body or 204
+ * with none.
+ */
+export async function del<T>(url: string): Promise<SourceRequestResult<T>> {
+  try {
+    const response = await fetch(url, { method: "DELETE" });
     return await normalizeResponse<T>(response);
   } catch {
     return { ok: false, kind: "error", message: "Не удалось подключиться к серверу." };

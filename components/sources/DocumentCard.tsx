@@ -1,10 +1,10 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { processingStatusLabel, sourceLinkHref, sourceTypeLabel } from "@/lib/ui/format";
 import type { DocumentSourceType, ProcessingStatus } from "@/lib/ui/format";
-import { postEmpty, retryAfterSuffix } from "./request-helpers";
+import { del, postEmpty, retryAfterSuffix } from "./request-helpers";
 import { redirectToLogin } from "@/lib/ui/client-redirect";
 
 export interface DocumentCardProps {
@@ -17,6 +17,12 @@ export interface DocumentCardProps {
   /** Pre-formatted ("5 минут назад") on the server -- see DocumentList's doc comment on why this isn't recomputed client-side. */
   lastSyncedLabel: string | null;
 }
+
+// How long the "точно удалить?" confirmation stays armed before silently
+// reverting to the plain "Удалить" button -- long enough to read and react,
+// short enough that walking away from the tab doesn't leave a live
+// destructive action sitting one accidental click away.
+const DELETE_CONFIRM_TIMEOUT_MS = 5000;
 
 function statusBadgeClass(status: ProcessingStatus): string {
   switch (status) {
@@ -43,6 +49,17 @@ export function DocumentCard({
   const [refreshing, setRefreshing] = useState(false);
   const [refreshError, setRefreshError] = useState<string | null>(null);
 
+  const [confirmingDelete, setConfirmingDelete] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
+  const confirmTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => {
+    return () => {
+      if (confirmTimeoutRef.current) clearTimeout(confirmTimeoutRef.current);
+    };
+  }, []);
+
   const canRefresh = sourceType !== "manual_upload";
   const href = sourceLinkHref(sourceType, sourceRef);
 
@@ -59,6 +76,45 @@ export function DocumentCard({
         return;
       }
       setRefreshError(result.message + retryAfterSuffix(result.retryAfterMs));
+      return;
+    }
+    router.refresh();
+  }
+
+  function handleDeleteClick() {
+    setDeleteError(null);
+    setConfirmingDelete(true);
+    if (confirmTimeoutRef.current) clearTimeout(confirmTimeoutRef.current);
+    confirmTimeoutRef.current = setTimeout(() => {
+      setConfirmingDelete(false);
+    }, DELETE_CONFIRM_TIMEOUT_MS);
+  }
+
+  function handleCancelDelete() {
+    if (confirmTimeoutRef.current) clearTimeout(confirmTimeoutRef.current);
+    setConfirmingDelete(false);
+  }
+
+  async function handleConfirmDelete() {
+    if (confirmTimeoutRef.current) clearTimeout(confirmTimeoutRef.current);
+    setDeleting(true);
+    setDeleteError(null);
+    const result = await del<{ documentId: string; status: string }>(`/api/sources/${documentId}`);
+    setDeleting(false);
+    setConfirmingDelete(false);
+    if (!result.ok) {
+      if (result.kind === "unauthorized") {
+        redirectToLogin();
+        return;
+      }
+      if (result.kind === "not_found") {
+        // Race condition, not a real failure: someone/something already
+        // removed this document (another tab, a concurrent delete). Refresh
+        // the list so it disappears -- no scary error for the user.
+        router.refresh();
+        return;
+      }
+      setDeleteError(result.message + retryAfterSuffix(result.retryAfterMs));
       return;
     }
     router.refresh();
@@ -95,12 +151,56 @@ export function DocumentCard({
             {refreshError}
           </p>
         ) : null}
+        {deleteError ? (
+          <p className="alert alert-danger" style={{ marginTop: "0.5rem" }} role="alert">
+            {deleteError}
+          </p>
+        ) : null}
       </div>
-      {canRefresh ? (
-        <button type="button" className="btn btn-secondary btn-sm" onClick={handleRefresh} disabled={refreshing}>
-          {refreshing ? "Обновляем…" : "Refresh"}
-        </button>
-      ) : null}
+      <div className="document-card-actions">
+        {canRefresh ? (
+          <button type="button" className="btn btn-secondary btn-sm" onClick={handleRefresh} disabled={refreshing || deleting}>
+            {refreshing ? "Обновляем…" : "Refresh"}
+          </button>
+        ) : null}
+        {confirmingDelete ? (
+          <span className="document-card-delete-confirm" role="group" aria-label={`Подтвердите удаление документа «${title}»`}>
+            <span className="field-hint">Точно удалить?</span>
+            <button
+              type="button"
+              className="btn btn-danger btn-sm"
+              onClick={handleConfirmDelete}
+              disabled={deleting || refreshing}
+            >
+              {deleting ? (
+                <>
+                  <span className="spinner" aria-hidden="true" /> Удаляем…
+                </>
+              ) : (
+                "Да, удалить"
+              )}
+            </button>
+            <button
+              type="button"
+              className="btn btn-ghost btn-sm"
+              onClick={handleCancelDelete}
+              disabled={deleting || refreshing}
+            >
+              Отмена
+            </button>
+          </span>
+        ) : (
+          <button
+            type="button"
+            className="btn btn-ghost btn-sm"
+            onClick={handleDeleteClick}
+            disabled={deleting || refreshing}
+            aria-label={`Удалить документ «${title}»`}
+          >
+            Удалить
+          </button>
+        )}
+      </div>
     </div>
   );
 }
