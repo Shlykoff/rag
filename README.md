@@ -1,5 +1,6 @@
 # RAG Assistant
 
+[![CI](https://github.com/Shlykoff/rag/actions/workflows/ci.yml/badge.svg)](https://github.com/Shlykoff/rag/actions/workflows/ci.yml)
 [![ko-fi](https://img.shields.io/badge/Ko--fi-FFDD00?style=for-the-badge&logo=ko-fi&logoColor=black)](https://ko-fi.com/shlykoff)
 
 An AI assistant with retrieval-augmented generation (RAG) over your own documents — uploaded files, Notion pages, public URLs, and a Google Drive folder — with a provider-independent AI layer (OpenAI / Anthropic+Voyage / Gemini, switchable via one env var) and sources cited under every answer.
@@ -50,6 +51,8 @@ npm test                  # fast unit tests, no Docker required (161 tests)
 npm run test:integration  # requires `supabase start` first -- runs against
                            # the real local Postgres/pgvector (17 tests)
 ```
+
+**CI** (`.github/workflows/ci.yml`, runs on every push/PR to `main`): type check → lint → `npm test` → `next build` (with placeholder env vars — see the workflow file's comment for why that's safe; no real network calls happen at build time). Integration tests deliberately do **not** run in CI, since they need a real local Supabase instance via Docker, which GitHub-hosted runners don't have by default — they're the Docker-required half of the two-tier split above, run locally/manually instead.
 
 `npm test` never touches a database — everything is exercised against fakes (see e.g. `lib/ingestion/__tests__/ingest.test.ts`). `npm run test:integration` loads `.env.local` (via Node's `--env-file`) and runs a second suite of `*.integration.test.ts` files against your local `supabase start` instance: real inserts, a real `match_document_chunks` RPC call, real cross-tenant isolation checks. It's a separate Vitest config (`vitest.integration.config.mts`) specifically so plain `npm test`/CI never needs Docker running.
 

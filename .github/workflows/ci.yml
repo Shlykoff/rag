@@ -1,0 +1,46 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  lint-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: ".nvmrc"
+          cache: "npm"
+
+      - run: npm ci
+
+      - name: Type check
+        run: npx tsc --noEmit
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Unit tests
+        run: npm test
+
+      - name: Build
+        run: npm run build
+        env:
+          # Dummy values so `next build` can statically render/compile pages
+          # that reference these -- no real network calls happen at build
+          # time (real request-time validation is unaffected; see
+          # lib/supabase/*.ts and lib/ai/index.ts for where these are
+          # actually read). Integration tests (which need a real local
+          # Supabase via Docker) intentionally do NOT run in CI -- see
+          # README "Tests" for why that's a separate, Docker-only suite.
+          NEXT_PUBLIC_SUPABASE_URL: "https://ci-placeholder.supabase.co"
+          NEXT_PUBLIC_SUPABASE_ANON_KEY: "ci-placeholder-anon-key"
+          SUPABASE_SERVICE_ROLE_KEY: "ci-placeholder-service-role-key"
+          AI_PROVIDER: "openai"
+          OPENAI_API_KEY: "sk-ci-placeholder"
+          CREDENTIALS_ENCRYPTION_KEY: "0000000000000000000000000000000000000000000000000000000000000000"
