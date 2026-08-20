@@ -1,7 +1,10 @@
 {
   "name": "rag-assistant",
   "version": "0.1.0",
-  "author": "Vasili Shlykoff",
+  "author": {
+    "name": "Vasili Shlykoff",
+    "url": "https://github.com/Shlykoff"
+  },
   "license": "MIT",
   "private": true,
   "engines": {

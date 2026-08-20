@@ -312,4 +312,4 @@ Per `CLAUDE.md`, this part of the project (`rag-pipeline-specialist`) does **not
 
 ## Author & License
 
-Built by Vasili Shlykoff. Licensed under the [MIT License](LICENSE).
+Built by [Vasili Shlykoff](https://github.com/Shlykoff). Licensed under the [MIT License](LICENSE).
