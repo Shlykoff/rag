@@ -1,5 +1,7 @@
 # RAG Assistant
 
+[![ko-fi](https://img.shields.io/badge/Ko--fi-F16061?style=for-the-badge&logo=ko-fi&logoColor=white)](https://ko-fi.com/shlykoff)
+
 An AI assistant with retrieval-augmented generation (RAG) over your own documents — uploaded files, Notion pages, public URLs, and a Google Drive folder — with a provider-independent AI layer (OpenAI / Anthropic+Voyage / Gemini, switchable via one env var) and sources cited under every answer.
 
 Full spec: [`docs/spec.md`](docs/spec.md). Architectural ground rules for every part of this project: [`CLAUDE.md`](CLAUDE.md).
