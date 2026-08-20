@@ -217,29 +217,40 @@ export async function ingestDocumentWithDefaultProviders(
   chunkOptions?: ChunkOptions
 ): Promise<IngestResult> {
   // getServiceRoleClient() throwing here (missing Supabase env vars) is a
-  // deeper misconfiguration than a missing/invalid AI_PROVIDER: without a
-  // DB client there is no row we could even flip to 'error', so there's
-  // nothing to catch this into -- let it surface as-is, same as before.
+  // deeper misconfiguration than a missing/invalid AI provider credential:
+  // without a DB client there is no row we could even flip to 'error', so
+  // there's nothing to catch this into -- let it surface as-is, same as
+  // before.
   const supabase = getServiceRoleClient();
 
   let embeddingsProvider: EmbeddingsProvider;
   try {
-    embeddingsProvider = getEmbeddingsProvider();
+    // Per-user, bring-your-own-key (see lib/ai/index.ts): doc.userId is
+    // already part of this function's NormalizedDocument contract (the
+    // document's owner), so it's threaded straight through -- there is no
+    // more process-global "the" embeddings provider.
+    embeddingsProvider = await getEmbeddingsProvider(doc.userId, supabase);
   } catch (err) {
-    // getEmbeddingsProvider() (via getAIProviders()) throws SYNCHRONOUSLY
-    // when AI_PROVIDER or its matching *_API_KEY env var is missing/invalid.
-    // Before this fix that throw happened while evaluating an eagerly-
-    // computed argument to ingestDocument(doc, { ... embeddingsProvider:
-    // getEmbeddingsProvider() }, ...) -- i.e. BEFORE ingestDocument()'s own
-    // try/catch (which flips documents.processing_status to 'error') ever
-    // started running. The document row was left stuck in 'pending'
-    // forever with processing_error: null, invisible to both the UI and
-    // the user (reproduced live by qa-reviewer against POST
-    // /api/sources/upload). Fix: get the provider inside a try of our own,
-    // and on failure perform the exact same status transition
-    // ingestDocument()'s catch block would have performed, before
-    // rethrowing so the caller (document-sources-specialist's route
-    // handlers) still sees the failure.
+    // getEmbeddingsProvider() (via getAIProviders()) rejects when doc.userId
+    // has no active AI provider configured, or their active provider's
+    // credential(s) are missing (AIProviderError{kind:"no_credentials"} --
+    // see lib/ai/index.ts) -- or, less commonly, on any other AI-provider
+    // failure. Before an earlier fix (back when this was the global-env
+    // AI_PROVIDER path), an equivalent throw happened while evaluating an
+    // eagerly-computed argument to ingestDocument(doc, { ...
+    // embeddingsProvider: getEmbeddingsProvider() }, ...) -- i.e. BEFORE
+    // ingestDocument()'s own try/catch (which flips
+    // documents.processing_status to 'error') ever started running. The
+    // document row was left stuck in 'pending' forever with
+    // processing_error: null, invisible to both the UI and the user
+    // (reproduced live by qa-reviewer against POST /api/sources/upload).
+    // Fix: get the provider inside a try of our own, and on failure perform
+    // the exact same status transition ingestDocument()'s catch block would
+    // have performed, before rethrowing so the caller (document-sources-
+    // specialist's route handlers) still sees the failure -- e.g. a user
+    // with no AI provider configured yet who tries to upload a document
+    // sees a clear processing_error message instead of a document stuck in
+    // 'pending' forever.
     const message = err instanceof Error ? err.message : String(err);
     await setProcessingStatus(supabase, doc.documentId, {
       processing_status: "error",

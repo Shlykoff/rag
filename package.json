@@ -17,7 +17,8 @@
     "lint": "eslint",
     "test": "vitest run",
     "test:watch": "vitest",
-    "test:integration": "node --env-file=.env.local node_modules/.bin/vitest run --config vitest.integration.config.mts"
+    "test:integration": "node --env-file=.env.local node_modules/.bin/vitest run --config vitest.integration.config.mts",
+    "seed:ai-keys": "node --env-file=.env.local scripts/run-seed-ai-credentials.mjs"
   },
   "dependencies": {
     "@ai-sdk/anthropic": "4.0.39",
@@ -43,6 +44,7 @@
     "@types/node": "^22",
     "@types/react": "^19",
     "@types/react-dom": "^19",
+    "esbuild": "^0.28.2",
     "eslint": "^9",
     "eslint-config-next": "16.3.1",
     "typescript": "^5",

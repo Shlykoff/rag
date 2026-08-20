@@ -47,3 +47,9 @@ next-env.d.ts
 # supabase local runtime state (not the migrations/config, which are tracked)
 supabase/.branches
 supabase/.temp
+
+# scripts/run-seed-ai-credentials.mjs's ephemeral esbuild bundle -- written,
+# run, and deleted by that script itself on every `npm run seed:ai-keys`;
+# ignored here only as a safety net if the process is killed mid-run before
+# its own cleanup (finally block) executes.
+scripts/*.bundle.cjs

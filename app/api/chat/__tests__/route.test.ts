@@ -1,12 +1,17 @@
 // app/api/chat/__tests__/route.test.ts
 //
 // Regression test for the bug qa-reviewer reproduced live via curl:
-// getAIProviders() (see lib/ai/index.ts) throws SYNCHRONOUSLY when
-// AI_PROVIDER/its matching *_API_KEY env var is missing or invalid. Before
-// the fix, that call sat outside any try/catch in POST(), so the throw
-// propagated all the way out of the route handler -> a bare HTTP 500 with
-// no body and no Content-Type, which is not one of the response shapes
-// documented in this route's own header contract (401/400/429/200-SSE).
+// getAIProviders() (see lib/ai/index.ts) rejects when the signed-in user
+// has no active AI provider configured (or its stored credential(s) are
+// missing). Before an earlier, env-var-driven version of this fix, an
+// equivalent throw sat outside any try/catch in POST(), so it propagated
+// all the way out of the route handler -> a bare HTTP 500 with no body and
+// no Content-Type, which is not one of the response shapes documented in
+// this route's own header contract (401/400/422/429/200-SSE). This file
+// also covers the newer split this route makes on top of that fix: a
+// no_credentials failure -> 422 (no console.error), anything else -> 500
+// (with console.error) -- see route.ts's module header for the full wire
+// contract nextjs-frontend's "add a key" modal depends on.
 //
 // Every dependency route.ts imports is mocked here so this test exercises
 // only route.ts's own control flow (auth passes, rate limit passes, THEN
@@ -36,15 +41,25 @@ vi.mock("@/lib/rate-limit/rate-limiter", () => ({
   reserveChatRateLimitSlot: (...args: unknown[]) => mockReserveChatRateLimitSlot(...args),
 }));
 
-vi.mock("@/lib/ai", () => ({
-  getAIProviders: () => mockGetAIProviders(),
-}));
+// AIProviderError itself is the REAL class (imported from lib/ai/errors,
+// which has no DB/network dependency) so `err instanceof AIProviderError`
+// inside route.ts still works against errors this test throws from the
+// mocked getAIProviders() -- only getAIProviders() itself (the DB-backed
+// per-user lookup) is faked.
+vi.mock("@/lib/ai", async () => {
+  const actual = await vi.importActual<typeof import("@/lib/ai/errors")>("@/lib/ai/errors");
+  return {
+    getAIProviders: (...args: unknown[]) => mockGetAIProviders(...args),
+    AIProviderError: actual.AIProviderError,
+  };
+});
 
 vi.mock("@/lib/chat/handle-chat-request", () => ({
   handleChatRequest: (...args: unknown[]) => mockHandleChatRequest(...args),
 }));
 
 import { POST } from "../route";
+import { AIProviderError } from "@/lib/ai/errors";
 
 function makeRequest(body: unknown): Request {
   return new Request("http://localhost/api/chat", {
@@ -59,7 +74,7 @@ describe("POST /api/chat", () => {
     vi.clearAllMocks();
   });
 
-  it("returns 500 { error: 'provider_unavailable' } (not a bare/empty 500) when getAIProviders() throws, and still releases the reserved rate-limit slot", async () => {
+  it("returns 500 { error: 'provider_unavailable' } (not a bare/empty 500) when getAIProviders() rejects with a non-AIProviderError, logs via console.error, and still releases the reserved rate-limit slot", async () => {
     mockGetRouteHandlerSupabaseClient.mockResolvedValue({});
     mockGetAuthenticatedUser.mockResolvedValue({ id: "user-1", email: "a@b.com" });
     mockGetServiceRoleClient.mockReturnValue({});
@@ -70,11 +85,8 @@ describe("POST /api/chat", () => {
       limit: 10,
       release,
     });
-    mockGetAIProviders.mockImplementation(() => {
-      throw new Error(
-        "Invalid or missing AI_PROVIDER env var (got: undefined). Expected one of: 'openai' | 'anthropic' | 'gemini'. See .env.example."
-      );
-    });
+    const consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    mockGetAIProviders.mockRejectedValue(new Error("getServiceRoleClient(): boom, a real DB/config fault"));
 
     const response = await POST(makeRequest({ message: "hello" }));
 
@@ -87,6 +99,10 @@ describe("POST /api/chat", () => {
     expect(payload).toMatchObject({ error: "provider_unavailable" });
     expect(payload.message).toBeTruthy();
 
+    // A real, unexpected fault DOES get logged -- unlike the no_credentials
+    // case below, which deliberately does not (see the next test).
+    expect(consoleErrorSpy).toHaveBeenCalled();
+
     // handleChatRequest (which would call the AI provider) must never be
     // reached once getAIProviders() has already failed.
     expect(mockHandleChatRequest).not.toHaveBeenCalled();
@@ -96,6 +112,50 @@ describe("POST /api/chat", () => {
     // request due to a misconfigured provider would leak a reservation for
     // up to the rate limit window (see rate-limiter.ts's release() comment).
     expect(release).toHaveBeenCalledTimes(1);
+    consoleErrorSpy.mockRestore();
+  });
+
+  it("returns 422 { error: 'no_credentials' } (NOT 500) when getAIProviders() rejects with AIProviderError{kind:'no_credentials'}, and does NOT log via console.error", async () => {
+    mockGetRouteHandlerSupabaseClient.mockResolvedValue({});
+    mockGetAuthenticatedUser.mockResolvedValue({ id: "user-1", email: "a@b.com" });
+    mockGetServiceRoleClient.mockReturnValue({});
+    const release = vi.fn();
+    mockReserveChatRateLimitSlot.mockResolvedValue({
+      allowed: true,
+      currentCount: 0,
+      limit: 10,
+      release,
+    });
+    const consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    mockGetAIProviders.mockRejectedValue(
+      new AIProviderError({
+        provider: "none",
+        kind: "no_credentials",
+        retryable: false,
+        message: "getAIProviders: user user-1 has no active_ai_provider set.",
+        userMessage: "Добавьте и выберите AI-провайдера в профиле, чтобы начать общаться с ассистентом.",
+      })
+    );
+
+    const response = await POST(makeRequest({ message: "hello" }));
+
+    expect(response.status).toBe(422);
+    expect(response.headers.get("content-type")).toMatch(/application\/json/);
+    const payload = await response.json();
+    // Wire contract nextjs-frontend's "add a key" modal is built against --
+    // see route.ts's module header.
+    expect(payload).toMatchObject({ error: "no_credentials" });
+    expect(payload.message).toBeTruthy();
+
+    // This is the entire point of the split: an expected "user hasn't
+    // configured a provider yet" state must never be logged as a server
+    // error -- see route.ts's module header comment on why that would
+    // drown out real 500s.
+    expect(consoleErrorSpy).not.toHaveBeenCalled();
+
+    expect(mockHandleChatRequest).not.toHaveBeenCalled();
+    expect(release).toHaveBeenCalledTimes(1);
+    consoleErrorSpy.mockRestore();
   });
 
   it("still returns a normal 200 SSE response when getAIProviders() succeeds", async () => {
@@ -109,7 +169,7 @@ describe("POST /api/chat", () => {
       limit: 10,
       release,
     });
-    mockGetAIProviders.mockReturnValue({
+    mockGetAIProviders.mockResolvedValue({
       chatProvider: { providerName: "fake" },
       embeddingsProvider: { providerName: "fake" },
     });
@@ -127,5 +187,9 @@ describe("POST /api/chat", () => {
     expect(text).toContain("event: conversation");
     expect(text).toContain("event: done");
     expect(release).toHaveBeenCalledTimes(1);
+    // getAIProviders() is now per-user (bring-your-own-key) -- the
+    // authenticated user's id and the service-role client must be threaded
+    // through, not called with no arguments.
+    expect(mockGetAIProviders).toHaveBeenCalledWith("user-1", {});
   });
 });

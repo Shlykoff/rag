@@ -1,9 +1,10 @@
 // lib/ingestion/__tests__/ingest-default-providers.test.ts
 //
 // Regression test for the bug qa-reviewer reproduced live: getEmbeddingsProvider()
-// (via getAIProviders(), see lib/ai/index.ts) throws SYNCHRONOUSLY when
-// AI_PROVIDER/its matching *_API_KEY env var is missing or invalid. Before
-// the fix, ingestDocumentWithDefaultProviders() computed that call as an
+// (via getAIProviders(), see lib/ai/index.ts) rejects when the document's
+// owner (doc.userId) has no active AI provider configured, or their active
+// provider's credential(s) are missing. Before the fix,
+// ingestDocumentWithDefaultProviders() computed that call as an
 // eagerly-evaluated argument to ingestDocument(...) -- so the throw
 // happened BEFORE ingestDocument()'s own try/catch (which flips
 // documents.processing_status to 'error') ever started running, leaving
@@ -13,7 +14,9 @@
 // ingestDocument(), which is already covered end-to-end by ingest.test.ts)
 // by mocking its two module-level dependencies -- getServiceRoleClient()
 // and getEmbeddingsProvider() -- exactly the two calls the bug report
-// pointed at.
+// pointed at. getEmbeddingsProvider() is now per-user
+// (userId, supabase) -- see lib/ai/index.ts -- rather than the old
+// zero-arg, AI_PROVIDER-env-driven call.
 
 import { describe, expect, it, vi, beforeEach } from "vitest";
 import type { SupabaseClient } from "@supabase/supabase-js";
@@ -30,7 +33,7 @@ vi.mock("../../supabase/service-client", () => ({
 }));
 
 vi.mock("../../ai", () => ({
-  getEmbeddingsProvider: () => mockGetEmbeddingsProvider(),
+  getEmbeddingsProvider: (...args: unknown[]) => mockGetEmbeddingsProvider(...args),
 }));
 
 import { ingestDocumentWithDefaultProviders } from "../ingest";
@@ -90,19 +93,22 @@ describe("ingestDocumentWithDefaultProviders", () => {
     mockGetEmbeddingsProvider.mockReset();
   });
 
-  it("marks the document 'error' (not stuck in 'pending') when getEmbeddingsProvider() throws synchronously", async () => {
+  it("marks the document 'error' (not stuck in 'pending') when getEmbeddingsProvider() rejects (e.g. no active AI provider for this user)", async () => {
     const { supabase, documentUpdates } = makeFakeSupabase({
       data: { id: "doc-1", user_id: "user-1", source_type: "manual_upload" },
       error: null,
     });
     mockGetServiceRoleClient.mockReturnValue(supabase);
-    mockGetEmbeddingsProvider.mockImplementation(() => {
-      throw new Error(
-        "Invalid or missing AI_PROVIDER env var (got: undefined). Expected one of: 'openai' | 'anthropic' | 'gemini'. See .env.example."
-      );
-    });
+    mockGetEmbeddingsProvider.mockRejectedValue(
+      new Error("getAIProviders: user user-1 has no active_ai_provider set.")
+    );
 
-    await expect(ingestDocumentWithDefaultProviders(baseDoc)).rejects.toThrow(/AI_PROVIDER/);
+    await expect(ingestDocumentWithDefaultProviders(baseDoc)).rejects.toThrow(/active_ai_provider/);
+
+    // Per-user (bring-your-own-key): the document's own owner (doc.userId)
+    // and the service-role client must be threaded through to
+    // getEmbeddingsProvider(), not called with no arguments.
+    expect(mockGetEmbeddingsProvider).toHaveBeenCalledWith("user-1", supabase);
 
     // The critical assertion: exactly one status write happened, and it
     // flips straight to 'error' with a non-empty processing_error -- NOT
@@ -113,7 +119,7 @@ describe("ingestDocumentWithDefaultProviders", () => {
     expect(documentUpdates[0].id).toBe("doc-1");
     expect(documentUpdates[0].payload.processing_status).toBe("error");
     expect(documentUpdates[0].payload.processing_error).toBeTruthy();
-    expect(documentUpdates[0].payload.processing_error).toMatch(/AI_PROVIDER/);
+    expect(documentUpdates[0].payload.processing_error).toMatch(/active_ai_provider/);
   });
 
   it("still throws (does not swallow the error) after recording processing_status: 'error'", async () => {
@@ -122,10 +128,8 @@ describe("ingestDocumentWithDefaultProviders", () => {
       error: null,
     });
     mockGetServiceRoleClient.mockReturnValue(supabase);
-    const originalError = new Error("Missing required env var OPENAI_API_KEY for the active AI_PROVIDER.");
-    mockGetEmbeddingsProvider.mockImplementation(() => {
-      throw originalError;
-    });
+    const originalError = new Error("Missing required 'openai' credential for this user.");
+    mockGetEmbeddingsProvider.mockRejectedValue(originalError);
 
     // The caller (document-sources-specialist's upload/refresh route
     // handlers) still needs to see this as a rejected promise -- silently
@@ -140,7 +144,7 @@ describe("ingestDocumentWithDefaultProviders", () => {
       error: null,
     });
     mockGetServiceRoleClient.mockReturnValue(supabase);
-    mockGetEmbeddingsProvider.mockReturnValue({
+    mockGetEmbeddingsProvider.mockResolvedValue({
       providerName: "fake-provider",
       modelName: "fake-model",
       dimensions: 3,
@@ -173,5 +177,6 @@ describe("ingestDocumentWithDefaultProviders", () => {
     expect(documentChunkRows.length).toBeGreaterThan(0);
     const finalUpdate = documentUpdates[documentUpdates.length - 1].payload;
     expect(finalUpdate.processing_status).toBe("ready");
+    expect(mockGetEmbeddingsProvider).toHaveBeenCalledWith("user-1", supabase);
   });
 });

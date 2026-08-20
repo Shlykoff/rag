@@ -14,6 +14,14 @@ export type AIErrorKind =
   | "server_error" // 5xx
   | "invalid_request" // 4xx other than 429 (bad input, auth, etc.)
   | "network" // request never got a response (timeout, DNS, connection reset)
+  // The signed-in user has no active AI provider configured (or its
+  // credential row is missing) -- see lib/ai/index.ts's getAIProviders().
+  // Thrown directly by lib/ai/index.ts, NEVER produced by
+  // normalizeProviderError() below (a vendor SDK never reports this --
+  // it's an app-level "nothing to call yet" state, not a failed call).
+  // retryable is always false and status/cause are always undefined for
+  // this kind, since the request never reached a vendor SDK at all.
+  | "no_credentials"
   | "unknown";
 
 export interface AIProviderErrorInit {

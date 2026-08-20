@@ -13,11 +13,24 @@
 //   -> 400 { error: "invalid_request", details } on a malformed body
 //   -> 429 { error: "rate_limited", message, retryAfterMs } if the user is
 //      over the chat rate limit (Retry-After header set, in seconds)
-//   -> 500 { error: "provider_unavailable", message } if the configured
-//      AI_PROVIDER (or its matching *_API_KEY) is missing/invalid -- this
-//      is a server misconfiguration, not a per-request failure, so it's
-//      surfaced as a real HTTP error status with a JSON body rather than
-//      the 200 SSE `error` event used for in-stream failures below.
+//   -> 422 { error: "no_credentials", message } if the signed-in user has no
+//      active AI provider configured yet (no user_settings row / no
+//      active_ai_provider set) or their active provider's stored
+//      credential(s) are missing (see lib/ai/index.ts's getAIProviders()).
+//      This is an expected, common per-user state -- NOT a server
+//      misconfiguration -- so it's deliberately NOT logged via
+//      console.error (every not-yet-configured user's first message would
+//      otherwise spam server logs with "errors" that are really just "this
+//      user hasn't visited /profile yet", drowning out real 500s). This is
+//      the wire contract nextjs-frontend's "add an API key" modal is built
+//      against: show the modal on 422, keep the generic retry-banner
+//      treatment for everything else (400/429/500).
+//   -> 500 { error: "provider_unavailable", message } for any OTHER failure
+//      while building the user's AI provider pair (e.g. a DB error reading
+//      ai_provider_credentials/user_settings) -- a real server-side fault,
+//      logged via console.error, surfaced as a real HTTP error status with
+//      a JSON body rather than the 200 SSE `error` event used for
+//      in-stream failures below.
 //   -> 200, Content-Type: text/event-stream, on success. The body is a
 //      sequence of SSE events, each `event: <type>\ndata: <json>\n\n`:
 //        - conversation: { conversationId } -- always first; the id to use
@@ -33,7 +46,7 @@
 
 import "server-only";
 import { z } from "zod";
-import { getAIProviders, type ChatProvider, type EmbeddingsProvider } from "@/lib/ai";
+import { getAIProviders, AIProviderError, type ChatProvider, type EmbeddingsProvider } from "@/lib/ai";
 import { getServiceRoleClient } from "@/lib/supabase/service-client";
 import { getAuthenticatedUser, getRouteHandlerSupabaseClient } from "@/lib/supabase/server-client";
 import { reserveChatRateLimitSlot } from "@/lib/rate-limit/rate-limiter";
@@ -116,22 +129,31 @@ export async function POST(request: Request): Promise<Response> {
   // safe to call unconditionally there.
   const releaseRateLimitSlot = rateLimit.release;
 
-  // getAIProviders() throws SYNCHRONOUSLY when AI_PROVIDER (or its matching
-  // *_API_KEY) is missing/invalid (see lib/ai/index.ts). Before this fix
-  // that throw happened outside any try/catch in this route, producing a
-  // bare 500 with no body/Content-Type -- reproduced live by qa-reviewer
-  // via curl. That violates this file's own documented contract (only
-  // 401/400/429/200-SSE were specified), so catch it explicitly and return
-  // a real JSON error body, consistent with the 401/400/429 branches above.
-  // The reserved rate-limit slot must still be released here: we're
-  // returning before the ReadableStream (whose `finally` normally does
-  // this) is ever constructed.
+  // getAIProviders() (per-user, bring-your-own-key -- see lib/ai/index.ts)
+  // rejects when the signed-in user has no active provider configured, or
+  // when their active provider's stored credential(s) are missing. Before
+  // the original (env-var-driven) version of this fix, an equivalent throw
+  // happened outside any try/catch in this route, producing a bare 500 with
+  // no body/Content-Type -- reproduced live by qa-reviewer via curl. That
+  // violated this file's own documented contract (only 401/400/429/200-SSE
+  // were specified), so it's caught explicitly here and turned into a real
+  // JSON error body, consistent with the 401/400/429 branches above -- now
+  // split into two outcomes (see the module header's 422 vs. 500 contract).
+  // The reserved rate-limit slot must still be released on both paths: this
+  // returns before the ReadableStream (whose `finally` normally does that)
+  // is ever constructed.
   let chatProvider: ChatProvider;
   let embeddingsProvider: EmbeddingsProvider;
   try {
-    ({ chatProvider, embeddingsProvider } = getAIProviders());
+    ({ chatProvider, embeddingsProvider } = await getAIProviders(user.id, supabase));
   } catch (err) {
     releaseRateLimitSlot();
+    if (err instanceof AIProviderError && err.kind === "no_credentials") {
+      // Expected per-user state, not a server fault -- deliberately no
+      // console.error here (see the module header comment above for why
+      // logging this as an error would be noise, not signal).
+      return Response.json({ error: "no_credentials", message: err.userMessage }, { status: 422 });
+    }
     console.error("app/api/chat/route.ts: getAIProviders() failed:", err);
     return Response.json(
       {
