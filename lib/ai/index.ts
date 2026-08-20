@@ -18,28 +18,6 @@ import { VoyageEmbeddingsProvider } from "./providers/voyage";
 import { createGeminiProvider } from "./providers/gemini";
 import type { AIProviderPair } from "./types";
 
-export type SupportedAIProvider = "openai" | "anthropic" | "gemini";
-
-/** Default models per provider -- see README "Model defaults" for the price/quality rationale. Overridable via env so a demo deploy can swap models without a code change. */
-const DEFAULT_MODELS: Record<
-  SupportedAIProvider,
-  { chat: string; embedding: string }
-> = {
-  openai: { chat: "gpt-4.1-mini", embedding: "text-embedding-3-small" },
-  anthropic: { chat: "claude-sonnet-4-5", embedding: "voyage-3-large" },
-  gemini: { chat: "gemini-3.6-flash", embedding: "gemini-embedding-001" },
-};
-
-function readProviderEnv(): SupportedAIProvider {
-  const raw = process.env.AI_PROVIDER?.trim().toLowerCase();
-  if (raw === "openai" || raw === "anthropic" || raw === "gemini") return raw;
-  throw new Error(
-    `Invalid or missing AI_PROVIDER env var (got: ${JSON.stringify(
-      process.env.AI_PROVIDER
-    )}). Expected one of: 'openai' | 'anthropic' | 'gemini'. See .env.example.`
-  );
-}
-
 function requireEnv(name: string): string {
   const value = process.env[name];
   if (!value) {
@@ -50,44 +28,80 @@ function requireEnv(name: string): string {
   return value;
 }
 
-function buildProviders(provider: SupportedAIProvider): AIProviderPair {
-  switch (provider) {
-    case "openai": {
+interface ProviderRegistryEntry {
+  /** Human-readable label for the "работает на: ..." UI badge (lib/ui/ai-provider.ts) -- kept next to the construction logic so a new provider's label can't be added in one place and forgotten in the other. */
+  label: string;
+  build: () => AIProviderPair;
+}
+
+/**
+ * The single source of truth for "which AI_PROVIDER values exist." Adding
+ * a new provider (Grok, Qwen, ...) means: write its adapter(s) in
+ * lib/ai/providers/, then add ONE entry here. Nothing else in this file --
+ * not the valid-value check, not the error message, not the exported type
+ * -- needs a matching edit; they're all derived from this object's keys
+ * below, not hand-duplicated.
+ */
+const PROVIDER_REGISTRY = {
+  openai: {
+    label: "OpenAI",
+    build: (): AIProviderPair => {
       const shared = new OpenAICompatibleProvider({
         apiKey: requireEnv("OPENAI_API_KEY"),
-        chatModel: process.env.OPENAI_CHAT_MODEL || DEFAULT_MODELS.openai.chat,
-        embeddingModel:
-          process.env.OPENAI_EMBEDDING_MODEL || DEFAULT_MODELS.openai.embedding,
+        chatModel: process.env.OPENAI_CHAT_MODEL || "gpt-4.1-mini",
+        embeddingModel: process.env.OPENAI_EMBEDDING_MODEL || "text-embedding-3-small",
       });
       return { chatProvider: shared, embeddingsProvider: shared };
-    }
-    case "anthropic": {
-      return {
-        chatProvider: new AnthropicChatProvider({
-          apiKey: requireEnv("ANTHROPIC_API_KEY"),
-          chatModel:
-            process.env.ANTHROPIC_CHAT_MODEL || DEFAULT_MODELS.anthropic.chat,
-        }),
-        // Anthropic has no embeddings API -- Voyage is the fixed pairing,
-        // not independently configurable via AI_PROVIDER.
-        embeddingsProvider: new VoyageEmbeddingsProvider({
-          apiKey: requireEnv("VOYAGE_API_KEY"),
-          embeddingModel:
-            process.env.VOYAGE_EMBEDDING_MODEL ||
-            DEFAULT_MODELS.anthropic.embedding,
-        }),
-      };
-    }
-    case "gemini": {
+    },
+  },
+  anthropic: {
+    label: "Anthropic Claude (+ Voyage AI для embeddings)",
+    // Anthropic has no embeddings API of its own -- Voyage is this
+    // provider's fixed pairing, not an independently selectable choice,
+    // so it's baked into this one entry rather than a separate env var.
+    build: (): AIProviderPair => ({
+      chatProvider: new AnthropicChatProvider({
+        apiKey: requireEnv("ANTHROPIC_API_KEY"),
+        chatModel: process.env.ANTHROPIC_CHAT_MODEL || "claude-sonnet-4-5",
+      }),
+      embeddingsProvider: new VoyageEmbeddingsProvider({
+        apiKey: requireEnv("VOYAGE_API_KEY"),
+        embeddingModel: process.env.VOYAGE_EMBEDDING_MODEL || "voyage-3-large",
+      }),
+    }),
+  },
+  gemini: {
+    label: "Google Gemini",
+    build: (): AIProviderPair => {
       const shared = createGeminiProvider({
         apiKey: requireEnv("GEMINI_API_KEY"),
-        chatModel: process.env.GEMINI_CHAT_MODEL || DEFAULT_MODELS.gemini.chat,
-        embeddingModel:
-          process.env.GEMINI_EMBEDDING_MODEL || DEFAULT_MODELS.gemini.embedding,
+        chatModel: process.env.GEMINI_CHAT_MODEL || "gemini-3.6-flash",
+        embeddingModel: process.env.GEMINI_EMBEDDING_MODEL || "gemini-embedding-001",
       });
       return { chatProvider: shared, embeddingsProvider: shared };
-    }
+    },
+  },
+} satisfies Record<string, ProviderRegistryEntry>;
+
+export type SupportedAIProvider = keyof typeof PROVIDER_REGISTRY;
+
+/** Every valid AI_PROVIDER value, derived from the registry -- lib/ui/ai-provider.ts's display badge reads this (and each entry's `label`) instead of keeping its own separate copy of the provider list. */
+export const SUPPORTED_AI_PROVIDERS = Object.keys(PROVIDER_REGISTRY) as SupportedAIProvider[];
+
+export function getProviderLabel(provider: string): string | undefined {
+  return (PROVIDER_REGISTRY as Record<string, ProviderRegistryEntry>)[provider]?.label;
+}
+
+function readProviderEnv(): SupportedAIProvider {
+  const raw = process.env.AI_PROVIDER?.trim().toLowerCase();
+  if (raw && (SUPPORTED_AI_PROVIDERS as string[]).includes(raw)) {
+    return raw as SupportedAIProvider;
   }
+  throw new Error(
+    `Invalid or missing AI_PROVIDER env var (got: ${JSON.stringify(
+      process.env.AI_PROVIDER
+    )}). Expected one of: ${SUPPORTED_AI_PROVIDERS.join(", ")}. See .env.example.`
+  );
 }
 
 // Providers are cheap to construct (no network calls in any constructor
@@ -100,7 +114,7 @@ let cached: AIProviderPair | undefined;
 /** The single entry point the rest of the app should use. Reads AI_PROVIDER (and the matching *_API_KEY) from process.env on first call. */
 export function getAIProviders(): AIProviderPair {
   if (!cached) {
-    cached = buildProviders(readProviderEnv());
+    cached = PROVIDER_REGISTRY[readProviderEnv()].build();
   }
   return cached;
 }
