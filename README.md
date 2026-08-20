@@ -309,3 +309,7 @@ Per `CLAUDE.md`, this part of the project (`rag-pipeline-specialist`) does **not
 - **Public URL**: `POST /api/sources/url` `{ "url": "https://example.com" }` against any real public page — should return extracted main-content text, not raw HTML with nav/footer noise. Then test the SSRF guard manually: `{ "url": "http://169.254.169.254/" }` should return `400 ssrf_blocked` immediately.
 - **Google Drive**: create a service account in Google Cloud Console → download its JSON key → `POST /api/sources/credentials` `{ "sourceType": "google_drive", "credential": "<minified JSON>" }` → share a test Drive **folder** (not an individual file — see "MVP boundaries" above; a directly-shared single file's parent folder isn't visible to the service account at all, so there's no `folderId` to use) with the service account's `client_email` (Viewer) → `POST /api/sources/google-drive` `{ "folderId": "<folder id from the Drive URL>" }`. Should return `{ imported: [...], skipped: [...] }` — put one PDF, one `.txt`, one Google Doc, and one unsupported file (e.g. a `.png`) in the folder to exercise all three code paths (native extraction, downloaded-file extraction, skip-with-reason) in one call.
 - **Refresh**: after any of the above, `POST /api/sources/{documentId}/refresh` and confirm `documents.last_synced_at` advances and `document_chunks` reflects the re-fetched content (edit the source first to see the change actually propagate).
+
+## Author & License
+
+Built by Vasili Shlykoff. Licensed under the [MIT License](LICENSE).
