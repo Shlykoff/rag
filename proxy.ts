@@ -16,6 +16,16 @@
 // proper `401 { error: "unauthorized" }` JSON body (see
 // app/api/chat/route.ts, app/api/sources/*); redirecting an API call to
 // `/login` here would turn that into a broken HTML response instead.
+//
+// `app/auth/**` (the Google OAuth callback, `app/auth/callback/route.ts`)
+// is excluded for a related but distinct reason: it's a Route Handler that
+// legitimately runs with NO session cookie at all yet (the whole point is
+// to exchange an OAuth `code` for the user's very first session) -- the
+// `!user && !isPublicPath(pathname)` branch below would otherwise redirect
+// every callback hit straight to `/login` before the code exchange ever
+// runs, permanently breaking Google sign-in. That route validates its own
+// redirect target against an allow-list itself (see its own header
+// comment) -- it does not need this proxy's auth gate.
 
 import { NextResponse, type NextRequest } from "next/server";
 import { createServerClient, type CookieOptions } from "@supabase/ssr";
@@ -88,8 +98,9 @@ export async function proxy(request: NextRequest) {
 
 export const config = {
   matcher: [
-    // Everything except: app/api/** (routes handle their own auth),
-    // Next.js internals, and common static asset extensions.
-    "/((?!api/|_next/static|_next/image|favicon.ico|.*\\.(?:svg|png|jpg|jpeg|gif|webp|ico)$).*)",
+    // Everything except: app/api/** and app/auth/** (both handle their own
+    // auth -- see the module comment above), Next.js internals, and common
+    // static asset extensions.
+    "/((?!api/|auth/|_next/static|_next/image|favicon.ico|.*\\.(?:svg|png|jpg|jpeg|gif|webp|ico)$).*)",
   ],
 };

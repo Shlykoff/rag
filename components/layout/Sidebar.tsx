@@ -80,6 +80,14 @@ export function Sidebar({ conversations, userEmail, aiProviderLabel }: SidebarPr
           >
             Документы и источники
           </Link>
+          <Link
+            href="/profile"
+            className={`btn btn-secondary${pathname === "/profile" ? " btn-active" : ""}`}
+            style={{ width: "100%" }}
+            onClick={closeMobileDrawer}
+          >
+            AI-провайдер
+          </Link>
         </div>
 
         <div className="sidebar-history">
@@ -110,7 +118,10 @@ export function Sidebar({ conversations, userEmail, aiProviderLabel }: SidebarPr
 
         <div className="sidebar-footer">
           <p className="field-hint">
-            Работает на: <strong>{aiProviderLabel}</strong>
+            Работает на: <strong>{aiProviderLabel}</strong>{" "}
+            <Link href="/profile" style={{ textDecoration: "underline" }} onClick={closeMobileDrawer}>
+              настроить
+            </Link>
           </p>
           <div className="sidebar-footer-row">
             <span className="field-hint" title={userEmail ?? undefined}>

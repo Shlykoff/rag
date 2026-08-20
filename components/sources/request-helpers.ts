@@ -9,6 +9,16 @@
 // lib/sources/http-error.ts) -- this is the one place that maps all of
 // them to a single discriminated result so each form component only has
 // to branch on `result.kind`, not re-derive status-code handling itself.
+//
+// Also reused (not reimplemented) by components/profile/* for
+// app/api/profile/ai-providers/route.ts -- that route follows the exact
+// same 401/429/{error,message} shapes (see its own header comment), just
+// over a different resource. `deleteJson`/`putJson` below exist because
+// that route is the first caller that needs a DELETE with a JSON body
+// (`{ provider }`, unlike `del()`'s no-body DELETE used for
+// `/api/sources/{documentId}`) and a PUT at all -- both still funnel
+// through the same `normalizeResponse()` so the unhappy-path handling
+// doesn't fork.
 
 export interface SourceRequestSuccess<T> {
   ok: true;
@@ -20,6 +30,8 @@ export interface SourceRequestFailure {
   kind: "unauthorized" | "rate_limited" | "not_found" | "error";
   message: string;
   retryAfterMs?: number;
+  /** Raw `error` code from the response body, when present (e.g. "missing_credentials") -- only populated on kind === "error". Most callers only need `message`; this exists for the rare case where a caller needs to react to a *specific* error code rather than just display the message (see components/profile/ActiveProviderSection.tsx's handling of PUT's `missing_credentials` race). */
+  code?: string;
 }
 
 export type SourceRequestResult<T> = SourceRequestSuccess<T> | SourceRequestFailure;
@@ -62,7 +74,7 @@ async function normalizeResponse<T>(response: Response): Promise<SourceRequestRe
 
   if (!response.ok) {
     const body = (await response.json().catch(() => ({}))) as ErrorBody;
-    return { ok: false, kind: "error", message: describeErrorBody(response.status, body) };
+    return { ok: false, kind: "error", message: describeErrorBody(response.status, body), code: body.error };
   }
 
   const data = (await response.json().catch(() => ({}))) as T;
@@ -82,6 +94,33 @@ export async function postJson<T>(url: string, body: unknown): Promise<SourceReq
   try {
     const response = await fetch(url, {
       method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    return await normalizeResponse<T>(response);
+  } catch {
+    return { ok: false, kind: "error", message: "Не удалось подключиться к серверу." };
+  }
+}
+
+export async function putJson<T>(url: string, body: unknown): Promise<SourceRequestResult<T>> {
+  try {
+    const response = await fetch(url, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    return await normalizeResponse<T>(response);
+  } catch {
+    return { ok: false, kind: "error", message: "Не удалось подключиться к серверу." };
+  }
+}
+
+/** DELETE with a JSON body -- see app/api/profile/ai-providers/route.ts's DELETE contract (`{ provider }`), unlike del()'s no-body DELETE below. */
+export async function deleteJson<T>(url: string, body: unknown): Promise<SourceRequestResult<T>> {
+  try {
+    const response = await fetch(url, {
+      method: "DELETE",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
     });

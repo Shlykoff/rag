@@ -1,39 +1,36 @@
 // lib/ui/ai-provider.ts
 //
-// Display-only mapping of AI_PROVIDER -> a human label, for the "работает
-// на: ..." footer badge (CLAUDE.md: "ненавязчиво показать, какой
-// AI-провайдер сейчас активен ... это часть продающей истории"). Reads
-// process.env.AI_PROVIDER directly and only imports lib/ai/index.ts's
-// SUPPORTED_AI_PROVIDERS/getProviderLabel -- never getAIProviders() itself,
-// which throws if the matching *_API_KEY is missing (e.g. no real keys
-// provisioned yet in this environment -- see task context). Importing just
-// the provider *list* is safe: lib/ai/index.ts's provider adapters have no
-// top-level side effects, so this never touches an API key and can render
-// even when getAIProviders() would throw.
+// Display-only lookup of the signed-in user's active AI provider, for the
+// "работает на: ..." footer badge (CLAUDE.md: "ненавязчиво показать, какой
+// AI-провайдер сейчас активен ... это часть продающей истории"). Per-user
+// now (bring-your-own-key), not a single process-global `AI_PROVIDER` env
+// var: this thin wrapper just calls lib/ai/index.ts's
+// `getActiveProviderLabel(userId, supabase)`, which already returns
+// `null` (never throws) when the user hasn't configured/selected a
+// provider yet -- that's rendered as "не настроен" here, same fallback
+// text as before this refactor, just driven by a real per-user DB read
+// instead of an unset env var.
 //
-// The provider list/labels themselves live in lib/ai/index.ts's
-// PROVIDER_REGISTRY, not a second copy here -- adding a provider there is
-// what makes it show up correctly in this badge too, automatically.
-//
-// Only ever called from Server Components (the value is read at render
-// time on the server and baked into the returned HTML/RSC payload as
-// plain text) -- never imported into a "use client" module.
+// Only ever called from Server Components (app/(app)/layout.tsx, which
+// already has both `user.id` and a request-scoped Supabase client on
+// hand) -- never imported into a "use client" module; `getActiveProviderLabel`
+// itself does a real Supabase query, so this can't be called at module
+// scope or cached across requests/users the way the old env-var read
+// could.
 
-import { SUPPORTED_AI_PROVIDERS, getProviderLabel, type SupportedAIProvider } from "@/lib/ai";
-
-export type { SupportedAIProvider };
+import "server-only";
+import type { SupabaseClient } from "@supabase/supabase-js";
+import { getActiveProviderLabel } from "@/lib/ai";
 
 export interface ActiveAIProviderInfo {
-  raw: string | undefined;
-  recognized: boolean;
   label: string;
 }
 
-/** Never throws -- an unset/invalid AI_PROVIDER renders as "не настроен", not a crashed page. */
-export function getActiveAIProviderInfo(): ActiveAIProviderInfo {
-  const raw = process.env.AI_PROVIDER?.trim().toLowerCase();
-  if (raw && (SUPPORTED_AI_PROVIDERS as string[]).includes(raw)) {
-    return { raw, recognized: true, label: getProviderLabel(raw)! };
-  }
-  return { raw, recognized: false, label: "не настроен" };
+/** Never throws -- a user with no active provider configured (or not yet signed in to one) renders as "не настроен", not a crashed page. */
+export async function getActiveAIProviderInfo(
+  userId: string,
+  supabase: SupabaseClient
+): Promise<ActiveAIProviderInfo> {
+  const label = await getActiveProviderLabel(userId, supabase);
+  return { label: label ?? "не настроен" };
 }

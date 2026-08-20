@@ -38,7 +38,7 @@ export default async function AppLayout({ children }: { children: React.ReactNod
     title: row.title,
   }));
 
-  const aiProvider = getActiveAIProviderInfo();
+  const aiProvider = await getActiveAIProviderInfo(user.id, supabase);
 
   return (
     <div className="app-shell">

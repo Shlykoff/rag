@@ -4,6 +4,7 @@ import { useEffect, useRef, useState, type FormEvent } from "react";
 import { useRouter } from "next/navigation";
 import { parseSSEStream } from "./parse-sse";
 import { MessageBubble } from "./MessageBubble";
+import { NoProviderModal } from "./NoProviderModal";
 import type { ChatMessageVM, ContextSource } from "./types";
 // Type-only import: guarantees this component's SSE handling stays in
 // sync with the exact event shapes app/api/chat/route.ts streams (see
@@ -35,6 +36,7 @@ export function ChatView({ conversationId: initialConversationId, initialMessage
   const [input, setInput] = useState("");
   const [isStreaming, setIsStreaming] = useState(false);
   const [rateLimitNotice, setRateLimitNotice] = useState<RateLimitNotice | null>(null);
+  const [showNoProviderModal, setShowNoProviderModal] = useState(false);
 
   const conversationIdRef = useRef<string | undefined>(initialConversationId);
   const isNewChatRef = useRef<boolean>(initialConversationId === undefined);
@@ -102,6 +104,35 @@ export function ChatView({ conversationId: initialConversationId, initialMessage
         updateAssistantMessage(assistantMessageId, {
           pending: false,
           error: { message: body.message ?? "Слишком много запросов. Попробуйте чуть позже.", retryable: true },
+        });
+        return;
+      }
+
+      // Specific to app/api/chat/route.ts's `422 { error: "no_credentials" }`
+      // -- the signed-in user has no active AI provider configured yet.
+      // Distinct from every other error status (400/429/500), which keep
+      // the generic retry-banner treatment below: retrying a "no
+      // credentials" turn can never succeed until the user actually visits
+      // /profile, so this shows a dedicated modal instead of a "Повторить"
+      // button that would just fail again.
+      if (response.status === 422) {
+        const body = (await response.json().catch(() => ({}))) as { error?: string; message?: string };
+        if (body.error === "no_credentials") {
+          setShowNoProviderModal(true);
+          updateAssistantMessage(assistantMessageId, {
+            pending: false,
+            error: {
+              message: body.message ?? "Добавьте AI-провайдера в профиле, чтобы получить ответ.",
+              retryable: false,
+            },
+          });
+          return;
+        }
+        // Any other (unexpected, per the documented contract) 422 shape
+        // falls back to the same generic handling as 400/500 below.
+        updateAssistantMessage(assistantMessageId, {
+          pending: false,
+          error: { message: describeGenericError(422, body.error), retryable: false },
         });
         return;
       }
@@ -235,6 +266,8 @@ export function ChatView({ conversationId: initialConversationId, initialMessage
           {isStreaming ? "Отвечаю…" : "Отправить"}
         </button>
       </form>
+
+      {showNoProviderModal ? <NoProviderModal onDismiss={() => setShowNoProviderModal(false)} /> : null}
     </div>
   );
 }

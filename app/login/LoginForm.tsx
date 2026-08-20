@@ -3,6 +3,7 @@
 import { useState, type FormEvent } from "react";
 import { useRouter } from "next/navigation";
 import { getBrowserSupabaseClient } from "@/lib/supabase/browser-client";
+import { GoogleSignInButton } from "@/components/auth/GoogleSignInButton";
 
 const DEMO_EMAIL = "demo@example.com";
 const DEMO_PASSWORD = "demo-password-123";
@@ -74,6 +75,12 @@ export function LoginForm() {
           {error}
         </div>
       ) : null}
+
+      <div className="login-divider" role="separator" aria-label="или">
+        <span>или</span>
+      </div>
+
+      <GoogleSignInButton />
 
       <div>
         <button
