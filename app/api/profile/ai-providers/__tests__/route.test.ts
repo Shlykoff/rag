@@ -180,18 +180,129 @@ describe("POST /api/profile/ai-providers", () => {
     expect(response.status).toBe(400);
   });
 
-  it("saves the credential and returns 200 { status: 'saved' } on a valid request, for every provider including voyage", async () => {
+  it("saves the credential and returns 200 { status: 'saved', activeProvider } on a valid request, for every provider including voyage", async () => {
     mockGetRouteHandlerSupabaseClient.mockResolvedValue({});
     mockGetAuthenticatedUser.mockResolvedValue({ id: "user-1", email: "a@b.com" });
     mockGetServiceRoleClient.mockReturnValue({});
     mockCheckAICredentialsRateLimit.mockReturnValue(ALLOWED_RATE_LIMIT);
     mockSaveAIProviderCredential.mockResolvedValue(undefined);
+    // No active provider yet, and saving this voyage key alone doesn't
+    // complete the anthropic pairing (no anthropic key present) -- so this
+    // save must NOT auto-activate anything (see the dedicated auto-activate
+    // describe block below for the cases where it does).
+    mockGetActiveProvider.mockResolvedValue(null);
+    mockHasAIProviderCredential.mockResolvedValue(false);
 
     const response = await POST(makeRequest("POST", { provider: "voyage", apiKey: "pa-real-key" }));
 
     expect(response.status).toBe(200);
-    expect(await response.json()).toEqual({ status: "saved" });
+    expect(await response.json()).toEqual({ status: "saved", activeProvider: null });
     expect(mockSaveAIProviderCredential).toHaveBeenCalledWith({}, "user-1", "voyage", "pa-real-key");
+    expect(mockSetActiveProvider).not.toHaveBeenCalled();
+  });
+});
+
+describe("POST /api/profile/ai-providers auto-activates the completed provider when none is active yet", () => {
+  afterEach(() => vi.clearAllMocks());
+
+  it("auto-activates openai on its own single-key save when no provider is active yet", async () => {
+    mockGetRouteHandlerSupabaseClient.mockResolvedValue({});
+    mockGetAuthenticatedUser.mockResolvedValue({ id: "user-1", email: "a@b.com" });
+    mockGetServiceRoleClient.mockReturnValue({});
+    mockCheckAICredentialsRateLimit.mockReturnValue(ALLOWED_RATE_LIMIT);
+    mockSaveAIProviderCredential.mockResolvedValue(undefined);
+    mockGetActiveProvider.mockResolvedValue(null);
+    mockSetActiveProvider.mockResolvedValue(undefined);
+
+    const response = await POST(makeRequest("POST", { provider: "openai", apiKey: "sk-x" }));
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ status: "saved", activeProvider: "openai" });
+    expect(mockSetActiveProvider).toHaveBeenCalledWith({}, "user-1", "openai");
+  });
+
+  it("does NOT auto-activate gemini when openai is already the active provider", async () => {
+    mockGetRouteHandlerSupabaseClient.mockResolvedValue({});
+    mockGetAuthenticatedUser.mockResolvedValue({ id: "user-1", email: "a@b.com" });
+    mockGetServiceRoleClient.mockReturnValue({});
+    mockCheckAICredentialsRateLimit.mockReturnValue(ALLOWED_RATE_LIMIT);
+    mockSaveAIProviderCredential.mockResolvedValue(undefined);
+    mockGetActiveProvider.mockResolvedValue("openai");
+
+    const response = await POST(makeRequest("POST", { provider: "gemini", apiKey: "AIza-x" }));
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ status: "saved", activeProvider: "openai" });
+    expect(mockSetActiveProvider).not.toHaveBeenCalled();
+  });
+
+  it("does NOT auto-activate anthropic when only the anthropic key (not voyage) is present", async () => {
+    mockGetRouteHandlerSupabaseClient.mockResolvedValue({});
+    mockGetAuthenticatedUser.mockResolvedValue({ id: "user-1", email: "a@b.com" });
+    mockGetServiceRoleClient.mockReturnValue({});
+    mockCheckAICredentialsRateLimit.mockReturnValue(ALLOWED_RATE_LIMIT);
+    mockSaveAIProviderCredential.mockResolvedValue(undefined);
+    mockGetActiveProvider.mockResolvedValue(null);
+    mockHasAIProviderCredential.mockImplementation(async (_s: unknown, _u: string, provider: string) => provider === "anthropic");
+
+    const response = await POST(makeRequest("POST", { provider: "anthropic", apiKey: "sk-ant-x" }));
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ status: "saved", activeProvider: null });
+    expect(mockSetActiveProvider).not.toHaveBeenCalled();
+  });
+
+  it("auto-activates anthropic once the second of its two required keys (voyage, saved after anthropic) arrives", async () => {
+    mockGetRouteHandlerSupabaseClient.mockResolvedValue({});
+    mockGetAuthenticatedUser.mockResolvedValue({ id: "user-1", email: "a@b.com" });
+    mockGetServiceRoleClient.mockReturnValue({});
+    mockCheckAICredentialsRateLimit.mockReturnValue(ALLOWED_RATE_LIMIT);
+    mockSaveAIProviderCredential.mockResolvedValue(undefined);
+    mockGetActiveProvider.mockResolvedValue(null);
+    // Both credentials are present by the time maybeAutoActivateProvider
+    // re-checks (the anthropic key was saved earlier; this request is
+    // saving voyage, the second/completing key).
+    mockHasAIProviderCredential.mockResolvedValue(true);
+    mockSetActiveProvider.mockResolvedValue(undefined);
+
+    const response = await POST(makeRequest("POST", { provider: "voyage", apiKey: "pa-real-key" }));
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ status: "saved", activeProvider: "anthropic" });
+    expect(mockSetActiveProvider).toHaveBeenCalledWith({}, "user-1", "anthropic");
+  });
+
+  it("also auto-activates anthropic when the anthropic key arrives second, after voyage was already saved", async () => {
+    mockGetRouteHandlerSupabaseClient.mockResolvedValue({});
+    mockGetAuthenticatedUser.mockResolvedValue({ id: "user-1", email: "a@b.com" });
+    mockGetServiceRoleClient.mockReturnValue({});
+    mockCheckAICredentialsRateLimit.mockReturnValue(ALLOWED_RATE_LIMIT);
+    mockSaveAIProviderCredential.mockResolvedValue(undefined);
+    mockGetActiveProvider.mockResolvedValue(null);
+    mockHasAIProviderCredential.mockResolvedValue(true);
+    mockSetActiveProvider.mockResolvedValue(undefined);
+
+    const response = await POST(makeRequest("POST", { provider: "anthropic", apiKey: "sk-ant-x" }));
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ status: "saved", activeProvider: "anthropic" });
+    expect(mockSetActiveProvider).toHaveBeenCalledWith({}, "user-1", "anthropic");
+  });
+
+  it("does not fail the save if auto-activation loses a race (setActiveProvider still rejects with MissingProviderCredentialsError)", async () => {
+    mockGetRouteHandlerSupabaseClient.mockResolvedValue({});
+    mockGetAuthenticatedUser.mockResolvedValue({ id: "user-1", email: "a@b.com" });
+    mockGetServiceRoleClient.mockReturnValue({});
+    mockCheckAICredentialsRateLimit.mockReturnValue(ALLOWED_RATE_LIMIT);
+    mockSaveAIProviderCredential.mockResolvedValue(undefined);
+    mockGetActiveProvider.mockResolvedValue(null);
+    mockHasAIProviderCredential.mockResolvedValue(true);
+    mockSetActiveProvider.mockRejectedValue(new MissingProviderCredentialsError("anthropic", ["voyage"]));
+
+    const response = await POST(makeRequest("POST", { provider: "voyage", apiKey: "pa-real-key" }));
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ status: "saved", activeProvider: null });
   });
 });
 

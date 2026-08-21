@@ -36,7 +36,19 @@
 //   -> 401 { error: "unauthorized" }
 //   -> 400 { error: "invalid_request", details }
 //   -> 429 { error: "rate_limited", message, retryAfterMs }
-//   -> 200 { status: "saved" }
+//   -> 200 { status: "saved", activeProvider: "openai" | "anthropic" | "gemini" | null }
+//     `activeProvider` is the up-to-date value of `user_settings.active_ai_provider`
+//     AFTER this save -- almost always unchanged, EXCEPT: if the user had no
+//     active provider at all yet (activeProvider was null) and this save just
+//     completed a provider (openai/gemini: their own key; anthropic: this was
+//     the second of its two required keys, anthropic+voyage, to arrive), that
+//     provider is auto-activated right here, with no separate PUT required.
+//     See maybeAutoActivateProvider() below for the exact rule -- this exists
+//     specifically so a brand-new user isn't stuck on "no active_ai_provider
+//     set" after saving their first (and only) key, which previously required
+//     an extra, easy-to-miss manual radio-button click in "Активный
+//     провайдер" below. Once a user has ANY active provider, further POSTs
+//     never change it automatically -- only PUT does.
 //
 //   DELETE /api/profile/ai-providers
 //   body: { provider: "openai" | "anthropic" | "gemini" | "voyage" }
@@ -71,6 +83,7 @@
 
 import "server-only";
 import { z } from "zod";
+import type { SupabaseClient } from "@supabase/supabase-js";
 import { getServiceRoleClient } from "@/lib/supabase/service-client";
 import { getAuthenticatedUser, getRouteHandlerSupabaseClient } from "@/lib/supabase/server-client";
 import {
@@ -133,6 +146,63 @@ async function parseJsonBody<T>(request: Request, schema: z.ZodType<T>): Promise
   return { data: parsed.data };
 }
 
+/**
+ * Auto-activates the provider that saving `savedProvider`'s key just
+ * completed -- but ONLY if the user has no active provider at all yet (this
+ * task's whole point: a brand-new user shouldn't have to separately click a
+ * radio button in "Активный провайдер" after saving their first/only key).
+ * If the user already has an active provider (non-null), this is a no-op --
+ * saving further keys for OTHER providers must never silently steal the
+ * active slot; that stays a manual PUT action.
+ *
+ * 'voyage' has no ActiveAIProvider of its own -- saving a voyage key can
+ * only ever complete the 'anthropic' pairing (chat model 'anthropic' +
+ * embeddings 'voyage', see lib/ai/index.ts), never become active by itself.
+ * openai/gemini are "fully configured" the instant their own single key is
+ * saved; anthropic additionally requires a voyage key, so saving *either*
+ * half of that pair re-checks both -- whichever key arrives second is the
+ * one that flips anthropic over into "fully configured" and triggers this.
+ *
+ * Always returns the up-to-date active provider (existing, newly
+ * auto-activated, or still null) so callers can hand it straight back in
+ * their response without a second read.
+ */
+async function maybeAutoActivateProvider(
+  supabase: SupabaseClient,
+  userId: string,
+  savedProvider: AIProviderCredentialType
+): Promise<ActiveAIProvider | null> {
+  const current = await getActiveProvider(supabase, userId);
+  if (current !== null) return current;
+
+  const candidate: ActiveAIProvider = savedProvider === "voyage" ? "anthropic" : savedProvider;
+  const isFullyConfigured =
+    candidate === "anthropic"
+      ? await Promise.all([
+          hasAIProviderCredential(supabase, userId, "anthropic"),
+          hasAIProviderCredential(supabase, userId, "voyage"),
+        ]).then(([hasAnthropic, hasVoyage]) => hasAnthropic && hasVoyage)
+      : true; // openai/gemini only ever need the single key that was just saved.
+  if (!isFullyConfigured) return null;
+
+  try {
+    // setActiveProvider() re-validates the same credentials itself (see its
+    // own doc comment in lib/ai/credentials.ts) -- a deliberate, cheap
+    // re-check rather than trusting the boolean computed above, so this
+    // stays correct even if a concurrent DELETE raced in between.
+    await setActiveProvider(supabase, userId, candidate);
+  } catch (err) {
+    if (err instanceof MissingProviderCredentialsError) {
+      // Lost that race -- don't fail the POST that already successfully
+      // saved the credential just because auto-activation didn't pan out;
+      // report "still no active provider" and let the user retry manually.
+      return null;
+    }
+    throw err;
+  }
+  return candidate;
+}
+
 export async function GET(): Promise<Response> {
   const authClient = await getRouteHandlerSupabaseClient();
   const user = await getAuthenticatedUser(authClient);
@@ -166,7 +236,8 @@ export async function POST(request: Request): Promise<Response> {
 
   const supabase = getServiceRoleClient();
   await saveAIProviderCredential(supabase, user.id, parsed.data.provider, parsed.data.apiKey);
-  return Response.json({ status: "saved" }, { status: 200 });
+  const activeProvider = await maybeAutoActivateProvider(supabase, user.id, parsed.data.provider);
+  return Response.json({ status: "saved", activeProvider }, { status: 200 });
 }
 
 export async function DELETE(request: Request): Promise<Response> {

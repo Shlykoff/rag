@@ -140,6 +140,7 @@ export function ProfileForm() {
           configured={configured.openai}
           placeholder="sk-..."
           onConfiguredChange={handleConfiguredChange}
+          onActiveProviderChange={handleActiveProviderChange}
         />
       </section>
 
@@ -166,6 +167,7 @@ export function ProfileForm() {
             configured={configured.anthropic}
             placeholder="sk-ant-..."
             onConfiguredChange={handleConfiguredChange}
+            onActiveProviderChange={handleActiveProviderChange}
           />
           <ProviderKeyField
             provider="voyage"
@@ -173,6 +175,7 @@ export function ProfileForm() {
             configured={configured.voyage}
             placeholder="pa-..."
             onConfiguredChange={handleConfiguredChange}
+            onActiveProviderChange={handleActiveProviderChange}
           />
         </div>
       </section>
@@ -194,6 +197,7 @@ export function ProfileForm() {
           configured={configured.gemini}
           placeholder="AIza..."
           onConfiguredChange={handleConfiguredChange}
+          onActiveProviderChange={handleActiveProviderChange}
         />
       </section>
 

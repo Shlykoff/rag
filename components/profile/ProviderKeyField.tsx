@@ -13,11 +13,18 @@
 // The plaintext key never round-trips back from the server after a save --
 // `configured` (a boolean) is the only thing this component ever receives
 // about an already-stored key; the input always starts empty.
+//
+// A save can also auto-activate a provider server-side (see
+// app/api/profile/ai-providers/route.ts POST's `activeProvider` in its
+// response -- set when this was the key that completed a provider AND the
+// user had no active provider yet). `onActiveProviderChange` propagates
+// that up to ProfileForm so "Активный провайдер" reflects it immediately,
+// without a full GET refetch.
 
 import { useState, type FormEvent } from "react";
 import { postJson, deleteJson, retryAfterSuffix } from "@/components/sources/request-helpers";
 import { redirectToLogin } from "@/lib/ui/client-redirect";
-import type { AIProviderCredentialType } from "./types";
+import type { AIProviderCredentialType, ActiveAIProvider } from "./types";
 
 export interface ProviderKeyFieldProps {
   provider: AIProviderCredentialType;
@@ -25,9 +32,18 @@ export interface ProviderKeyFieldProps {
   configured: boolean;
   placeholder?: string;
   onConfiguredChange: (provider: AIProviderCredentialType, configured: boolean) => void;
+  /** Called whenever a save response carries a non-null `activeProvider` -- see this file's header. Optional only so tests/stories that don't care about the active-provider section can omit it. */
+  onActiveProviderChange?: (provider: ActiveAIProvider) => void;
 }
 
-export function ProviderKeyField({ provider, label, configured, placeholder, onConfiguredChange }: ProviderKeyFieldProps) {
+export function ProviderKeyField({
+  provider,
+  label,
+  configured,
+  placeholder,
+  onConfiguredChange,
+  onActiveProviderChange,
+}: ProviderKeyFieldProps) {
   const [editing, setEditing] = useState(!configured);
   const [value, setValue] = useState("");
   const [saving, setSaving] = useState(false);
@@ -43,10 +59,10 @@ export function ProviderKeyField({ provider, label, configured, placeholder, onC
       return;
     }
     setSaving(true);
-    const result = await postJson<{ status: string }>("/api/profile/ai-providers", {
-      provider,
-      apiKey: value.trim(),
-    });
+    const result = await postJson<{ status: string; activeProvider: ActiveAIProvider | null }>(
+      "/api/profile/ai-providers",
+      { provider, apiKey: value.trim() }
+    );
     setSaving(false);
     if (!result.ok) {
       if (result.kind === "unauthorized") {
@@ -59,6 +75,9 @@ export function ProviderKeyField({ provider, label, configured, placeholder, onC
     setValue("");
     setEditing(false);
     onConfiguredChange(provider, true);
+    if (result.data.activeProvider !== null) {
+      onActiveProviderChange?.(result.data.activeProvider);
+    }
   }
 
   async function handleDelete() {
