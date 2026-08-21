@@ -14,6 +14,13 @@ create type public.usage_event_type as enum ('chat_request', 'embedding_request'
 create table public.usage_events (
   id uuid primary key default gen_random_uuid(),
   user_id uuid not null references auth.users (id) on delete cascade,
+  -- Which project this call was made for/through (the owner's own test
+  -- chat, or an external channel session -- either way, billed against
+  -- the project owner's user_id above; external participants have no
+  -- account of their own to bill). Added by the projects architecture
+  -- pivot so rate limiting/cost tracking can be scoped per-project
+  -- (lib/rate-limit/'s "layer 1" budget), not just per-account.
+  project_id uuid not null references public.projects (id) on delete cascade,
   event_type public.usage_event_type not null,
   provider text not null,
   model text,
@@ -27,14 +34,22 @@ create table public.usage_events (
 );
 
 comment on table public.usage_events is
-  'Append-only log of AI provider calls per user, for rate limiting (count rows in a trailing time window) and cost/token accounting. Written server-side only, after/around each provider call.';
+  'Append-only log of AI provider calls per user/project, for rate limiting (count rows in a trailing time window) and cost/token accounting. Written server-side only, after/around each provider call. user_id stays the project owner (for account-level rollups across a user''s multiple projects); project_id scopes the per-project rate-limit budget shared by that project''s owner test chat and all its external channel sessions.';
 comment on column public.usage_events.total_tokens is
   'Total tokens billed for this event (prompt+completion for chat, input tokens for embeddings). Nullable to tolerate providers/errors where usage was not reported.';
+comment on column public.usage_events.project_id is
+  'The project this AI call was made for. Every insert happens inside handleChatRequest/the ingestion pipeline, which always has a project_id in scope under the projects-scoped contract -- never nullable.';
 
 -- Supports "count this user's events in the last N minutes" (rate limit
 -- check) as an index-only range scan: user_id equality + created_at range.
 create index usage_events_user_id_created_at_idx
   on public.usage_events (user_id, created_at desc);
+-- Same shape, keyed by project_id -- supports the per-project rate-limit
+-- budget query ("how many requests has this project made in the last N
+-- minutes", across owner test-chat + all external channel sessions of
+-- that project combined).
+create index usage_events_project_id_created_at_idx
+  on public.usage_events (project_id, created_at desc);
 
 -- Row Level Security -----------------------------------------------------
 -- This table backs a security control (rate limiting), so client writes

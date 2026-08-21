@@ -83,9 +83,15 @@ create index document_chunks_embedding_hnsw_idx
 -- Chunks are never written by the end user directly — the ingestion
 -- pipeline (server-side, using SUPABASE_SERVICE_ROLE_KEY, which bypasses
 -- RLS) creates them after chunking + embedding. So the only client-facing
--- policy is SELECT, scoped to chunks whose parent document belongs to the
--- caller. No insert/update/delete policies exist for authenticated users
--- at all (deny by default covers those operations).
+-- policy is SELECT, scoped to chunks whose parent document belongs to a
+-- project the caller owns. No insert/update/delete policies exist for
+-- authenticated users at all (deny by default covers those operations).
+--
+-- Two-hop join (document_chunks -> documents -> projects), same "derive
+-- via join, don't denormalize" pattern this table already used before the
+-- projects pivot (previously a one-hop join straight to documents.user_id;
+-- now documents itself has no user_id column, so the join goes one level
+-- further to projects.user_id).
 
 alter table public.document_chunks enable row level security;
 
@@ -96,8 +102,9 @@ create policy "document_chunks_select_own"
     exists (
       select 1
       from public.documents d
+      join public.projects p on p.id = d.project_id
       where d.id = document_chunks.document_id
-        and d.user_id = auth.uid()
+        and p.user_id = auth.uid()
     )
   );
 

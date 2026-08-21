@@ -1,27 +1,33 @@
 -- match_document_chunks: top-k cosine-similarity search over
--- document_chunks, scoped to a single owner.
+-- document_chunks, scoped to a single project.
 --
 -- Implemented as security definer, NOT security invoker, because the
 -- retrieval call is made server-side with the service_role client (so it
 -- can search across the embedding column efficiently without per-row RLS
 -- overhead) -- but that means Postgres RLS is not what's protecting
--- ownership here. The function therefore takes an explicit `p_user_id`
--- and filters on it itself (`d.user_id = p_user_id`) rather than relying
--- on the caller's RLS context.
+-- ownership here. The function therefore takes an explicit `p_project_id`
+-- and filters on it itself (`d.project_id = p_project_id`) rather than
+-- relying on the caller's RLS context.
 --
 -- Because of that explicit-parameter design, EXECUTE is granted ONLY to
 -- service_role below (see the grant statement), not to `authenticated`.
 -- If this were callable by a logged-in client directly, that client could
--- pass an arbitrary p_user_id and read another tenant's chunks -- security
--- definer bypasses RLS, so nothing else would stop it. rag-pipeline-
--- specialist must call this from a server route/action using the
--- service_role client, with p_user_id taken from the server's own
--- validated session for the request -- never from a client-supplied
--- request body/query parameter.
+-- pass an arbitrary p_project_id and read another project's (or another
+-- user's) chunks -- security definer bypasses RLS, so nothing else would
+-- stop it. rag-pipeline-specialist must call this from a server route/
+-- action using the service_role client, with p_project_id independently
+-- verified by the caller before ever reaching this RPC -- never taken
+-- from a client-supplied request body/query parameter as-is:
+--   - web test-chat: verified via the RLS-scoped session client
+--     (projects.user_id = auth.uid()), 404 not 403 on mismatch.
+--   - gateway/channels path (Stage B): verified via the
+--     channel_integrations row that received the inbound webhook --
+--     project_id never comes from anything in the inbound platform
+--     payload itself.
 create function public.match_document_chunks(
   query_embedding extensions.vector(1024),
   match_count int,
-  p_user_id uuid
+  p_project_id uuid
 )
 returns table (
   chunk_id uuid,
@@ -56,22 +62,22 @@ as $$
     d.source_ref as document_source_ref
   from public.document_chunks dc
   join public.documents d on d.id = dc.document_id
-  where d.user_id = p_user_id
+  where d.project_id = p_project_id
     and dc.embedding is not null
   order by dc.embedding <=> query_embedding
   limit greatest(match_count, 0);
 $$;
 
 comment on function public.match_document_chunks(extensions.vector, int, uuid) is
-  'Top-k cosine similarity search over document_chunks for a single owner. security definer: enforces ownership itself via p_user_id (do not trust a client-supplied value), used by the RAG retrieval step server-side.';
+  'Top-k cosine similarity search over document_chunks for a single project. security definer: enforces scoping itself via p_project_id (do not trust a client-supplied value; the caller must independently verify project ownership before calling), used by the RAG retrieval step server-side.';
 
 -- security definer functions are not covered by the invoker's RLS, and by
 -- default Postgres grants EXECUTE on new functions broadly -- lock this
 -- down explicitly: only service_role (i.e. the server, per CLAUDE.md rule
 -- 2) may call it. Neither anon nor authenticated get EXECUTE, precisely
--- because p_user_id is trusted input and this function does not derive it
--- from the caller's own JWT (auth.uid()) -- granting it to authenticated
--- would let any logged-in client pass someone else's user id and read
+-- because p_project_id is trusted input and this function does not derive
+-- it from the caller's own JWT (auth.uid()) -- granting it to authenticated
+-- would let any logged-in client pass someone else's project id and read
 -- their chunks.
 revoke all on function public.match_document_chunks(extensions.vector, int, uuid) from public;
 grant execute on function public.match_document_chunks(extensions.vector, int, uuid) to service_role;

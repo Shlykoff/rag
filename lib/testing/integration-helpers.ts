@@ -35,6 +35,19 @@ export function makeIntegrationSupabaseClient(): SupabaseClient {
   });
 }
 
+/** Same as requireIntegrationEnv, but for the anon key -- needed only by tests that sign in as a real user (createAuthenticatedTestUser below) to exercise actual Postgres RLS enforcement for the `authenticated` role, as opposed to tests that use the service-role client with an explicit filter (which only tests application/RPC logic, not RLS itself). */
+export function requireIntegrationAnonEnv(): { url: string; anonKey: string } {
+  const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
+  const anonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+  if (!url || !anonKey) {
+    throw new Error(
+      "RLS integration tests require NEXT_PUBLIC_SUPABASE_URL and NEXT_PUBLIC_SUPABASE_ANON_KEY -- " +
+        "run via `npm run test:integration` (loads .env.local) against a local `supabase start`."
+    );
+  }
+  return { url, anonKey };
+}
+
 /** Creates a throwaway confirmed auth user for one test, via the admin API (service-role only). Caller is responsible for calling deleteTestUser in an afterAll/afterEach. */
 export async function createTestUser(
   supabase: SupabaseClient,
@@ -52,11 +65,52 @@ export async function createTestUser(
   return { id: data.user.id, email };
 }
 
+/**
+ * Creates a throwaway confirmed auth user AND a real signed-in client for
+ * it (anon key + password sign-in), so RLS policies get exercised the way
+ * Postgres actually enforces them for the `authenticated` role -- not just
+ * trusted via an explicit filter on a service-role query (see e.g.
+ * lib/retrieval/__tests__/search.integration.test.ts, which tests
+ * match_document_chunks' own p_project_id filter, not Postgres RLS
+ * itself). Caller is responsible for calling deleteTestUser (via the
+ * service-role client) in an afterAll/afterEach.
+ */
+export async function createAuthenticatedTestUser(
+  serviceClient: SupabaseClient,
+  label: string
+): Promise<{ id: string; email: string; client: SupabaseClient }> {
+  const { url, anonKey } = requireIntegrationAnonEnv();
+  const email = `${label}-${Date.now()}-${Math.random().toString(36).slice(2)}@example.test`;
+  const password = `test-password-${Math.random().toString(36).slice(2)}`;
+  const { data, error } = await serviceClient.auth.admin.createUser({
+    email,
+    password,
+    email_confirm: true,
+  });
+  if (error || !data.user) {
+    throw new Error(`createAuthenticatedTestUser: failed to create user: ${error?.message ?? "unknown error"}`);
+  }
+  const client = createClient(url, anonKey, {
+    auth: { autoRefreshToken: false, persistSession: false },
+  });
+  const { error: signInError } = await client.auth.signInWithPassword({ email, password });
+  if (signInError) {
+    throw new Error(`createAuthenticatedTestUser: failed to sign in as ${email}: ${signInError.message}`);
+  }
+  return { id: data.user.id, email, client };
+}
+
 export async function deleteTestUser(supabase: SupabaseClient, userId: string): Promise<void> {
-  // `documents` (and transitively `document_chunks`/`conversations`/
-  // `messages`/`usage_events`) all reference auth.users with `on delete
-  // cascade`, so deleting the user is enough to clean up everything a test
-  // created for it.
+  // `projects` references auth.users with `on delete cascade`, and
+  // `documents`/`conversations`/`usage_events`/`channel_integrations` all
+  // reference `projects` the same way (transitively:
+  // `document_chunks` -> `documents`, `messages`/external `conversations`
+  // rows -> `conversations`, `channel_processed_updates` ->
+  // `channel_integrations`) -- so deleting the user cascades through
+  // projects and cleans up everything a test created for it in Postgres.
+  // It does NOT clean up Supabase Storage objects (Storage isn't a DB
+  // foreign key) -- tests that upload real objects must remove() them
+  // themselves.
   await supabase.auth.admin.deleteUser(userId);
 }
 

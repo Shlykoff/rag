@@ -32,8 +32,11 @@
 -- ============================================================================
 --
 -- Demo account: demo@example.com / demo-password-123
--- Gives the demo account 2 pre-ingested documents so a visitor can ask a
--- question immediately without uploading anything (see docs/spec.md).
+-- Gives the demo account one project ("Demo Project") with 2 pre-ingested
+-- documents so a visitor can ask a question immediately without uploading
+-- anything (see docs/spec.md). Documents/chunks are project-scoped (the
+-- projects architecture pivot) -- everything below hangs off
+-- v_demo_project_id, not the demo user directly.
 --
 -- Embeddings: document_chunks.embedding is left NULL below with an
 -- explicit placeholder comment. There is no AI provider key available at
@@ -45,13 +48,24 @@
 -- exercised (RLS, joins, UI) before that happens; NULL embeddings are
 -- correctly excluded by match_document_chunks (`where embedding is not
 -- null`), so the demo account just won't return retrieval hits until
--- re-embedded.
+-- re-embedded. NOTE: scripts/seed-ai-credentials.ts (which does that
+-- re-embed, plus sets an active AI provider) currently targets the old
+-- user_settings table for the active-provider selection -- since that
+-- table is dropped by this pivot (moved to projects.active_ai_provider),
+-- that script needs a matching update in Stage B to keep working; flagged
+-- here so it isn't missed, not fixed in this migration-only change (script
+-- code is out of db-architect's scope).
 
 do $$
 declare
   v_demo_user_id uuid := '00000000-0000-0000-0000-000000000001';
-  v_doc_returns_id uuid;
-  v_doc_onboarding_id uuid;
+  -- Fixed (not gen_random_uuid()), same idempotency convention as
+  -- v_demo_user_id above: every id below is deterministic so `on conflict
+  -- (id) do nothing` makes a manual re-run of this file (outside a full
+  -- `supabase db reset`) a no-op instead of creating duplicate rows.
+  v_demo_project_id uuid := '00000000-0000-0000-0000-000000000002';
+  v_doc_returns_id uuid := '00000000-0000-0000-0000-000000000003';
+  v_doc_onboarding_id uuid := '00000000-0000-0000-0000-000000000004';
 begin
 
   -- Demo auth user -----------------------------------------------------
@@ -96,24 +110,40 @@ begin
   )
   on conflict (provider_id, provider) do nothing;
 
+  -- Demo project ---------------------------------------------------------
+  -- One project per demo account is enough for the seeded walkthrough;
+  -- active_ai_provider is left null here for the same reason embeddings
+  -- are left null below (no provider key available at this stage) --
+  -- scripts/seed-ai-credentials.ts sets it once a real key is configured.
+  insert into public.projects (id, user_id, name, active_ai_provider, created_at, updated_at)
+  values (
+    v_demo_project_id,
+    v_demo_user_id,
+    'Demo Project',
+    null,
+    now(),
+    now()
+  )
+  on conflict (id) do nothing;
+
   -- Demo document 1: manual upload -------------------------------------
   insert into public.documents (
-    id, user_id, title, source_type, source_ref, storage_path,
+    id, project_id, title, source_type, source_ref, storage_path,
     last_synced_at, processing_status, created_at, updated_at
   )
   values (
-    gen_random_uuid(),
-    v_demo_user_id,
+    v_doc_returns_id,
+    v_demo_project_id,
     'Return & Refund Policy.pdf',
     'manual_upload',
     null,
-    v_demo_user_id::text || '/return-refund-policy.pdf',
+    v_demo_project_id::text || '/' || v_doc_returns_id::text || '/original.pdf',
     null,
     'ready',
     now(),
     now()
   )
-  returning id into v_doc_returns_id;
+  on conflict (id) do nothing;
 
   insert into public.document_chunks (
     document_id, chunk_index, content, page_number, chunk_position, embedding, embedding_provider, embedding_model
@@ -142,26 +172,27 @@ begin
       null, -- placeholder: no embedding yet, will be re-ingested by rag-pipeline-specialist
       null,
       null
-    );
+    )
+  on conflict (document_id, chunk_index) do nothing;
 
   -- Demo document 2: public URL source ----------------------------------
   insert into public.documents (
-    id, user_id, title, source_type, source_ref, storage_path,
+    id, project_id, title, source_type, source_ref, storage_path,
     last_synced_at, processing_status, created_at, updated_at
   )
   values (
-    gen_random_uuid(),
-    v_demo_user_id,
+    v_doc_onboarding_id,
+    v_demo_project_id,
     'Employee Onboarding Guide',
     'url',
     'https://example.com/handbook/onboarding',
-    v_demo_user_id::text || '/employee-onboarding-guide.txt',
+    v_demo_project_id::text || '/' || v_doc_onboarding_id::text || '/content.txt',
     now(),
     'ready',
     now(),
     now()
   )
-  returning id into v_doc_onboarding_id;
+  on conflict (id) do nothing;
 
   insert into public.document_chunks (
     document_id, chunk_index, content, page_number, chunk_position, embedding, embedding_provider, embedding_model
@@ -182,6 +213,7 @@ begin
       null, -- placeholder: no embedding yet, will be re-ingested by rag-pipeline-specialist
       null,
       null
-    );
+    )
+  on conflict (document_id, chunk_index) do nothing;
 
 end $$;
