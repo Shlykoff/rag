@@ -35,7 +35,6 @@ describe.skipIf(!hasIntegrationEnv())("projects pivot: RLS + grants (integration
   let ownerA: { id: string; email: string; client: SupabaseClient };
   let ownerB: { id: string; email: string; client: SupabaseClient };
   let projectA: string;
-  let projectB: string;
   const uploadedStoragePaths: string[] = [];
 
   beforeAll(async () => {
@@ -54,13 +53,10 @@ describe.skipIf(!hasIntegrationEnv())("projects pivot: RLS + grants (integration
     if (projAErr) throw new Error(`owner A failed to create project: ${projAErr.message}`);
     projectA = projARow.id as string;
 
-    const { data: projBRow, error: projBErr } = await ownerB.client
+    const { error: projBErr } = await ownerB.client
       .from("projects")
-      .insert({ user_id: ownerB.id, name: "Owner B project" })
-      .select("id")
-      .single();
+      .insert({ user_id: ownerB.id, name: "Owner B project" });
     if (projBErr) throw new Error(`owner B failed to create project: ${projBErr.message}`);
-    projectB = projBRow.id as string;
   });
 
   afterAll(async () => {
