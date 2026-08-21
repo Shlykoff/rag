@@ -4,6 +4,7 @@ import { useState, type FormEvent } from "react";
 import { useRouter } from "next/navigation";
 import { postJson, retryAfterSuffix } from "./request-helpers";
 import { redirectToLogin } from "@/lib/ui/client-redirect";
+import { NoProviderNotice } from "./NoProviderNotice";
 
 interface ImportResult {
   documentId: string;
@@ -16,11 +17,15 @@ export function UrlForm() {
   const [url, setUrl] = useState("");
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // See UploadForm.tsx's identical field comment -- set on a 422
+  // { error: "no_credentials" } response instead of `error`.
+  const [noProviderMessage, setNoProviderMessage] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setError(null);
+    setNoProviderMessage(null);
     setSuccess(null);
 
     const trimmed = url.trim();
@@ -46,6 +51,10 @@ export function UrlForm() {
     if (!result.ok) {
       if (result.kind === "unauthorized") {
         redirectToLogin();
+        return;
+      }
+      if (result.kind === "no_credentials") {
+        setNoProviderMessage(result.message);
         return;
       }
       setError(result.message + retryAfterSuffix(result.retryAfterMs));
@@ -75,6 +84,7 @@ export function UrlForm() {
           заблокированы из соображений безопасности.
         </p>
       </div>
+      {noProviderMessage ? <NoProviderNotice message={noProviderMessage} /> : null}
       {error ? (
         <div className="alert alert-danger" role="alert">
           {error}

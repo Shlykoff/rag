@@ -13,6 +13,14 @@
 //   -> 400 { error: "invalid_request", details } -- missing/oversized file
 //   -> 400/422/500 { error: <SourceError.kind>, message } -- see
 //      lib/sources/http-error.ts (unsupported type, empty content, ...)
+//   -> 422 { error: "no_credentials", message } if the signed-in user has no
+//      active AI provider configured yet (or its stored credential(s) are
+//      missing) -- see lib/ai/index.ts's getAIProviders() and
+//      lib/sources/http-error.ts's sourceErrorResponse(), same contract as
+//      app/api/chat/route.ts's 422 (nextjs-frontend's "add a provider" UI
+//      reacts to this code the same way regardless of which endpoint sent
+//      it). Deliberately not logged via console.error -- expected per-user
+//      state, not a server fault.
 //   -> 201 { documentId, chunkCount, status: "ready" }
 
 import "server-only";

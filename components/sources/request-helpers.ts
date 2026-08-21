@@ -27,7 +27,7 @@ export interface SourceRequestSuccess<T> {
 
 export interface SourceRequestFailure {
   ok: false;
-  kind: "unauthorized" | "rate_limited" | "not_found" | "error";
+  kind: "unauthorized" | "rate_limited" | "not_found" | "no_credentials" | "error";
   message: string;
   retryAfterMs?: number;
   /** Raw `error` code from the response body, when present (e.g. "missing_credentials") -- only populated on kind === "error". Most callers only need `message`; this exists for the rare case where a caller needs to react to a *specific* error code rather than just display the message (see components/profile/ActiveProviderSection.tsx's handling of PUT's `missing_credentials` race). */
@@ -70,6 +70,32 @@ async function normalizeResponse<T>(response: Response): Promise<SourceRequestRe
       kind: "not_found",
       message: "Документ не найден — возможно, он уже был удалён или обновлён в другой вкладке.",
     };
+  }
+
+  if (response.status === 422) {
+    // { error: "no_credentials", message } -- every app/api/sources/* route
+    // that ends up calling lib/ai/index.ts's getAIProviders()/
+    // getEmbeddingsProvider() (directly or via lib/ingestion/ingest.ts's
+    // ingestDocumentWithDefaultProviders()) returns this exact shape when
+    // the signed-in user has no active AI provider configured yet, or their
+    // active provider's stored credential(s) are missing -- see
+    // lib/sources/http-error.ts's sourceErrorResponse(). Same contract (and
+    // same status code) as app/api/chat/route.ts's 422, surfaced as its own
+    // kind so source forms can show the same "add a provider" treatment
+    // ChatView.tsx already has instead of a generic error banner. A 422
+    // body without this exact error code (currently none of these routes
+    // produce one, but the contract only promises "no_credentials" gets
+    // this special treatment) falls through to the generic "error" branch
+    // below.
+    const body = (await response.json().catch(() => ({}))) as ErrorBody;
+    if (body.error === "no_credentials") {
+      return {
+        ok: false,
+        kind: "no_credentials",
+        message: body.message ?? "Добавьте и выберите AI-провайдера в профиле, чтобы добавить источник.",
+      };
+    }
+    return { ok: false, kind: "error", message: describeErrorBody(422, body), code: body.error };
   }
 
   if (!response.ok) {

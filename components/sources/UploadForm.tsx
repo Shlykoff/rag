@@ -4,6 +4,7 @@ import { useRef, useState, type FormEvent } from "react";
 import { useRouter } from "next/navigation";
 import { postFormData, retryAfterSuffix } from "./request-helpers";
 import { redirectToLogin } from "@/lib/ui/client-redirect";
+import { NoProviderNotice } from "./NoProviderNotice";
 
 // Mirrors lib/sources/manual-upload.ts's MANUAL_UPLOAD_MAX_BYTES /
 // lib/sources/text-extraction.ts's detectExtractionType -- duplicated
@@ -31,11 +32,17 @@ export function UploadForm() {
   const inputRef = useRef<HTMLInputElement | null>(null);
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Set instead of `error` on a 422 { error: "no_credentials" } response
+  // (see request-helpers.ts's normalizeResponse()) -- rendered as
+  // NoProviderNotice below rather than the plain red banner, since "retry"
+  // can never succeed here until the user configures a provider in /profile.
+  const [noProviderMessage, setNoProviderMessage] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setError(null);
+    setNoProviderMessage(null);
     setSuccess(null);
 
     const file = inputRef.current?.files?.[0];
@@ -63,6 +70,10 @@ export function UploadForm() {
         redirectToLogin();
         return;
       }
+      if (result.kind === "no_credentials") {
+        setNoProviderMessage(result.message);
+        return;
+      }
       setError(result.message + retryAfterSuffix(result.retryAfterMs));
       return;
     }
@@ -85,6 +96,7 @@ export function UploadForm() {
           required
         />
       </div>
+      {noProviderMessage ? <NoProviderNotice message={noProviderMessage} /> : null}
       {error ? (
         <div className="alert alert-danger" role="alert">
           {error}

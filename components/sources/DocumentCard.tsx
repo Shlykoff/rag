@@ -6,6 +6,7 @@ import { processingStatusLabel, sourceLinkHref, sourceTypeLabel } from "@/lib/ui
 import type { DocumentSourceType, ProcessingStatus } from "@/lib/ui/format";
 import { del, postEmpty, retryAfterSuffix } from "./request-helpers";
 import { redirectToLogin } from "@/lib/ui/client-redirect";
+import { NoProviderNotice } from "./NoProviderNotice";
 
 export interface DocumentCardProps {
   documentId: string;
@@ -48,6 +49,9 @@ export function DocumentCard({
   const router = useRouter();
   const [refreshing, setRefreshing] = useState(false);
   const [refreshError, setRefreshError] = useState<string | null>(null);
+  // Set instead of refreshError on a 422 { error: "no_credentials" }
+  // response -- see UploadForm.tsx's identical field comment.
+  const [refreshNoProviderMessage, setRefreshNoProviderMessage] = useState<string | null>(null);
 
   const [confirmingDelete, setConfirmingDelete] = useState(false);
   const [deleting, setDeleting] = useState(false);
@@ -66,6 +70,7 @@ export function DocumentCard({
   async function handleRefresh() {
     setRefreshing(true);
     setRefreshError(null);
+    setRefreshNoProviderMessage(null);
     const result = await postEmpty<{ documentId: string; chunkCount: number; status: string }>(
       `/api/sources/${documentId}/refresh`
     );
@@ -73,6 +78,10 @@ export function DocumentCard({
     if (!result.ok) {
       if (result.kind === "unauthorized") {
         redirectToLogin();
+        return;
+      }
+      if (result.kind === "no_credentials") {
+        setRefreshNoProviderMessage(result.message);
         return;
       }
       setRefreshError(result.message + retryAfterSuffix(result.retryAfterMs));
@@ -145,6 +154,11 @@ export function DocumentCard({
           <p className="alert alert-danger" style={{ marginTop: "0.5rem" }} role="alert">
             {processingError}
           </p>
+        ) : null}
+        {refreshNoProviderMessage ? (
+          <div style={{ marginTop: "0.5rem" }}>
+            <NoProviderNotice message={refreshNoProviderMessage} />
+          </div>
         ) : null}
         {refreshError ? (
           <p className="alert alert-danger" style={{ marginTop: "0.5rem" }} role="alert">

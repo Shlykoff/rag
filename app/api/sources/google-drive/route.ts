@@ -19,6 +19,15 @@
 //   -> 400/401/403/422/502 { error: <SourceError.kind>, message } -- see
 //      lib/sources/http-error.ts (whole-folder failures: not shared,
 //      empty, bad credential, ...)
+//   -> 422 { error: "no_credentials", message } if the signed-in user has no
+//      active AI provider configured yet (or its stored credential(s) are
+//      missing) -- see lib/ai/index.ts's getAIProviders(). Unlike a
+//      per-file Drive/embeddings failure (which is reported per-file in the
+//      200 response below), this is a per-USER, whole-request condition --
+//      every file would fail identically -- so it short-circuits the loop
+//      and comes back as one clean 422 instead of N "status: error" rows
+//      (see the loop's own comment). Deliberately not logged via
+//      console.error -- expected per-user state, not a server fault.
 //   -> 200 { imported: [{ fileId, documentId, status }], skipped: [...] }
 //      -- a per-file ingest failure inside an otherwise-successful sync is
 //      reported as status: "error" for that file, not a whole-request
@@ -32,6 +41,7 @@ import { syncGoogleDriveFolder } from "@/lib/sources/google-drive";
 import { upsertDocumentFromSource } from "@/lib/sources/pipeline";
 import { sourceErrorResponse, sourceIngestRateLimitedResponse } from "@/lib/sources/http-error";
 import { safeErrorForLog } from "@/lib/sources/errors";
+import { AIProviderError } from "@/lib/ai/errors";
 import { checkSourceIngestRateLimit } from "@/lib/rate-limit/source-ingest-rate-limiter";
 
 export const dynamic = "force-dynamic";
@@ -85,8 +95,22 @@ export async function POST(request: Request): Promise<Response> {
         });
         results.push({ fileId, documentId: result.documentId, status: "ready" });
       } catch (err) {
-        // One file's ingest failure (e.g. a transient embeddings API
-        // error) must not undo/abort the rest of the folder sync -- report
+        // "No active AI provider" is a per-USER state, not a per-file one
+        // (see lib/ai/index.ts's getAIProviders()) -- every remaining file
+        // in this folder would fail with the exact same
+        // AIProviderError{kind:"no_credentials"}, so recording N identical
+        // per-file "error" rows (and burning through the whole folder doing
+        // it) would be both wasteful and a worse message than just telling
+        // the user once to configure a provider. Rethrow so this is handled
+        // by the outer catch -> sourceErrorResponse(), which turns it into
+        // the same clean 422 { error: "no_credentials" } every other
+        // app/api/sources/* route returns -- see that function's comment.
+        if (err instanceof AIProviderError && err.kind === "no_credentials") {
+          throw err;
+        }
+        // Any other, genuinely per-file ingest failure (e.g. a transient
+        // embeddings API error, or a Drive-specific issue for just this
+        // file) must not undo/abort the rest of the folder sync -- report
         // it in the response alongside the successes rather than throwing.
         // Logged via safeErrorForLog(), not the raw `err` -- see that
         // function's doc comment (lib/sources/errors.ts) for why a raw

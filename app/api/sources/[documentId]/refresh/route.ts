@@ -16,6 +16,12 @@
 //   -> 400 { error: "invalid_request", details } -- manual_upload document
 //   -> 400/401/403/422/502 { error: <SourceError.kind>, message } -- see
 //      lib/sources/http-error.ts
+//   -> 422 { error: "no_credentials", message } if the signed-in user has no
+//      active AI provider configured yet (or its stored credential(s) are
+//      missing) -- see lib/ai/index.ts's getAIProviders() and
+//      lib/sources/http-error.ts's sourceErrorResponse(), same contract as
+//      app/api/chat/route.ts's 422. Deliberately not logged via
+//      console.error -- expected per-user state, not a server fault.
 //   -> 200 { documentId, chunkCount, status: "ready" }
 
 import "server-only";

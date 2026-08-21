@@ -4,6 +4,7 @@ import { useState, type FormEvent } from "react";
 import { useRouter } from "next/navigation";
 import { postJson, retryAfterSuffix } from "./request-helpers";
 import { redirectToLogin } from "@/lib/ui/client-redirect";
+import { NoProviderNotice } from "./NoProviderNotice";
 
 interface SyncResult {
   imported: { fileId: string; documentId: string | null; status: "ready" | "error" }[];
@@ -21,6 +22,12 @@ export function GoogleDriveForm({ initialConnected }: { initialConnected: boolea
   const [folderId, setFolderId] = useState("");
   const [syncing, setSyncing] = useState(false);
   const [syncError, setSyncError] = useState<string | null>(null);
+  // Set instead of syncError on a 422 { error: "no_credentials" } response
+  // -- this is a whole-folder condition (see
+  // app/api/sources/google-drive/route.ts's per-file loop, which rethrows
+  // rather than reporting this per-file), so it's rendered as
+  // NoProviderNotice below rather than the plain red banner.
+  const [syncNoProviderMessage, setSyncNoProviderMessage] = useState<string | null>(null);
   const [syncSuccess, setSyncSuccess] = useState<string | null>(null);
 
   async function handleSaveJson(event: FormEvent<HTMLFormElement>) {
@@ -58,6 +65,7 @@ export function GoogleDriveForm({ initialConnected }: { initialConnected: boolea
   async function handleSync(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setSyncError(null);
+    setSyncNoProviderMessage(null);
     setSyncSuccess(null);
     if (!folderId.trim()) {
       setSyncError("Укажите Folder ID папки Google Drive.");
@@ -69,6 +77,10 @@ export function GoogleDriveForm({ initialConnected }: { initialConnected: boolea
     if (!result.ok) {
       if (result.kind === "unauthorized") {
         redirectToLogin();
+        return;
+      }
+      if (result.kind === "no_credentials") {
+        setSyncNoProviderMessage(result.message);
         return;
       }
       setSyncError(result.message + retryAfterSuffix(result.retryAfterMs));
@@ -141,6 +153,7 @@ export function GoogleDriveForm({ initialConnected }: { initialConnected: boolea
                 добавленные файлы, а не создаст дубли.
               </p>
             </div>
+            {syncNoProviderMessage ? <NoProviderNotice message={syncNoProviderMessage} /> : null}
             {syncError ? (
               <div className="alert alert-danger" role="alert">
                 {syncError}

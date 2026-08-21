@@ -4,6 +4,7 @@ import { useState, type FormEvent } from "react";
 import { useRouter } from "next/navigation";
 import { postJson, retryAfterSuffix } from "./request-helpers";
 import { redirectToLogin } from "@/lib/ui/client-redirect";
+import { NoProviderNotice } from "./NoProviderNotice";
 
 interface ImportResult {
   documentId: string;
@@ -22,6 +23,11 @@ export function NotionForm({ initialConnected }: { initialConnected: boolean }) 
   const [pageUrl, setPageUrl] = useState("");
   const [importing, setImporting] = useState(false);
   const [importError, setImportError] = useState<string | null>(null);
+  // Set instead of importError on a 422 { error: "no_credentials" }
+  // response from /api/sources/notion (only the import call can reach
+  // ingestion -- see request-helpers.ts's normalizeResponse()) -- rendered
+  // as NoProviderNotice below rather than the plain red banner.
+  const [importNoProviderMessage, setImportNoProviderMessage] = useState<string | null>(null);
   const [importSuccess, setImportSuccess] = useState<string | null>(null);
 
   async function handleSaveSecret(event: FormEvent<HTMLFormElement>) {
@@ -52,6 +58,7 @@ export function NotionForm({ initialConnected }: { initialConnected: boolean }) 
   async function handleImport(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setImportError(null);
+    setImportNoProviderMessage(null);
     setImportSuccess(null);
     if (!pageUrl.trim()) {
       setImportError("Вставьте ссылку на страницу или базу Notion.");
@@ -63,6 +70,10 @@ export function NotionForm({ initialConnected }: { initialConnected: boolean }) 
     if (!result.ok) {
       if (result.kind === "unauthorized") {
         redirectToLogin();
+        return;
+      }
+      if (result.kind === "no_credentials") {
+        setImportNoProviderMessage(result.message);
         return;
       }
       setImportError(result.message + retryAfterSuffix(result.retryAfterMs));
@@ -131,6 +142,7 @@ export function NotionForm({ initialConnected }: { initialConnected: boolean }) 
                 required
               />
             </div>
+            {importNoProviderMessage ? <NoProviderNotice message={importNoProviderMessage} /> : null}
             {importError ? (
               <div className="alert alert-danger" role="alert">
                 {importError}

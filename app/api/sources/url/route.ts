@@ -13,6 +13,12 @@
 //   -> 400 { error: "invalid_request", details }
 //   -> 400/403/504/502 { error: <SourceError.kind>, message } -- see
 //      lib/sources/http-error.ts (blocked scheme/private IP, timeout, ...)
+//   -> 422 { error: "no_credentials", message } if the signed-in user has no
+//      active AI provider configured yet (or its stored credential(s) are
+//      missing) -- see lib/ai/index.ts's getAIProviders() and
+//      lib/sources/http-error.ts's sourceErrorResponse(), same contract as
+//      app/api/chat/route.ts's 422. Deliberately not logged via
+//      console.error -- expected per-user state, not a server fault.
 //   -> 200/201 { documentId, chunkCount, status: "ready" }
 
 import "server-only";

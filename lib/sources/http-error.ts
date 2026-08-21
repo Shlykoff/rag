@@ -8,6 +8,7 @@
 
 import "server-only";
 import { SourceError } from "./errors";
+import { AIProviderError } from "../ai/errors";
 import type { SourceIngestRateLimitResult } from "../rate-limit/source-ingest-rate-limiter";
 
 const STATUS_BY_KIND: Record<SourceError["kind"], number> = {
@@ -24,11 +25,35 @@ const STATUS_BY_KIND: Record<SourceError["kind"], number> = {
   unknown: 502,
 };
 
+/**
+ * Every app/api/sources/* route eventually calls
+ * lib/ingestion/ingest.ts's ingestDocumentWithDefaultProviders() (directly,
+ * or via lib/sources/pipeline.ts's create/refresh/upsertDocumentFromSource)
+ * to embed the document it just fetched/parsed -- which throws
+ * AIProviderError{kind:"no_credentials"} (never a SourceError; see
+ * lib/ai/index.ts's getAIProviders()) when the signed-in user has no active
+ * AI provider configured yet, or their active provider's stored
+ * credential(s) are missing. That's a per-user "hasn't finished setup" state,
+ * not a source-adapter failure or a server fault, so it gets its own branch
+ * here -- same 422 { error: "no_credentials", message } contract and the
+ * same "don't console.error this" treatment as app/api/chat/route.ts (see
+ * that route's header comment for the full rationale: every not-yet-
+ * configured user's first upload would otherwise spam logs with "errors"
+ * that are really just "this user hasn't visited /profile yet"). Handled
+ * centrally here, once, rather than duplicated in every route's catch block,
+ * since all five routes (upload/notion/url/google-drive/refresh) already
+ * funnel their catch through this same function.
+ */
 export function sourceErrorResponse(err: unknown): Response {
+  if (err instanceof AIProviderError && err.kind === "no_credentials") {
+    return Response.json({ error: "no_credentials", message: err.userMessage }, { status: 422 });
+  }
   if (err instanceof SourceError) {
     return Response.json({ error: err.kind, message: err.userMessage }, { status: STATUS_BY_KIND[err.kind] });
   }
-  // Not a SourceError -- an unexpected failure (DB write error, bug, etc.).
+  // Neither a SourceError nor a no-credentials AIProviderError -- an
+  // unexpected failure (DB write error, a non-"no_credentials"
+  // AIProviderError such as a real embeddings-API outage, a bug, etc.).
   // Never leak err.message to the client; log it server-side instead.
   console.error("app/api/sources: unhandled error during source ingestion:", err);
   return Response.json({ error: "internal_error", message: "Произошла непредвиденная ошибка." }, { status: 500 });
