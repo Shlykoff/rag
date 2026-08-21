@@ -18,6 +18,7 @@ This project is built incrementally by specialized agents (see `.claude/agents/`
 - [x] **Bring-your-own-key AI provider credentials, backend** (`rag-pipeline-specialist`): `AI_PROVIDER` is no longer a single process-global env var read by every request — each signed-in user now stores their own encrypted OpenAI/Anthropic+Voyage/Gemini API key(s) and picks their own active provider via `app/api/profile/ai-providers/route.ts`. See "Bring-your-own-key AI provider credentials" below. **`npm run seed:ai-keys` is now a required setup step** (see "Running locally").
 - [x] **Bring-your-own-key AI provider credentials, frontend + Google OAuth sign-in** (`nextjs-frontend`): `/profile` — add/update/remove a key per provider (OpenAI, "Anthropic (+ Voyage)" as one section with two key fields, Gemini) and pick the active one, calling `app/api/profile/ai-providers/route.ts` directly (never `lib/ai/credentials.ts`). A "Добавьте AI-провайдера" modal, triggered specifically by `/api/chat`'s `422 { error: "no_credentials" }` (not the generic 500/retry-banner path), links there. The sidebar's "Работает на: ..." badge now reads the *signed-in user's* active provider (`lib/ai/index.ts`'s `getActiveProviderLabel(userId, supabase)`) instead of the old global `process.env.AI_PROVIDER`. **"Войти через Google"** on `/login` (additive alongside the existing demo/email+password flow) plus `app/auth/callback/route.ts`, which exchanges the OAuth code for a session via `@supabase/ssr`'s own `exchangeCodeForSession()` and redirects only to a fixed allow-list of in-app paths (`/`, `/sources`, `/profile` — never a raw query param, closing the obvious open-redirect angle). See "Bring-your-own-key AI provider credentials" and "Google OAuth sign-in" below. **Superseded in part by the projects pivot directly below** — the sidebar's "Работает на: ..." badge and `/profile`'s active-provider picker described here are flagged as interim/stale in that section; nextjs-frontend's next stage rebuilds this UI around `/projects/[projectId]/**`.
 - [x] **Projects architecture pivot + external channel integrations (Telegram)** (`db-architect` + `rag-pipeline-specialist`): the app moved from one flat per-user document/chat set to `projects` — a user can own several projects, each with its own documents, active AI provider, in-app test chat, and (new) external Telegram integration. `lib/retrieval/`, `lib/chat/`, `lib/ai/credentials.ts`'s active-provider selection, and `lib/rate-limit/` are all rescoped from `userId` to `projectId`. New: `lib/gateway/answer.ts` (the one non-streaming seam into the core RAG pipeline for external channel messages) and `lib/channels/` (an import-boundary-isolated Telegram adapter, webhook verification, per-participant + per-conversation concurrency control). See "Projects + external channel integrations (Telegram)" below for the full picture — **this is a backend-only stage**: there is no project-management UI yet (create/rename a project, pick its model, connect Telegram) — that's `nextjs-frontend`'s next stage, and the existing `/profile`/`/sources`/`/chat` pages continue to work only informally against "a" project in the meantime (see that section's "known interim state" callout).
+- [x] **Project CRUD + model selection + Telegram integration management, backend** (`rag-pipeline-specialist`): the projects pivot above rescoped `app/api/chat/route.ts` and `app/api/sources/**` to take a `projectId`, but left no route to actually create/list/rename/delete a project, pick its active model, or connect a Telegram bot from the app — this closes exactly that gap. `app/api/projects/route.ts` + `app/api/projects/[projectId]/route.ts` (list/create/get/rename/delete, with a real Storage `list()`+`remove()` sweep on delete — see "Storage cleanup on project delete" below), `app/api/projects/[projectId]/model/route.ts` (read/set `active_ai_provider`, thin wrapper over `lib/ai/credentials.ts`), and `app/api/projects/[projectId]/channels/telegram/route.ts` (connect/rotate/status/disconnect, registers the webhook with Telegram's own `setWebhook` API on connect — the HTTP counterpart to `scripts/telegram-set-webhook.ts`'s bootstrap flow). See "Project, model, and Telegram-integration management routes" below for the full request/response contract `nextjs-frontend`'s upcoming `/projects/**` pages build against.
 
 There is no live deploy or screenshots yet — deployment to Vercel is a later step, not blocked on the frontend existing. Run it locally per "Running locally" below in the meantime.
 
@@ -375,7 +376,75 @@ interface ChannelAdapter {
 
 ### Not built at this stage (deliberately)
 
-No real Telegram bot/account was exercised end-to-end (no bot token or public tunnel was available in this environment) — everything above is verified either as a pure unit test (mocked gateway/Supabase) or as a real-Postgres integration test with constructed `ChannelAdapter`-shaped `Request`/update JSON, per this stage's explicit scope ("no real Telegram account needed for this — only true end-to-end delivery needs a real bot"). No project-connect-Telegram UI, no `/projects/**` routing, no owner-facing view of external channel sessions (RLS already supports it — `conversations_select_own` lets an owner read every conversation, owner-shaped or external-shaped, under a project they own — the UI for it doesn't exist yet). All three: `nextjs-frontend`'s next stage.
+No real Telegram bot/account was exercised end-to-end (no bot token or public tunnel was available in this environment) — everything above is verified either as a pure unit test (mocked gateway/Supabase) or as a real-Postgres integration test with constructed `ChannelAdapter`-shaped `Request`/update JSON, per this stage's explicit scope ("no real Telegram account needed for this — only true end-to-end delivery needs a real bot"). No `/projects/**` routing or UI at all yet (project list/create/rename/delete screen, model picker, connect-Telegram form, owner-facing view of external channel sessions — RLS already supports that last one, `conversations_select_own` lets an owner read every conversation, owner-shaped or external-shaped, under a project they own) — the backend routes those screens will call now exist (see "Project, model, and Telegram-integration management routes" directly below), the screens themselves are `nextjs-frontend`'s next stage.
+
+### Project, model, and Telegram-integration management routes (`app/api/projects/**`)
+
+The three route groups that give `nextjs-frontend`'s upcoming `/projects/**` pages something to call — the projects pivot above rescoped the *existing* chat/sources routes to take a `projectId`, but didn't add anywhere to actually create a project, pick its model, or connect a channel to it. All three follow the exact same pattern every other project-scoped route in this codebase already uses: authenticate (`getAuthenticatedUser`) → verify ownership via the RLS-scoped session client (`verifyProjectOwnership` — **404, not 403, on mismatch**, so an authenticated-but-unauthorized caller can't distinguish "doesn't exist" from "someone else's") → do the actual read/write with the service-role client → JSON response. Every write is unit-tested against a mocked Supabase client (`__tests__/route.test.ts` next to each `route.ts`) *and* integration-tested against a real local Supabase with two real signed-in users (`__tests__/route.integration.test.ts`) — real Postgres RLS is what produces the 404 in those files, not a mock told to return `false`.
+
+**`app/api/projects/route.ts` + `app/api/projects/[projectId]/route.ts`** — project CRUD:
+
+```
+GET    /api/projects                     -> 200 { projects: ProjectDTO[] }   (newest first)
+POST   /api/projects   { name }          -> 201 { project: ProjectDTO }
+GET    /api/projects/{projectId}         -> 200 { project: ProjectDTO } | 404
+PATCH  /api/projects/{projectId} { name }-> 200 { project: ProjectDTO } | 404 | 400
+DELETE /api/projects/{projectId}         -> 200 { projectId, status: "deleted" } | 404 | 500 { error: "storage_cleanup_failed" }
+
+ProjectDTO: { id, name, activeAiProvider: "openai"|"anthropic"|"gemini"|null, documentCount, createdAt, updatedAt }
+```
+
+`documentCount` comes from PostgREST's embedded-resource count aggregate (`.select("..., documents(count)")`) — one query per call, not an N+1 loop over each project.
+
+**Storage cleanup on project delete**: `ON DELETE CASCADE` removes the `documents`/`document_chunks` rows but was never going to touch the `documents` Storage bucket (flagged as a real gap in the projects migration's own table comment). `DELETE /api/projects/{projectId}` walks the real two-level `"<projectId>/<documentId>/<suffix>"` Storage convention directly (`storage.list("<projectId>")` to discover per-document pseudo-folders, then `list()` each of those for the actual object names) and `remove()`s every object found — **before** deleting the `projects` row, and the row is deliberately left alone if the sweep fails (`500 { error: "storage_cleanup_failed" }`), unlike the single-document delete route's best-effort-after-the-fact posture. The difference is deliberate: once the `projects` row is gone, nothing in the app remembers what used to live under that prefix, so a failed cleanup after that point would orphan objects *permanently* — keeping the row alive on failure keeps the operation retryable. Verified live (not just unit-tested): `[projectId]/__tests__/route.integration.test.ts` uploads real objects with **no corresponding `documents` row at all** (proving the sweep is a genuine Storage listing, not secretly derived from the DB rows it's about to cascade-delete anyway), calls the real route, and confirms via both `storage.list()` and a direct `download()` attempt that the objects are actually gone from the real bucket.
+
+**`app/api/projects/[projectId]/model/route.ts`** — thin wrapper over the already-existing `lib/ai/credentials.ts` `getActiveProvider`/`setActiveProvider`:
+
+```
+GET /api/projects/{projectId}/model
+  -> 200 { activeProvider: "openai"|"anthropic"|"gemini"|null,
+           configured: { openai, anthropic, gemini, voyage: boolean } }   -- same account-level
+     booleans GET /api/profile/ai-providers already returns, reused here so this screen
+     doesn't need a second round trip just to know which options are selectable.
+
+PUT /api/projects/{projectId}/model   { provider: "openai"|"anthropic"|"gemini" }
+  -> 200 { activeProvider }
+  -> 400 { error: "missing_credentials", message, provider, missing }   -- the owner tried to
+     activate a provider they haven't connected a credential for yet (lib/ai/credentials.ts's
+     MissingProviderCredentialsError) -- an expected user state, deliberately NOT logged via
+     console.error, same posture as /api/chat's 422 no_credentials branch.
+```
+
+**`app/api/projects/[projectId]/channels/telegram/route.ts`** — owner-facing Telegram connect/status/disconnect, the HTTP counterpart to `scripts/telegram-set-webhook.ts`'s bootstrap flow (same three steps: generate-or-reuse a webhook secret → save the encrypted credential → register the webhook with Telegram's own `setWebhook` API):
+
+```
+POST /api/projects/{projectId}/channels/telegram
+  body: { botToken, webhookBaseUrl, displayLabel? }   -- webhookBaseUrl must be "https://"
+    (Telegram requires HTTPS for webhooks; there's no global APP_URL env var in this project,
+    see .env.example, so the caller supplies it explicitly -- nextjs-frontend's form is expected
+    to default this to `window.location.origin` and let the local-tunnel case override it, same
+    constraint the bootstrap script's own --url flag already documents)
+  -> 200 { integrationId, displayLabel, enabled, webhookUrl, status: "connected" }
+  -> 400 { error: "telegram_setup_failed", message }   -- Telegram's OWN setWebhook call rejected
+     the request (most commonly an invalid bot token) -- a clear 4xx, never a bare 500. The
+     encrypted credential is still saved at this point (mirrors the bootstrap script's own
+     save-then-register ordering), so correcting the token and re-POSTing retries cleanly.
+  -> 429 { error: "rate_limited", message, retryAfterMs }   -- reuses
+     lib/rate-limit/ai-credentials-rate-limiter.ts's generic per-identity limiter under a
+     "telegram:<userId>" key (a distinct map entry, not a distinct module) rather than adding a
+     fourth near-identical limiter for this task's scope.
+
+GET /api/projects/{projectId}/channels/telegram
+  -> 200 { connected: false } | { connected: true, enabled, displayLabel }
+
+DELETE /api/projects/{projectId}/channels/telegram
+  -> 200 { status: "deleted" }   -- removes the DB row only, does not call a Telegram
+     deleteWebhook API (lib/channels/telegram/client.ts exports none) -- the inbound webhook
+     route already treats an unknown integration id as a harmless, logged no-op, so a stale
+     Telegram-side registration just goes quiet until the owner reconnects.
+```
+
+The bot token is **write-only from the client's perspective**, same posture `app/api/profile/ai-providers/route.ts` already takes for provider API keys: never echoed back in any response, on any of the three methods, at any point in the connect/rotate/status/disconnect lifecycle. Verified live, not just asserted: `channels/telegram/__tests__/route.integration.test.ts` connects a real integration with a real (fake-value) bot token through real AES-256-GCM encryption, reads the decrypted value back independently via `getTelegramIntegrationByProject` to confirm what was actually stored, and asserts that exact string never appears in the raw HTTP response body text of the POST or a subsequent GET — plus a dedicated case for the `telegram_setup_failed` 400 path, confirming a rejected token isn't echoed back either.
 
 ## Frontend (`app/`, `components/`)
 

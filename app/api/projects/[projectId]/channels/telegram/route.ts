@@ -1,0 +1,294 @@
+// app/api/projects/[projectId]/channels/telegram/route.ts
+//
+// Owner-facing management of a PROJECT's Telegram integration
+// (`channel_integrations` where channel = 'telegram') -- connect/rotate a
+// bot token, check connection status, disconnect. This is the HTTP
+// counterpart to scripts/telegram-set-webhook.ts's bootstrap flow: same
+// three steps (generate-or-reuse a webhook secret -> save the encrypted
+// credential via lib/channels/telegram/integration-store.ts -> register
+// the webhook with Telegram via lib/channels/telegram/client.ts's
+// setTelegramWebhook()) -- see that script's own header for the exact
+// step-by-step this mirrors, now reachable from the app instead of only a
+// one-off CLI.
+//
+// Lives under app/api/ (core-app territory), NOT under lib/channels/** --
+// the import-boundary rule (CLAUDE.md non-negotiable rule 8) only
+// restricts what lib/channels/** itself may import, not what calls INTO
+// it, so this route importing lib/channels/telegram/{integration-store,client}
+// directly is the same pattern the inbound webhook route
+// (app/api/channels/telegram/[integrationId]/route.ts) already uses.
+//
+// The plaintext bot token is never echoed back in any response, logged, or
+// exposed to the client after a save -- same write-only posture
+// app/api/profile/ai-providers/route.ts already takes for provider API
+// keys (see that route's own header comment).
+//
+// WEBHOOK BASE URL: unlike scripts/telegram-set-webhook.ts (a CLI flag,
+// --url), there is no global "this deployment's public base URL" env var
+// in this project (see README "`.env.example`": "No global Telegram env
+// var was added" -- more generally, .env.example has no APP_URL/BASE_URL
+// either). The caller supplies `webhookBaseUrl` explicitly in the POST
+// body -- in production this is the app's own public origin; in local dev
+// it's a public HTTPS tunnel (ngrok/cloudflared) pointed at the dev
+// server, exactly the constraint scripts/telegram-set-webhook.ts's own
+// header already documents (Telegram cannot reach `localhost` directly).
+// nextjs-frontend's connect-Telegram form is expected to default this
+// field to `window.location.origin` and let the user override it for the
+// local-tunnel case.
+//
+// Request contract:
+//   POST /api/projects/{projectId}/channels/telegram
+//   body: { botToken: string; webhookBaseUrl: string; displayLabel?: string }
+//     webhookBaseUrl must start with "https://" (Telegram requires HTTPS
+//     for webhooks -- same check scripts/telegram-set-webhook.ts's
+//     parseArgs() already performs); trailing slashes are stripped.
+//     Re-submitting for an already-connected project rotates the bot token
+//     in place (upsert) and reuses the existing webhook secret, mirroring
+//     the bootstrap script's own "rotate just the token" behavior.
+//   -> 401 { error: "unauthorized" }
+//   -> 404 { error: "not_found" }
+//   -> 400 { error: "invalid_request", details }
+//   -> 429 { error: "rate_limited", message, retryAfterMs }
+//   -> 400 { error: "telegram_setup_failed", message } -- Telegram's own
+//      setWebhook call rejected the request (most commonly: an invalid bot
+//      token) -- a clear 4xx, never a bare 500. NOTE: the encrypted
+//      credential is still saved at this point (upsert, same as the
+//      bootstrap script) so correcting the token and re-submitting this
+//      same endpoint retries cleanly without a separate "undo" step -- see
+//      the inline comment above the setTelegramWebhook() call below for
+//      why this mirrors the script's own accepted save-then-register
+//      ordering instead of attempting a rollback with no established
+//      precedent in this codebase.
+//   -> 200 { integrationId, displayLabel, enabled, webhookUrl, status: "connected" }
+//      -- never `botToken`/`webhookSecret`.
+//
+//   GET /api/projects/{projectId}/channels/telegram
+//   -> 401 { error: "unauthorized" }
+//   -> 404 { error: "not_found" }
+//   -> 200 { connected: false } | { connected: true, enabled: boolean, displayLabel: string | null }
+//      -- never `.credentials`.
+//
+//   DELETE /api/projects/{projectId}/channels/telegram
+//   -> 401 { error: "unauthorized" }
+//   -> 404 { error: "not_found" }
+//   -> 429 { error: "rate_limited", message, retryAfterMs }
+//   -> 200 { status: "deleted" }
+//      NOTE: this only removes the DB row -- it deliberately does NOT also
+//      call a Telegram deleteWebhook API (lib/channels/telegram/client.ts
+//      exports no such function, and adding one is out of this task's
+//      explicit scope: "exactly these three route groups and nothing
+//      else"). A leftover webhook registration pointed at a now-deleted
+//      integration id is harmless: the inbound webhook route
+//      (app/api/channels/telegram/[integrationId]/route.ts) already treats
+//      an unknown integration id as a silent, logged no-op (still 200, per
+//      Telegram's own retry semantics) -- it just stops doing anything,
+//      forever, until the owner reconnects. A future "pause without
+//      losing config" toggle could use the existing
+//      channel_integrations.enabled column without any Telegram API call
+//      at all; not built here since the task only asked for
+//      create/update, status, and delete.
+
+import "server-only";
+import { randomBytes } from "node:crypto";
+import { z } from "zod";
+import { getServiceRoleClient } from "@/lib/supabase/service-client";
+import { getAuthenticatedUser, getRouteHandlerSupabaseClient, verifyProjectOwnership } from "@/lib/supabase/server-client";
+import {
+  getTelegramIntegrationByProject,
+  saveTelegramIntegration,
+  deleteTelegramIntegration,
+} from "@/lib/channels/telegram/integration-store";
+import { setTelegramWebhook } from "@/lib/channels/telegram/client";
+import { checkAICredentialsRateLimit, type AICredentialsRateLimitResult } from "@/lib/rate-limit/ai-credentials-rate-limiter";
+
+export const dynamic = "force-dynamic";
+export const runtime = "nodejs";
+
+const PostBodySchema = z.object({
+  botToken: z.string().min(1, "botToken must not be empty"),
+  webhookBaseUrl: z
+    .string()
+    .min(1, "webhookBaseUrl must not be empty")
+    .max(2048, "webhookBaseUrl is too long")
+    .refine((v) => v.startsWith("https://"), {
+      message: "webhookBaseUrl must be an https:// URL -- Telegram requires HTTPS for webhooks.",
+    }),
+  displayLabel: z.string().trim().max(200, "displayLabel must be 200 characters or fewer").optional(),
+});
+
+// Reuses lib/rate-limit/ai-credentials-rate-limiter.ts's generic
+// per-identity sliding window rather than adding a fourth, near-identical
+// limiter module for this task's small, explicitly-scoped surface ("no new
+// lib/ modules"). Namespaced with a "telegram:" prefix (not the bare user
+// id) so this route's own write-request budget lives in its own map entry,
+// independent of that same user's POST/DELETE /api/profile/ai-providers
+// calls -- that module's own header explicitly warns against two unrelated
+// write actions silently sharing one counter, and a distinct map KEY (not
+// a whole distinct module) is enough to satisfy that here without adding
+// new files.
+function rateLimitKey(userId: string): string {
+  return `telegram:${userId}`;
+}
+
+function rateLimitedResponse(rateLimit: Pick<AICredentialsRateLimitResult, "retryAfterMs">): Response {
+  return Response.json(
+    {
+      error: "rate_limited",
+      message: "Слишком много запросов к настройкам Telegram-интеграции. Попробуйте через несколько секунд.",
+      retryAfterMs: rateLimit.retryAfterMs,
+    },
+    { status: 429, headers: { "Retry-After": String(Math.ceil(rateLimit.retryAfterMs / 1000)) } }
+  );
+}
+
+export async function GET(
+  _request: Request,
+  { params }: { params: Promise<{ projectId: string }> }
+): Promise<Response> {
+  const { projectId } = await params;
+
+  const authClient = await getRouteHandlerSupabaseClient();
+  const user = await getAuthenticatedUser(authClient);
+  if (!user) return Response.json({ error: "unauthorized" }, { status: 401 });
+
+  const owned = await verifyProjectOwnership(authClient, projectId);
+  if (!owned) return Response.json({ error: "not_found" }, { status: 404 });
+
+  const supabase = getServiceRoleClient();
+  try {
+    const integration = await getTelegramIntegrationByProject(supabase, projectId);
+    if (!integration) return Response.json({ connected: false }, { status: 200 });
+    // .credentials is intentionally never included below -- write-only
+    // from the client's perspective, see this file's own header comment.
+    return Response.json(
+      { connected: true, enabled: integration.enabled, displayLabel: integration.displayLabel },
+      { status: 200 }
+    );
+  } catch (err) {
+    console.error(`GET /api/projects/${projectId}/channels/telegram: failed to load integration:`, err);
+    return Response.json(
+      { error: "internal_error", message: "Не удалось загрузить статус Telegram-интеграции." },
+      { status: 500 }
+    );
+  }
+}
+
+export async function POST(
+  request: Request,
+  { params }: { params: Promise<{ projectId: string }> }
+): Promise<Response> {
+  const { projectId } = await params;
+
+  const authClient = await getRouteHandlerSupabaseClient();
+  const user = await getAuthenticatedUser(authClient);
+  if (!user) return Response.json({ error: "unauthorized" }, { status: 401 });
+
+  const owned = await verifyProjectOwnership(authClient, projectId);
+  if (!owned) return Response.json({ error: "not_found" }, { status: 404 });
+
+  const rateLimit = checkAICredentialsRateLimit(rateLimitKey(user.id));
+  if (!rateLimit.allowed) return rateLimitedResponse(rateLimit);
+
+  let rawBody: unknown;
+  try {
+    rawBody = await request.json();
+  } catch {
+    return Response.json({ error: "invalid_request", details: "Body must be valid JSON." }, { status: 400 });
+  }
+  const parsed = PostBodySchema.safeParse(rawBody);
+  if (!parsed.success) {
+    return Response.json({ error: "invalid_request", details: parsed.error.flatten() }, { status: 400 });
+  }
+  const webhookBaseUrl = parsed.data.webhookBaseUrl.replace(/\/+$/, "");
+
+  const supabase = getServiceRoleClient();
+
+  // Reuse the existing webhook secret on a re-submit (e.g. rotating just
+  // the bot token) -- same reasoning as scripts/telegram-set-webhook.ts's
+  // own "reuse when present" comment: generating a fresh one every call
+  // would silently invalidate whatever Telegram currently has registered,
+  // with no corresponding signal to the owner that it happened.
+  let existing;
+  try {
+    existing = await getTelegramIntegrationByProject(supabase, projectId);
+  } catch (err) {
+    console.error(`POST /api/projects/${projectId}/channels/telegram: failed to read existing integration:`, err);
+    return Response.json({ error: "internal_error", message: "Не удалось подключить Telegram-бота." }, { status: 500 });
+  }
+  const webhookSecret = existing?.credentials.webhookSecret ?? randomBytes(32).toString("hex");
+  const displayLabel = parsed.data.displayLabel ?? existing?.displayLabel ?? null;
+
+  let integrationId: string;
+  try {
+    ({ id: integrationId } = await saveTelegramIntegration(
+      supabase,
+      projectId,
+      { botToken: parsed.data.botToken, webhookSecret },
+      displayLabel
+    ));
+  } catch (err) {
+    console.error(`POST /api/projects/${projectId}/channels/telegram: failed to save integration:`, err);
+    return Response.json({ error: "internal_error", message: "Не удалось сохранить настройки Telegram-бота." }, { status: 500 });
+  }
+
+  const webhookUrl = `${webhookBaseUrl}/api/channels/telegram/${integrationId}`;
+  try {
+    // Same call scripts/telegram-set-webhook.ts makes -- this is what
+    // actually activates the bot (registers the URL Telegram will POST
+    // updates to) rather than just storing a token nobody told Telegram
+    // about. The credential above is already saved by this point (see the
+    // module header's NOTE on why a failure here doesn't roll that back --
+    // the row is left in a safely-retryable "saved but not yet confirmed
+    // registered" state, exactly like a failed run of the bootstrap
+    // script would).
+    await setTelegramWebhook(parsed.data.botToken, webhookUrl, webhookSecret);
+  } catch (err) {
+    // lib/channels/telegram/client.ts's callTelegramApi() throws a plain
+    // Error (already redacted of the bot token, see that file's
+    // redactToken()) for both a network failure and a real Telegram API
+    // rejection (e.g. a malformed/revoked bot token) -- it doesn't
+    // distinguish the two with a typed error, so both are surfaced here as
+    // the same clear 4xx rather than guessing which one happened; the full
+    // (redacted) detail is still logged server-side for debugging.
+    console.error(`POST /api/projects/${projectId}/channels/telegram: Telegram setWebhook failed:`, err);
+    return Response.json(
+      {
+        error: "telegram_setup_failed",
+        message: "Не удалось зарегистрировать webhook в Telegram. Проверьте правильность токена бота и попробуйте снова.",
+      },
+      { status: 400 }
+    );
+  }
+
+  return Response.json(
+    { integrationId, displayLabel, enabled: existing?.enabled ?? true, webhookUrl, status: "connected" },
+    { status: 200 }
+  );
+}
+
+export async function DELETE(
+  _request: Request,
+  { params }: { params: Promise<{ projectId: string }> }
+): Promise<Response> {
+  const { projectId } = await params;
+
+  const authClient = await getRouteHandlerSupabaseClient();
+  const user = await getAuthenticatedUser(authClient);
+  if (!user) return Response.json({ error: "unauthorized" }, { status: 401 });
+
+  const owned = await verifyProjectOwnership(authClient, projectId);
+  if (!owned) return Response.json({ error: "not_found" }, { status: 404 });
+
+  const rateLimit = checkAICredentialsRateLimit(rateLimitKey(user.id));
+  if (!rateLimit.allowed) return rateLimitedResponse(rateLimit);
+
+  const supabase = getServiceRoleClient();
+  try {
+    await deleteTelegramIntegration(supabase, projectId);
+  } catch (err) {
+    console.error(`DELETE /api/projects/${projectId}/channels/telegram: failed to delete integration:`, err);
+    return Response.json({ error: "internal_error", message: "Не удалось отключить Telegram-бота." }, { status: 500 });
+  }
+
+  return Response.json({ status: "deleted" }, { status: 200 });
+}
