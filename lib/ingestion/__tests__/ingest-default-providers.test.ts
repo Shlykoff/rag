@@ -2,11 +2,10 @@
 //
 // Regression test for the bug qa-reviewer reproduced live: getEmbeddingsProvider()
 // (via getAIProviders(), see lib/ai/index.ts) rejects when the document's
-// owner (doc.userId) has no active AI provider configured, or their active
-// provider's credential(s) are missing. Before the fix,
-// ingestDocumentWithDefaultProviders() computed that call as an
-// eagerly-evaluated argument to ingestDocument(...) -- so the throw
-// happened BEFORE ingestDocument()'s own try/catch (which flips
+// project has no active AI provider configured, or its owner's credential(s)
+// are missing. Before the fix, ingestDocumentWithDefaultProviders() computed
+// that call as an eagerly-evaluated argument to ingestDocument(...) -- so
+// the throw happened BEFORE ingestDocument()'s own try/catch (which flips
 // documents.processing_status to 'error') ever started running, leaving
 // the document stuck in 'pending' forever with processing_error: null.
 //
@@ -14,9 +13,10 @@
 // ingestDocument(), which is already covered end-to-end by ingest.test.ts)
 // by mocking its two module-level dependencies -- getServiceRoleClient()
 // and getEmbeddingsProvider() -- exactly the two calls the bug report
-// pointed at. getEmbeddingsProvider() is now per-user
-// (userId, supabase) -- see lib/ai/index.ts -- rather than the old
-// zero-arg, AI_PROVIDER-env-driven call.
+// pointed at. getEmbeddingsProvider() is project-scoped now
+// ({projectId, ownerUserId}, supabase) -- see lib/ai/index.ts -- rather
+// than the old zero-arg, AI_PROVIDER-env-driven call, or the earlier
+// per-user (userId, supabase) call.
 
 import { describe, expect, it, vi, beforeEach } from "vitest";
 import type { SupabaseClient } from "@supabase/supabase-js";
@@ -41,7 +41,7 @@ import type { NormalizedDocument } from "../ingest";
 
 interface DocumentRow {
   id: string;
-  user_id: string;
+  project_id: string;
   source_type: "manual_upload" | "notion" | "url" | "google_drive";
 }
 
@@ -82,7 +82,8 @@ function makeFakeSupabase(fetchResult: { data: DocumentRow | null; error: { mess
 
 const baseDoc: NormalizedDocument = {
   documentId: "doc-1",
-  userId: "user-1",
+  projectId: "project-1",
+  ownerUserId: "owner-1",
   title: "My Document",
   text: "First sentence here. Second sentence follows.",
 };
@@ -93,22 +94,25 @@ describe("ingestDocumentWithDefaultProviders", () => {
     mockGetEmbeddingsProvider.mockReset();
   });
 
-  it("marks the document 'error' (not stuck in 'pending') when getEmbeddingsProvider() rejects (e.g. no active AI provider for this user)", async () => {
+  it("marks the document 'error' (not stuck in 'pending') when getEmbeddingsProvider() rejects (e.g. no active AI provider for this project)", async () => {
     const { supabase, documentUpdates } = makeFakeSupabase({
-      data: { id: "doc-1", user_id: "user-1", source_type: "manual_upload" },
+      data: { id: "doc-1", project_id: "project-1", source_type: "manual_upload" },
       error: null,
     });
     mockGetServiceRoleClient.mockReturnValue(supabase);
     mockGetEmbeddingsProvider.mockRejectedValue(
-      new Error("getAIProviders: user user-1 has no active_ai_provider set.")
+      new Error("getAIProviders: project project-1 has no active_ai_provider set.")
     );
 
     await expect(ingestDocumentWithDefaultProviders(baseDoc)).rejects.toThrow(/active_ai_provider/);
 
-    // Per-user (bring-your-own-key): the document's own owner (doc.userId)
-    // and the service-role client must be threaded through to
+    // Bring-your-own-key, project-scoped: the document's own projectId/
+    // ownerUserId and the service-role client must be threaded through to
     // getEmbeddingsProvider(), not called with no arguments.
-    expect(mockGetEmbeddingsProvider).toHaveBeenCalledWith("user-1", supabase);
+    expect(mockGetEmbeddingsProvider).toHaveBeenCalledWith(
+      { projectId: "project-1", ownerUserId: "owner-1" },
+      supabase
+    );
 
     // The critical assertion: exactly one status write happened, and it
     // flips straight to 'error' with a non-empty processing_error -- NOT
@@ -124,11 +128,11 @@ describe("ingestDocumentWithDefaultProviders", () => {
 
   it("still throws (does not swallow the error) after recording processing_status: 'error'", async () => {
     const { supabase } = makeFakeSupabase({
-      data: { id: "doc-1", user_id: "user-1", source_type: "manual_upload" },
+      data: { id: "doc-1", project_id: "project-1", source_type: "manual_upload" },
       error: null,
     });
     mockGetServiceRoleClient.mockReturnValue(supabase);
-    const originalError = new Error("Missing required 'openai' credential for this user.");
+    const originalError = new Error("Missing required 'openai' credential for this project's owner.");
     mockGetEmbeddingsProvider.mockRejectedValue(originalError);
 
     // The caller (document-sources-specialist's upload/refresh route
@@ -140,7 +144,7 @@ describe("ingestDocumentWithDefaultProviders", () => {
 
   it("delegates to the real pipeline (no early error write) when getEmbeddingsProvider() succeeds", async () => {
     const { supabase, documentUpdates } = makeFakeSupabase({
-      data: { id: "doc-1", user_id: "user-1", source_type: "manual_upload" },
+      data: { id: "doc-1", project_id: "project-1", source_type: "manual_upload" },
       error: null,
     });
     mockGetServiceRoleClient.mockReturnValue(supabase);
@@ -177,6 +181,9 @@ describe("ingestDocumentWithDefaultProviders", () => {
     expect(documentChunkRows.length).toBeGreaterThan(0);
     const finalUpdate = documentUpdates[documentUpdates.length - 1].payload;
     expect(finalUpdate.processing_status).toBe("ready");
-    expect(mockGetEmbeddingsProvider).toHaveBeenCalledWith("user-1", supabase);
+    expect(mockGetEmbeddingsProvider).toHaveBeenCalledWith(
+      { projectId: "project-1", ownerUserId: "owner-1" },
+      supabase
+    );
   });
 });

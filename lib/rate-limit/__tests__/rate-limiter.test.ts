@@ -94,11 +94,11 @@ describe("checkChatRateLimit", () => {
     expect(result.retryAfterMs).toBe(0);
   });
 
-  it("scopes the query to the given user_id and event_type = chat_request", async () => {
+  it("scopes the query to the given project_id and event_type = chat_request", async () => {
     const { fakeClient, calls } = makeFakeSupabase({ data: [], error: null, count: 0 });
-    await checkChatRateLimit(fakeClient, "user-42", config);
+    await checkChatRateLimit(fakeClient, "project-42", config);
     const eqCalls = calls.filter((c) => c.method === "eq");
-    expect(eqCalls).toContainEqual({ method: "eq", args: ["user_id", "user-42"] });
+    expect(eqCalls).toContainEqual({ method: "eq", args: ["project_id", "project-42"] });
     expect(eqCalls).toContainEqual({ method: "eq", args: ["event_type", "chat_request"] });
   });
 

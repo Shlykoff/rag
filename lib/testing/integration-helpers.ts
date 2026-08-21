@@ -100,6 +100,30 @@ export async function createAuthenticatedTestUser(
   return { id: data.user.id, email, client };
 }
 
+/**
+ * Creates a throwaway `projects` row owned by `userId`, via the
+ * service-role client (bypasses RLS -- fine for test setup; RLS-specific
+ * tests exercise `projects_insert_own` via a real authenticated client
+ * instead, see supabase/__tests__/projects-pivot-rls.integration.test.ts).
+ * Deleting the owning user (deleteTestUser below) cascades to this row, so
+ * callers don't need a separate cleanup step for it.
+ */
+export async function createTestProject(
+  supabase: SupabaseClient,
+  userId: string,
+  name = "Test Project"
+): Promise<{ id: string }> {
+  const { data, error } = await supabase
+    .from("projects")
+    .insert({ user_id: userId, name })
+    .select("id")
+    .single();
+  if (error || !data) {
+    throw new Error(`createTestProject: failed to create project: ${error?.message ?? "unknown error"}`);
+  }
+  return { id: data.id as string };
+}
+
 export async function deleteTestUser(supabase: SupabaseClient, userId: string): Promise<void> {
   // `projects` references auth.users with `on delete cascade`, and
   // `documents`/`conversations`/`usage_events`/`channel_integrations` all

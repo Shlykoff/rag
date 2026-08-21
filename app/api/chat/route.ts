@@ -1,36 +1,50 @@
 // app/api/chat/route.ts
 //
 // Streaming chat endpoint. Thin HTTP adapter around
-// lib/chat/handle-chat-request.ts: auth -> rate limit (proper 401/429
-// status codes, checked BEFORE any AI-provider call per CLAUDE.md rule 4)
-// -> hand off to the framework-agnostic pipeline -> frame its events as
-// Server-Sent Events.
+// lib/chat/handle-chat-request.ts: auth -> project-ownership verification
+// -> rate limit (proper 401/404/429 status codes, checked BEFORE any
+// AI-provider call per CLAUDE.md rule 4) -> hand off to the
+// framework-agnostic pipeline -> frame its events as Server-Sent Events.
+//
+// PROJECTS PIVOT: this is the project owner's own in-app test-chat path --
+// it always resolves an `externalParticipant`-less ChatRequestInput (see
+// lib/chat/handle-chat-request.ts). The gateway (lib/gateway/answer.ts) is
+// the parallel, non-streaming entry point for external channel messages
+// (Telegram etc); it does its own project-owner resolution + all three
+// concurrency layers rather than reusing this route.
 //
 // Request contract (consumed by nextjs-frontend):
 //   POST /api/chat
-//   body: { conversationId?: string; message: string }
+//   body: { projectId: string; conversationId?: string; message: string }
 //   -> 401 { error: "unauthorized" } if there is no valid session
 //   -> 400 { error: "invalid_request", details } on a malformed body
-//   -> 429 { error: "rate_limited", message, retryAfterMs } if the user is
-//      over the chat rate limit (Retry-After header set, in seconds)
-//   -> 422 { error: "no_credentials", message } if the signed-in user has no
-//      active AI provider configured yet (no user_settings row / no
-//      active_ai_provider set) or their active provider's stored
+//   -> 404 { error: "not_found" } if `projectId` doesn't exist or doesn't
+//      belong to the signed-in user -- deliberately identical to "doesn't
+//      exist" (not 403) so an authenticated-but-unauthorized caller can't
+//      use this endpoint to probe which project ids exist, same posture as
+//      app/api/sources/[documentId]/route.ts's ownership check.
+//   -> 429 { error: "rate_limited", message, retryAfterMs } if the project
+//      is over its chat rate limit (Retry-After header set, in seconds) --
+//      shared across the owner's own test chat and every external channel
+//      session of this project (see lib/rate-limit/rate-limiter.ts's
+//      "layer 1" comment).
+//   -> 422 { error: "no_credentials", message } if this project has no
+//      active AI provider configured yet, or its owner's stored
 //      credential(s) are missing (see lib/ai/index.ts's getAIProviders()).
-//      This is an expected, common per-user state -- NOT a server
+//      This is an expected, common per-project state -- NOT a server
 //      misconfiguration -- so it's deliberately NOT logged via
-//      console.error (every not-yet-configured user's first message would
-//      otherwise spam server logs with "errors" that are really just "this
-//      user hasn't visited /profile yet", drowning out real 500s). This is
-//      the wire contract nextjs-frontend's "add an API key" modal is built
-//      against: show the modal on 422, keep the generic retry-banner
-//      treatment for everything else (400/429/500).
+//      console.error (every not-yet-configured project's first message
+//      would otherwise spam server logs with "errors" that are really just
+//      "this project hasn't picked a model yet", drowning out real 500s).
+//      This is the wire contract nextjs-frontend's "add an API key" modal
+//      is built against: show the modal on 422, keep the generic
+//      retry-banner treatment for everything else (400/404/429/500).
 //   -> 500 { error: "provider_unavailable", message } for any OTHER failure
-//      while building the user's AI provider pair (e.g. a DB error reading
-//      ai_provider_credentials/user_settings) -- a real server-side fault,
-//      logged via console.error, surfaced as a real HTTP error status with
-//      a JSON body rather than the 200 SSE `error` event used for
-//      in-stream failures below.
+//      while building the project's AI provider pair (e.g. a DB error
+//      reading ai_provider_credentials/projects) -- a real server-side
+//      fault, logged via console.error, surfaced as a real HTTP error
+//      status with a JSON body rather than the 200 SSE `error` event used
+//      for in-stream failures below.
 //   -> 200, Content-Type: text/event-stream, on success. The body is a
 //      sequence of SSE events, each `event: <type>\ndata: <json>\n\n`:
 //        - conversation: { conversationId } -- always first; the id to use
@@ -48,7 +62,7 @@ import "server-only";
 import { z } from "zod";
 import { getAIProviders, AIProviderError, type ChatProvider, type EmbeddingsProvider } from "@/lib/ai";
 import { getServiceRoleClient } from "@/lib/supabase/service-client";
-import { getAuthenticatedUser, getRouteHandlerSupabaseClient } from "@/lib/supabase/server-client";
+import { getAuthenticatedUser, getRouteHandlerSupabaseClient, verifyProjectOwnership } from "@/lib/supabase/server-client";
 import { reserveChatRateLimitSlot } from "@/lib/rate-limit/rate-limiter";
 import { handleChatRequest, type ChatStreamEvent } from "@/lib/chat/handle-chat-request";
 
@@ -59,6 +73,7 @@ export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
 const ChatRequestBodySchema = z.object({
+  projectId: z.string().uuid(),
   conversationId: z.string().uuid().optional(),
   // Cap independent of (and tighter than) the context token budget in
   // lib/retrieval/search.ts -- this bounds the cost of a single turn's own
@@ -91,6 +106,18 @@ export async function POST(request: Request): Promise<Response> {
       { status: 400 }
     );
   }
+  const { projectId } = parsed.data;
+
+  // Ownership verification BEFORE anything else touches this projectId
+  // (rate limiting, provider lookup, retrieval) -- uses the RLS-scoped
+  // session client (projects_select_own: auth.uid() = user_id), never the
+  // service-role client, so a project this caller doesn't own is
+  // indistinguishable from one that doesn't exist at all. See this route's
+  // own header comment for the 404-not-403 posture.
+  const owned = await verifyProjectOwnership(authClient, projectId);
+  if (!owned) {
+    return Response.json({ error: "not_found" }, { status: 404 });
+  }
 
   const supabase = getServiceRoleClient();
 
@@ -108,8 +135,11 @@ export async function POST(request: Request): Promise<Response> {
   // the same too-low COUNT(*) and all pass. reserveChatRateLimitSlot closes
   // that gap with an in-process reservation held for the lifetime of this
   // request -- see lib/rate-limit/rate-limiter.ts's module comment for the
-  // full explanation and its documented multi-instance limitation.
-  const rateLimit = await reserveChatRateLimitSlot(supabase, user.id);
+  // full explanation and its documented multi-instance limitation. Keyed
+  // by projectId now (not userId) -- this is the shared "layer 1" budget
+  // across the owner's own test chat AND every external channel session of
+  // this project (see lib/gateway/answer.ts).
+  const rateLimit = await reserveChatRateLimitSlot(supabase, projectId);
   if (!rateLimit.allowed) {
     return Response.json(
       {
@@ -129,27 +159,28 @@ export async function POST(request: Request): Promise<Response> {
   // safe to call unconditionally there.
   const releaseRateLimitSlot = rateLimit.release;
 
-  // getAIProviders() (per-user, bring-your-own-key -- see lib/ai/index.ts)
-  // rejects when the signed-in user has no active provider configured, or
-  // when their active provider's stored credential(s) are missing. Before
-  // the original (env-var-driven) version of this fix, an equivalent throw
-  // happened outside any try/catch in this route, producing a bare 500 with
-  // no body/Content-Type -- reproduced live by qa-reviewer via curl. That
-  // violated this file's own documented contract (only 401/400/429/200-SSE
-  // were specified), so it's caught explicitly here and turned into a real
-  // JSON error body, consistent with the 401/400/429 branches above -- now
-  // split into two outcomes (see the module header's 422 vs. 500 contract).
-  // The reserved rate-limit slot must still be released on both paths: this
-  // returns before the ReadableStream (whose `finally` normally does that)
-  // is ever constructed.
+  // getAIProviders() (bring-your-own-key, project-scoped -- see
+  // lib/ai/index.ts) rejects when this project has no active provider
+  // configured, or when its owner's stored credential(s) are missing.
+  // Before the original (env-var-driven) version of this fix, an
+  // equivalent throw happened outside any try/catch in this route,
+  // producing a bare 500 with no body/Content-Type -- reproduced live by
+  // qa-reviewer via curl. That violated this file's own documented
+  // contract (only 401/400/404/429/200-SSE were specified), so it's caught
+  // explicitly here and turned into a real JSON error body, consistent
+  // with the other branches above -- now split into two outcomes (see the
+  // module header's 422 vs. 500 contract). The reserved rate-limit slot
+  // must still be released on both paths: this returns before the
+  // ReadableStream (whose `finally` normally does that) is ever
+  // constructed.
   let chatProvider: ChatProvider;
   let embeddingsProvider: EmbeddingsProvider;
   try {
-    ({ chatProvider, embeddingsProvider } = await getAIProviders(user.id, supabase));
+    ({ chatProvider, embeddingsProvider } = await getAIProviders({ projectId, ownerUserId: user.id }, supabase));
   } catch (err) {
     releaseRateLimitSlot();
     if (err instanceof AIProviderError && err.kind === "no_credentials") {
-      // Expected per-user state, not a server fault -- deliberately no
+      // Expected per-project state, not a server fault -- deliberately no
       // console.error here (see the module header comment above for why
       // logging this as an error would be noise, not signal).
       return Response.json({ error: "no_credentials", message: err.userMessage }, { status: 422 });
@@ -165,7 +196,7 @@ export async function POST(request: Request): Promise<Response> {
   }
 
   const events = handleChatRequest(
-    { userId: user.id, conversationId: parsed.data.conversationId, message: parsed.data.message },
+    { projectId, ownerUserId: user.id, conversationId: parsed.data.conversationId, message: parsed.data.message },
     { supabase, chatProvider, embeddingsProvider }
   );
 

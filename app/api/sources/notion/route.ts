@@ -1,32 +1,35 @@
 // app/api/sources/notion/route.ts
 //
 // Notion page/database import. Thin HTTP adapter -- auth ->
-// lib/sources/notion.ts (fetch + flatten to text, using the caller's
-// encrypted Internal Integration Secret) -> lib/sources/pipeline.ts
-// (Storage + ingest, upserted by Notion id so re-submitting the same page
-// updates the existing document rather than duplicating it).
+// project-ownership check -> lib/sources/notion.ts (fetch + flatten to
+// text, using the caller's own encrypted Internal Integration Secret,
+// still account-level -- see that module) -> lib/sources/pipeline.ts
+// (Storage + ingest, upserted by (projectId, sourceType, sourceRef) so
+// re-submitting the same page into the same project updates the existing
+// document rather than duplicating it).
 //
 // Request contract:
 //   POST /api/sources/notion
-//   body: { pageUrl: string }  -- a notion.so page/database URL, or a bare id
+//   body: { projectId: string; pageUrl: string }  -- a notion.so page/database URL, or a bare id
 //   -> 401 { error: "unauthorized" }
-//   -> 429 { error: "rate_limited", message, retryAfterMs } -- Retry-After header set, in seconds
 //   -> 400 { error: "invalid_request", details }
+//   -> 404 { error: "not_found" } -- projectId doesn't exist or doesn't belong to the signed-in user
+//   -> 429 { error: "rate_limited", message, retryAfterMs } -- Retry-After header set, in seconds
 //   -> 400/401/403/502 { error: <SourceError.kind>, message } -- see
 //      lib/sources/http-error.ts ("not_shared" is the common case: page
 //      exists but isn't shared with the integration)
-//   -> 422 { error: "no_credentials", message } if the signed-in user has no
-//      active AI provider configured yet (or its stored credential(s) are
-//      missing) -- see lib/ai/index.ts's getAIProviders() and
-//      lib/sources/http-error.ts's sourceErrorResponse(), same contract as
-//      app/api/chat/route.ts's 422. Deliberately not logged via
-//      console.error -- expected per-user state, not a server fault.
+//   -> 422 { error: "no_credentials", message } if this project has no
+//      active AI provider configured yet (or its owner's stored
+//      credential(s) are missing) -- see lib/ai/index.ts's getAIProviders()
+//      and lib/sources/http-error.ts's sourceErrorResponse(), same contract
+//      as app/api/chat/route.ts's 422. Deliberately not logged via
+//      console.error -- expected per-project state, not a server fault.
 //   -> 200/201 { documentId, chunkCount, status: "ready" }
 
 import "server-only";
 import { z } from "zod";
 import { getServiceRoleClient } from "@/lib/supabase/service-client";
-import { getAuthenticatedUser, getRouteHandlerSupabaseClient } from "@/lib/supabase/server-client";
+import { getAuthenticatedUser, getRouteHandlerSupabaseClient, verifyProjectOwnership } from "@/lib/supabase/server-client";
 import { importNotionDocument } from "@/lib/sources/notion";
 import { upsertDocumentFromSource } from "@/lib/sources/pipeline";
 import { sourceErrorResponse, sourceIngestRateLimitedResponse } from "@/lib/sources/http-error";
@@ -35,20 +38,12 @@ import { checkSourceIngestRateLimit } from "@/lib/rate-limit/source-ingest-rate-
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
-const BodySchema = z.object({ pageUrl: z.string().min(1).max(2048) });
+const BodySchema = z.object({ projectId: z.string().uuid(), pageUrl: z.string().min(1).max(2048) });
 
 export async function POST(request: Request): Promise<Response> {
   const authClient = await getRouteHandlerSupabaseClient();
   const user = await getAuthenticatedUser(authClient);
   if (!user) return Response.json({ error: "unauthorized" }, { status: 401 });
-
-  // Rate limit check happens BEFORE any adapter/AI-provider work --
-  // CLAUDE.md rule 4. See lib/rate-limit/source-ingest-rate-limiter.ts's
-  // module comment.
-  const rateLimit = checkSourceIngestRateLimit(user.id);
-  if (!rateLimit.allowed) {
-    return sourceIngestRateLimitedResponse(rateLimit);
-  }
 
   let rawBody: unknown;
   try {
@@ -60,12 +55,31 @@ export async function POST(request: Request): Promise<Response> {
   if (!parsed.success) {
     return Response.json({ error: "invalid_request", details: parsed.error.flatten() }, { status: 400 });
   }
+  const { projectId, pageUrl } = parsed.data;
+
+  const owned = await verifyProjectOwnership(authClient, projectId);
+  if (!owned) {
+    return Response.json({ error: "not_found" }, { status: 404 });
+  }
+
+  // Rate limit check happens after parsing/ownership (both cheap) but
+  // BEFORE any network/AI-provider work -- CLAUDE.md rule 4. See
+  // lib/rate-limit/source-ingest-rate-limiter.ts's module comment. Keyed
+  // by projectId now, not userId.
+  const rateLimit = checkSourceIngestRateLimit(projectId);
+  if (!rateLimit.allowed) {
+    return sourceIngestRateLimitedResponse(rateLimit);
+  }
 
   const supabase = getServiceRoleClient();
   try {
-    const normalized = await importNotionDocument(supabase, user.id, parsed.data.pageUrl);
+    // The Notion credential lookup itself stays account-level (user.id,
+    // not projectId) -- source credentials are still per-account, see
+    // lib/sources/credentials.ts's own header.
+    const normalized = await importNotionDocument(supabase, user.id, pageUrl);
     const result = await upsertDocumentFromSource(supabase, {
-      userId: user.id,
+      projectId,
+      ownerUserId: user.id,
       title: normalized.title,
       sourceType: "notion",
       sourceRef: normalized.sourceRef as string, // notion.ts always sets sourceRef (the normalized page/database id) -- never null

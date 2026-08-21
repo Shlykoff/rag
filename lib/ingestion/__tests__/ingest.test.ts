@@ -5,7 +5,7 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 
 interface DocumentRow {
   id: string;
-  user_id: string;
+  project_id: string;
   source_type: "manual_upload" | "notion" | "url" | "google_drive";
 }
 
@@ -85,7 +85,8 @@ function fakeEmbeddings(dimensions = 3): EmbeddingsProvider {
 
 const baseDoc: NormalizedDocument = {
   documentId: "doc-1",
-  userId: "user-1",
+  projectId: "project-1",
+  ownerUserId: "owner-1",
   title: "My Document",
   text: "First sentence here. Second sentence follows. Third one too.",
 };
@@ -93,7 +94,7 @@ const baseDoc: NormalizedDocument = {
 describe("ingestDocument", () => {
   it("chunks, embeds, delete-before-inserts, and marks the document ready", async () => {
     const { supabase, documentUpdates, deletedDocumentIds, insertedRows } = makeFakeSupabase({
-      fetchResult: { data: { id: "doc-1", user_id: "user-1", source_type: "notion" }, error: null },
+      fetchResult: { data: { id: "doc-1", project_id: "project-1", source_type: "notion" }, error: null },
     });
     const embeddingsProvider = fakeEmbeddings();
 
@@ -128,7 +129,7 @@ describe("ingestDocument", () => {
 
   it("does NOT stamp last_synced_at for manual_upload documents", async () => {
     const { supabase, documentUpdates } = makeFakeSupabase({
-      fetchResult: { data: { id: "doc-1", user_id: "user-1", source_type: "manual_upload" }, error: null },
+      fetchResult: { data: { id: "doc-1", project_id: "project-1", source_type: "manual_upload" }, error: null },
     });
     await ingestDocument(baseDoc, { supabase, embeddingsProvider: fakeEmbeddings() });
     const finalUpdate = documentUpdates[documentUpdates.length - 1].payload;
@@ -136,13 +137,13 @@ describe("ingestDocument", () => {
     expect(finalUpdate.last_synced_at).toBeUndefined();
   });
 
-  it("throws and makes no writes when the document does not belong to the given userId", async () => {
+  it("throws and makes no writes when the document does not belong to the given projectId", async () => {
     const { supabase, documentUpdates, deletedDocumentIds } = makeFakeSupabase({
-      fetchResult: { data: { id: "doc-1", user_id: "someone-else", source_type: "manual_upload" }, error: null },
+      fetchResult: { data: { id: "doc-1", project_id: "someone-elses-project", source_type: "manual_upload" }, error: null },
     });
     await expect(
       ingestDocument(baseDoc, { supabase, embeddingsProvider: fakeEmbeddings() })
-    ).rejects.toThrow(/belongs to user someone-else/);
+    ).rejects.toThrow(/belongs to project someone-elses-project/);
     expect(documentUpdates).toHaveLength(0);
     expect(deletedDocumentIds).toHaveLength(0);
   });
@@ -156,7 +157,7 @@ describe("ingestDocument", () => {
 
   it("marks the document 'error' (not 'ready') when the text has no extractable content", async () => {
     const { supabase, documentUpdates } = makeFakeSupabase({
-      fetchResult: { data: { id: "doc-1", user_id: "user-1", source_type: "manual_upload" }, error: null },
+      fetchResult: { data: { id: "doc-1", project_id: "project-1", source_type: "manual_upload" }, error: null },
     });
     await expect(
       ingestDocument({ ...baseDoc, text: "   " }, { supabase, embeddingsProvider: fakeEmbeddings() })
@@ -168,7 +169,7 @@ describe("ingestDocument", () => {
 
   it("marks the document 'error' and rethrows when the embeddings provider fails", async () => {
     const { supabase, documentUpdates } = makeFakeSupabase({
-      fetchResult: { data: { id: "doc-1", user_id: "user-1", source_type: "manual_upload" }, error: null },
+      fetchResult: { data: { id: "doc-1", project_id: "project-1", source_type: "manual_upload" }, error: null },
     });
     const failingEmbeddings: EmbeddingsProvider = {
       providerName: "fake",
@@ -186,7 +187,7 @@ describe("ingestDocument", () => {
 
   it("marks the document 'error' and rethrows when the chunk delete fails", async () => {
     const { supabase, documentUpdates } = makeFakeSupabase({
-      fetchResult: { data: { id: "doc-1", user_id: "user-1", source_type: "manual_upload" }, error: null },
+      fetchResult: { data: { id: "doc-1", project_id: "project-1", source_type: "manual_upload" }, error: null },
       deleteResult: { error: { message: "delete failed" } },
     });
     await expect(
@@ -198,7 +199,7 @@ describe("ingestDocument", () => {
 
   it("marks the document 'error' and rethrows when the chunk insert fails", async () => {
     const { supabase, documentUpdates } = makeFakeSupabase({
-      fetchResult: { data: { id: "doc-1", user_id: "user-1", source_type: "manual_upload" }, error: null },
+      fetchResult: { data: { id: "doc-1", project_id: "project-1", source_type: "manual_upload" }, error: null },
       insertResult: { error: { message: "insert failed" } },
     });
     await expect(
@@ -210,7 +211,7 @@ describe("ingestDocument", () => {
 
   it("re-running ingestDocument (simulating a manual Refresh) deletes existing chunks again before inserting the new set", async () => {
     const { supabase, deletedDocumentIds, insertedRows } = makeFakeSupabase({
-      fetchResult: { data: { id: "doc-1", user_id: "user-1", source_type: "url" }, error: null },
+      fetchResult: { data: { id: "doc-1", project_id: "project-1", source_type: "url" }, error: null },
     });
     const embeddingsProvider = fakeEmbeddings();
 

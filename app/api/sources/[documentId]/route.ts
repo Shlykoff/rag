@@ -10,11 +10,19 @@
 // "/api/sources/{documentId}/refresh" are two distinct route trees, each
 // gets its own route.ts.
 //
+// PROJECTS PIVOT: `documents` no longer carries a `user_id` column (see
+// the documents migration) -- ownership is derived one hop through its
+// parent project, so this route now fetches the document's `project_id`
+// first and then verifies that project's ownership via the RLS-scoped
+// session client (lib/supabase/server-client.ts's
+// verifyProjectOwnership()), instead of the old single `.eq("user_id",
+// userId)` filter baked straight into the SELECT/DELETE.
+//
 // Request contract:
 //   DELETE /api/sources/{documentId}
 //   -> 401 { error: "unauthorized" }
-//   -> 404 { error: "not_found" } -- no such document, it belongs to
-//      another user (identical response for both, same posture as
+//   -> 404 { error: "not_found" } -- no such document, its project belongs
+//      to another user (identical response for both, same posture as
 //      refresh/route.ts -- don't let an authenticated-but-unauthorized
 //      caller distinguish the two), OR it was already deleted by a
 //      concurrent request that reached the DB delete first (see the
@@ -29,14 +37,14 @@
 
 import "server-only";
 import { getServiceRoleClient } from "@/lib/supabase/service-client";
-import { getAuthenticatedUser, getRouteHandlerSupabaseClient } from "@/lib/supabase/server-client";
+import { getAuthenticatedUser, getRouteHandlerSupabaseClient, verifyProjectOwnership } from "@/lib/supabase/server-client";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
 interface DocumentRow {
   id: string;
-  user_id: string;
+  project_id: string;
   storage_path: string | null;
 }
 
@@ -53,16 +61,20 @@ export async function DELETE(
   const supabase = getServiceRoleClient();
   const { data: doc, error } = await supabase
     .from("documents")
-    .select("id, user_id, storage_path")
+    .select("id, project_id, storage_path")
     .eq("id", documentId)
     .maybeSingle<DocumentRow>();
   if (error) {
     console.error(`delete route: failed to load document ${documentId}:`, error);
     return Response.json({ error: "internal_error", message: "Не удалось загрузить документ." }, { status: 500 });
   }
-  if (!doc || doc.user_id !== user.id) {
+  if (!doc) {
     // Same "identical response for missing vs. someone else's document" as
     // refresh/route.ts -- see that file's comment for the reasoning.
+    return Response.json({ error: "not_found" }, { status: 404 });
+  }
+  const owned = await verifyProjectOwnership(authClient, doc.project_id);
+  if (!owned) {
     return Response.json({ error: "not_found" }, { status: 404 });
   }
 
@@ -87,24 +99,26 @@ export async function DELETE(
   // from documents/document_chunks, never from Storage directly), so it
   // goes first and its success is what the 200 response below promises.
   // `.select("id")` here is load-bearing, not decoration: without it, a
-  // `DELETE ... WHERE id = X AND user_id = Y` that matches ZERO rows still
-  // comes back with `error: null` from PostgREST -- a delete matching
-  // nothing is not, itself, an error. That's exactly what happens when two
-  // DELETE requests for the same document race each other (e.g. a
-  // double-click, or two tabs): the ownership check above (SELECT) already
-  // passed for both by the time either reaches this DELETE, so without
-  // `.select()` both would fall through to the 200 below even though only
-  // one of them actually removed a row -- confirmed empirically against a
-  // real local Postgres with two concurrent `Promise.all` deletes: the
-  // "loser" gets back `data: []` (an empty array, NOT null) with
-  // `error: null`, not a 404/409/anything distinguishable without checking
-  // `data.length`. See __tests__/route.integration.test.ts's "parallel
-  // DELETE" case, which reproduces this against real Postgres.
+  // `DELETE ... WHERE id = X` that matches ZERO rows still comes back with
+  // `error: null` from PostgREST -- a delete matching nothing is not,
+  // itself, an error. That's exactly what happens when two DELETE requests
+  // for the same document race each other (e.g. a double-click, or two
+  // tabs): the ownership check above already passed for both by the time
+  // either reaches this DELETE, so without `.select()` both would fall
+  // through to the 200 below even though only one of them actually removed
+  // a row -- confirmed empirically against a real local Postgres with two
+  // concurrent `Promise.all` deletes: the "loser" gets back `data: []` (an
+  // empty array, NOT null) with `error: null`, not a 404/409/anything
+  // distinguishable without checking `data.length`. See
+  // __tests__/route.integration.test.ts's "parallel DELETE" case, which
+  // reproduces this against real Postgres. (Ownership is already verified
+  // above via the project, so this DELETE only needs to target `id` --
+  // unlike the pre-pivot version, it can no longer also filter on a
+  // `user_id` column that doesn't exist on `documents` anymore.)
   const { data: deletedRows, error: deleteError } = await supabase
     .from("documents")
     .delete()
     .eq("id", documentId)
-    .eq("user_id", user.id)
     .select("id");
   if (deleteError) {
     console.error(`delete route: failed to delete document ${documentId}:`, deleteError);

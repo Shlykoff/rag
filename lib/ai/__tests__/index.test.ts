@@ -1,15 +1,20 @@
 // lib/ai/__tests__/index.test.ts
 //
-// getAIProviders(userId, supabase) is now per-user, bring-your-own-key
-// (async, reads ai_provider_credentials/user_settings via
-// lib/ai/credentials.ts instead of a process-global AI_PROVIDER env var).
-// This file mocks lib/ai/credentials.ts's DB-backed functions (the same
-// "mock the one module-level dependency, exercise this file's own control
-// flow" pattern as lib/ingestion/__tests__/ingest-default-providers.test.ts)
-// so these tests never need a real Supabase client, while still exercising
-// the REAL provider adapters from lib/ai/providers/ -- so this is still the
+// getAIProviders({projectId, ownerUserId}, supabase) is project-scoped now
+// (projects architecture pivot -- see lib/ai/index.ts's header). This file
+// mocks lib/ai/credentials.ts's DB-backed functions (the same "mock the one
+// module-level dependency, exercise this file's own control flow" pattern
+// as lib/ingestion/__tests__/ingest-default-providers.test.ts) so these
+// tests never need a real Supabase client, while still exercising the REAL
+// provider adapters from lib/ai/providers/ -- so this is still the
 // regression test for the chat/embeddings modelName-separation bug (see the
 // long comment below), just no longer driven by env vars.
+//
+// getAIProviders() itself also does one defense-in-depth `projects` lookup
+// before calling getActiveProvider() -- the fake supabase client below
+// stubs `.from("projects")` to return a matching row for PROJECT_ID/OWNER_ID
+// so that check passes and every test can focus on the provider-registry
+// behavior it actually targets.
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 
@@ -34,7 +39,26 @@ vi.mock("../credentials", () => ({
 import { getAIProviders, getEmbeddingsProvider, getActiveProviderLabel } from "../index";
 import { AIProviderError } from "../errors";
 
-const FAKE_SUPABASE = {} as never; // never touched -- getAIProviderCredential/getActiveProvider are mocked above
+const PROJECT_ID = "project-1";
+const OWNER_ID = "owner-1";
+
+/** Fake service-role-shaped client: only `.from("projects")...` is used directly by getAIProviders() itself (its own defense-in-depth ownership check) -- everything else (getActiveProvider/getAIProviderCredential) is mocked above and never actually touches this client. */
+function fakeSupabase(project: { id: string; user_id: string } | null = { id: PROJECT_ID, user_id: OWNER_ID }) {
+  return {
+    from(table: string) {
+      if (table !== "projects") throw new Error(`fakeSupabase: unexpected table ${table}`);
+      return {
+        select() {
+          return this;
+        },
+        eq() {
+          return this;
+        },
+        maybeSingle: async () => ({ data: project, error: null }),
+      };
+    },
+  } as never;
+}
 
 const ENV_KEYS = [
   "OPENAI_CHAT_MODEL",
@@ -57,7 +81,7 @@ function restoreEnv(saved: SavedEnv): void {
   }
 }
 
-describe("getAIProviders(userId, supabase)", () => {
+describe("getAIProviders({projectId, ownerUserId}, supabase)", () => {
   let saved: SavedEnv;
 
   afterEach(() => {
@@ -65,11 +89,23 @@ describe("getAIProviders(userId, supabase)", () => {
     vi.clearAllMocks();
   });
 
-  it("throws AIProviderError{kind:'no_credentials'} when the user has no active_ai_provider set", async () => {
+  it("throws a plain Error (not AIProviderError) when the project doesn't belong to ownerUserId -- defense in depth, never even reaches getActiveProvider", async () => {
+    saved = saveEnv();
+    const supabase = fakeSupabase({ id: PROJECT_ID, user_id: "someone-else" });
+
+    await expect(getAIProviders({ projectId: PROJECT_ID, ownerUserId: OWNER_ID }, supabase)).rejects.toThrow(
+      /does not exist or does not belong to user/
+    );
+    expect(mockGetActiveProvider).not.toHaveBeenCalled();
+  });
+
+  it("throws AIProviderError{kind:'no_credentials'} when the project has no active_ai_provider set", async () => {
     saved = saveEnv();
     mockGetActiveProvider.mockResolvedValue(null);
 
-    const err = await getAIProviders("user-1", FAKE_SUPABASE).catch((e: unknown) => e);
+    const err = await getAIProviders({ projectId: PROJECT_ID, ownerUserId: OWNER_ID }, fakeSupabase()).catch(
+      (e: unknown) => e
+    );
 
     expect(err).toBeInstanceOf(AIProviderError);
     expect((err as AIProviderError).kind).toBe("no_credentials");
@@ -85,11 +121,13 @@ describe("getAIProviders(userId, supabase)", () => {
     mockGetActiveProvider.mockResolvedValue("openai");
     mockGetAIProviderCredential.mockResolvedValue(null);
 
-    const err = await getAIProviders("user-1", FAKE_SUPABASE).catch((e: unknown) => e);
+    const err = await getAIProviders({ projectId: PROJECT_ID, ownerUserId: OWNER_ID }, fakeSupabase()).catch(
+      (e: unknown) => e
+    );
 
     expect(err).toBeInstanceOf(AIProviderError);
     expect((err as AIProviderError).kind).toBe("no_credentials");
-    expect(mockGetAIProviderCredential).toHaveBeenCalledWith(FAKE_SUPABASE, "user-1", "openai");
+    expect(mockGetAIProviderCredential).toHaveBeenCalledWith(expect.anything(), OWNER_ID, "openai");
   });
 
   // Regression test for a bug reproduced live before this file's env-var
@@ -109,14 +147,17 @@ describe("getAIProviders(userId, supabase)", () => {
     mockGetActiveProvider.mockResolvedValue("openai");
     mockGetAIProviderCredential.mockResolvedValue("test-openai-key");
 
-    const { chatProvider, embeddingsProvider } = await getAIProviders("user-1", FAKE_SUPABASE);
+    const { chatProvider, embeddingsProvider } = await getAIProviders(
+      { projectId: PROJECT_ID, ownerUserId: OWNER_ID },
+      fakeSupabase()
+    );
 
     expect(chatProvider).not.toBe(embeddingsProvider);
     expect(chatProvider.modelName).toBe("gpt-4.1-mini");
     expect(embeddingsProvider.modelName).toBe("text-embedding-3-small");
     expect(chatProvider.providerName).toBe("openai");
     expect(embeddingsProvider.providerName).toBe("openai");
-    expect(mockGetAIProviderCredential).toHaveBeenCalledWith(FAKE_SUPABASE, "user-1", "openai");
+    expect(mockGetAIProviderCredential).toHaveBeenCalledWith(expect.anything(), OWNER_ID, "openai");
   });
 
   it("'gemini': chatProvider and embeddingsProvider are distinct objects with distinct, correct modelNames", async () => {
@@ -126,7 +167,10 @@ describe("getAIProviders(userId, supabase)", () => {
     mockGetActiveProvider.mockResolvedValue("gemini");
     mockGetAIProviderCredential.mockResolvedValue("test-gemini-key");
 
-    const { chatProvider, embeddingsProvider } = await getAIProviders("user-1", FAKE_SUPABASE);
+    const { chatProvider, embeddingsProvider } = await getAIProviders(
+      { projectId: PROJECT_ID, ownerUserId: OWNER_ID },
+      fakeSupabase()
+    );
 
     expect(chatProvider).not.toBe(embeddingsProvider);
     expect(chatProvider.modelName).toBe("gemini-3.6-flash");
@@ -139,26 +183,32 @@ describe("getAIProviders(userId, supabase)", () => {
     saved = saveEnv();
     mockGetActiveProvider.mockResolvedValue("anthropic");
     mockGetAIProviderCredential.mockImplementation(
-      async (_supabase: unknown, _userId: string, provider: string) =>
+      async (_supabase: unknown, _ownerUserId: string, provider: string) =>
         provider === "anthropic" ? "test-anthropic-key" : provider === "voyage" ? "test-voyage-key" : null
     );
 
-    const { chatProvider, embeddingsProvider } = await getAIProviders("user-1", FAKE_SUPABASE);
+    const { chatProvider, embeddingsProvider } = await getAIProviders(
+      { projectId: PROJECT_ID, ownerUserId: OWNER_ID },
+      fakeSupabase()
+    );
 
     expect(chatProvider.providerName).toBe("anthropic");
     expect(embeddingsProvider.providerName).toBe("voyage");
-    expect(mockGetAIProviderCredential).toHaveBeenCalledWith(FAKE_SUPABASE, "user-1", "anthropic");
-    expect(mockGetAIProviderCredential).toHaveBeenCalledWith(FAKE_SUPABASE, "user-1", "voyage");
+    expect(mockGetAIProviderCredential).toHaveBeenCalledWith(expect.anything(), OWNER_ID, "anthropic");
+    expect(mockGetAIProviderCredential).toHaveBeenCalledWith(expect.anything(), OWNER_ID, "voyage");
   });
 
   it("'anthropic': the anthropic credential exists but voyage doesn't -- still 'no_credentials' (fetched independently of setActiveProvider's own prior check)", async () => {
     saved = saveEnv();
     mockGetActiveProvider.mockResolvedValue("anthropic");
     mockGetAIProviderCredential.mockImplementation(
-      async (_supabase: unknown, _userId: string, provider: string) => (provider === "anthropic" ? "test-anthropic-key" : null)
+      async (_supabase: unknown, _ownerUserId: string, provider: string) =>
+        provider === "anthropic" ? "test-anthropic-key" : null
     );
 
-    const err = await getAIProviders("user-1", FAKE_SUPABASE).catch((e: unknown) => e);
+    const err = await getAIProviders({ projectId: PROJECT_ID, ownerUserId: OWNER_ID }, fakeSupabase()).catch(
+      (e: unknown) => e
+    );
     expect(err).toBeInstanceOf(AIProviderError);
     expect((err as AIProviderError).kind).toBe("no_credentials");
   });
@@ -170,41 +220,46 @@ describe("getAIProviders(userId, supabase)", () => {
     mockGetActiveProvider.mockResolvedValue("openai");
     mockGetAIProviderCredential.mockResolvedValue("test-openai-key");
 
-    const { chatProvider, embeddingsProvider } = await getAIProviders("user-1", FAKE_SUPABASE);
+    const { chatProvider, embeddingsProvider } = await getAIProviders(
+      { projectId: PROJECT_ID, ownerUserId: OWNER_ID },
+      fakeSupabase()
+    );
 
     expect(chatProvider.modelName).toBe("gpt-4.1-mini");
     expect(embeddingsProvider.modelName).toBe("text-embedding-3-large");
   });
 });
 
-describe("getEmbeddingsProvider(userId, supabase)", () => {
+describe("getEmbeddingsProvider({projectId, ownerUserId}, supabase)", () => {
   afterEach(() => vi.clearAllMocks());
 
   it("returns just the embeddingsProvider half of getAIProviders()'s pair", async () => {
     mockGetActiveProvider.mockResolvedValue("gemini");
     mockGetAIProviderCredential.mockResolvedValue("test-gemini-key");
 
-    const embeddingsProvider = await getEmbeddingsProvider("user-1", FAKE_SUPABASE);
+    const embeddingsProvider = await getEmbeddingsProvider({ projectId: PROJECT_ID, ownerUserId: OWNER_ID }, fakeSupabase());
     expect(embeddingsProvider.providerName).toBe("gemini");
     expect(embeddingsProvider.modelName).toBe("gemini-embedding-001");
   });
 
   it("propagates the 'no_credentials' failure the same way getAIProviders() does", async () => {
     mockGetActiveProvider.mockResolvedValue(null);
-    await expect(getEmbeddingsProvider("user-1", FAKE_SUPABASE)).rejects.toMatchObject({ kind: "no_credentials" });
+    await expect(
+      getEmbeddingsProvider({ projectId: PROJECT_ID, ownerUserId: OWNER_ID }, fakeSupabase())
+    ).rejects.toMatchObject({ kind: "no_credentials" });
   });
 });
 
-describe("getActiveProviderLabel(userId, supabase)", () => {
+describe("getActiveProviderLabel(projectId, supabase)", () => {
   afterEach(() => vi.clearAllMocks());
 
-  it("returns null (never throws) when the user has no active provider", async () => {
+  it("returns null (never throws) when the project has no active provider", async () => {
     mockGetActiveProvider.mockResolvedValue(null);
-    expect(await getActiveProviderLabel("user-1", FAKE_SUPABASE)).toBeNull();
+    expect(await getActiveProviderLabel(PROJECT_ID, fakeSupabase())).toBeNull();
   });
 
-  it("returns the registry's display label for the user's active provider", async () => {
+  it("returns the registry's display label for the project's active provider", async () => {
     mockGetActiveProvider.mockResolvedValue("gemini");
-    expect(await getActiveProviderLabel("user-1", FAKE_SUPABASE)).toBe("Google Gemini");
+    expect(await getActiveProviderLabel(PROJECT_ID, fakeSupabase())).toBe("Google Gemini");
   });
 });

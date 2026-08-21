@@ -4,10 +4,14 @@
 // -- mirrors lib/sources/__tests__/credentials.integration.test.ts's shape
 // (same reasoning: verify the `bytea` wire-format assumption against a real
 // column, not just a fake client that could agree with a wrong assumption
-// on both the write and read side), extended with this module's two extra
-// concerns lib/sources/credentials.ts doesn't have: deleteAIProviderCredential()
-// and the getActiveProvider()/setActiveProvider() pair's cross-credential
-// validation (anthropic requires BOTH an anthropic AND a voyage row).
+// on both the write and read side).
+//
+// PROJECTS PIVOT: getActiveProvider()/setActiveProvider() are project-scoped
+// now (`projects.active_ai_provider`, see credentials.ts's header) --
+// every test below creates a real `projects` row via
+// lib/testing/integration-helpers.ts's createTestProject() and exercises
+// the pair through that, including the new ownerUserId ownership check on
+// setActiveProvider().
 
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { randomBytes } from "node:crypto";
@@ -21,7 +25,13 @@ import {
   setActiveProvider,
   MissingProviderCredentialsError,
 } from "../credentials";
-import { createTestUser, deleteTestUser, hasIntegrationEnv, makeIntegrationSupabaseClient } from "../../testing/integration-helpers";
+import {
+  createTestProject,
+  createTestUser,
+  deleteTestUser,
+  hasIntegrationEnv,
+  makeIntegrationSupabaseClient,
+} from "../../testing/integration-helpers";
 
 describe.skipIf(!hasIntegrationEnv() || !process.env.CREDENTIALS_ENCRYPTION_KEY)(
   "AI provider credentials (integration, real Supabase)",
@@ -97,34 +107,43 @@ describe.skipIf(!hasIntegrationEnv() || !process.env.CREDENTIALS_ENCRYPTION_KEY)
       }
     });
 
-    describe("getActiveProvider / setActiveProvider", () => {
-      it("getActiveProvider is null before any user_settings row exists (lazy row, not a default 'openai' or similar)", async () => {
+    describe("getActiveProvider / setActiveProvider (project-scoped)", () => {
+      it("getActiveProvider is null for a freshly-created project (active_ai_provider starts null, not a default 'openai' or similar)", async () => {
         const freshUser = await createTestUser(supabase, "ai-credentials-active-fresh");
         try {
-          expect(await getActiveProvider(supabase, freshUser.id)).toBeNull();
+          const project = await createTestProject(supabase, freshUser.id);
+          expect(await getActiveProvider(supabase, project.id)).toBeNull();
         } finally {
           await deleteTestUser(supabase, freshUser.id);
         }
       });
 
-      it("setActiveProvider succeeds for openai/gemini once their own credential exists, and getActiveProvider reflects it", async () => {
+      it("getActiveProvider throws for a project id that doesn't exist (distinct from 'not configured yet')", async () => {
+        await expect(getActiveProvider(supabase, "00000000-0000-0000-0000-000000000000")).rejects.toThrow(
+          /does not exist/
+        );
+      });
+
+      it("setActiveProvider succeeds for openai/gemini once their owner's own credential exists, and getActiveProvider reflects it", async () => {
         const u = await createTestUser(supabase, "ai-credentials-active-openai");
         try {
+          const project = await createTestProject(supabase, u.id);
           await saveAIProviderCredential(supabase, u.id, "openai", "some-openai-key");
-          await setActiveProvider(supabase, u.id, "openai");
-          expect(await getActiveProvider(supabase, u.id)).toBe("openai");
+          await setActiveProvider(supabase, project.id, u.id, "openai");
+          expect(await getActiveProvider(supabase, project.id)).toBe("openai");
         } finally {
           await deleteTestUser(supabase, u.id);
         }
       });
 
-      it("setActiveProvider rejects 'openai' with MissingProviderCredentialsError when no openai credential is stored, and does not write user_settings", async () => {
+      it("setActiveProvider rejects 'openai' with MissingProviderCredentialsError when the owner has no openai credential stored, and does not write projects.active_ai_provider", async () => {
         const u = await createTestUser(supabase, "ai-credentials-active-missing");
         try {
-          await expect(setActiveProvider(supabase, u.id, "openai")).rejects.toBeInstanceOf(
+          const project = await createTestProject(supabase, u.id);
+          await expect(setActiveProvider(supabase, project.id, u.id, "openai")).rejects.toBeInstanceOf(
             MissingProviderCredentialsError
           );
-          expect(await getActiveProvider(supabase, u.id)).toBeNull();
+          expect(await getActiveProvider(supabase, project.id)).toBeNull();
         } finally {
           await deleteTestUser(supabase, u.id);
         }
@@ -133,11 +152,12 @@ describe.skipIf(!hasIntegrationEnv() || !process.env.CREDENTIALS_ENCRYPTION_KEY)
       it("setActiveProvider('anthropic') requires BOTH an anthropic AND a voyage credential -- rejects with only one saved", async () => {
         const u = await createTestUser(supabase, "ai-credentials-active-anthropic-partial");
         try {
+          const project = await createTestProject(supabase, u.id);
           await saveAIProviderCredential(supabase, u.id, "anthropic", "claude-key-only");
-          const err = await setActiveProvider(supabase, u.id, "anthropic").catch((e: unknown) => e);
+          const err = await setActiveProvider(supabase, project.id, u.id, "anthropic").catch((e: unknown) => e);
           expect(err).toBeInstanceOf(MissingProviderCredentialsError);
           expect((err as InstanceType<typeof MissingProviderCredentialsError>).missing).toEqual(["voyage"]);
-          expect(await getActiveProvider(supabase, u.id)).toBeNull();
+          expect(await getActiveProvider(supabase, project.id)).toBeNull();
         } finally {
           await deleteTestUser(supabase, u.id);
         }
@@ -146,10 +166,11 @@ describe.skipIf(!hasIntegrationEnv() || !process.env.CREDENTIALS_ENCRYPTION_KEY)
       it("setActiveProvider('anthropic') succeeds once BOTH anthropic and voyage credentials exist", async () => {
         const u = await createTestUser(supabase, "ai-credentials-active-anthropic-full");
         try {
+          const project = await createTestProject(supabase, u.id);
           await saveAIProviderCredential(supabase, u.id, "anthropic", "claude-key");
           await saveAIProviderCredential(supabase, u.id, "voyage", "voyage-key");
-          await setActiveProvider(supabase, u.id, "anthropic");
-          expect(await getActiveProvider(supabase, u.id)).toBe("anthropic");
+          await setActiveProvider(supabase, project.id, u.id, "anthropic");
+          expect(await getActiveProvider(supabase, project.id)).toBe("anthropic");
         } finally {
           await deleteTestUser(supabase, u.id);
         }
@@ -158,14 +179,31 @@ describe.skipIf(!hasIntegrationEnv() || !process.env.CREDENTIALS_ENCRYPTION_KEY)
       it("setActiveProvider upserts (switching from one active provider to another works, not just the first-ever set)", async () => {
         const u = await createTestUser(supabase, "ai-credentials-active-switch");
         try {
+          const project = await createTestProject(supabase, u.id);
           await saveAIProviderCredential(supabase, u.id, "openai", "key-1");
           await saveAIProviderCredential(supabase, u.id, "gemini", "key-2");
-          await setActiveProvider(supabase, u.id, "openai");
-          expect(await getActiveProvider(supabase, u.id)).toBe("openai");
-          await setActiveProvider(supabase, u.id, "gemini");
-          expect(await getActiveProvider(supabase, u.id)).toBe("gemini");
+          await setActiveProvider(supabase, project.id, u.id, "openai");
+          expect(await getActiveProvider(supabase, project.id)).toBe("openai");
+          await setActiveProvider(supabase, project.id, u.id, "gemini");
+          expect(await getActiveProvider(supabase, project.id)).toBe("gemini");
         } finally {
           await deleteTestUser(supabase, u.id);
+        }
+      });
+
+      it("setActiveProvider rejects when the project belongs to a DIFFERENT user than ownerUserId, even if ownerUserId itself has the credential", async () => {
+        const owner = await createTestUser(supabase, "ai-credentials-owner");
+        const impostor = await createTestUser(supabase, "ai-credentials-impostor");
+        try {
+          const project = await createTestProject(supabase, owner.id);
+          await saveAIProviderCredential(supabase, impostor.id, "openai", "impostor-key");
+          await expect(setActiveProvider(supabase, project.id, impostor.id, "openai")).rejects.toThrow(
+            /belongs to user/
+          );
+          expect(await getActiveProvider(supabase, project.id)).toBeNull();
+        } finally {
+          await deleteTestUser(supabase, owner.id);
+          await deleteTestUser(supabase, impostor.id);
         }
       });
     });

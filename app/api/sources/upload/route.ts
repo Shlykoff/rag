@@ -1,31 +1,41 @@
 // app/api/sources/upload/route.ts
 //
 // Manual file upload: PDF/markdown/txt via multipart/form-data. Thin HTTP
-// adapter -- auth -> lib/sources/manual-upload.ts (validate + extract
-// text) -> lib/sources/pipeline.ts (Storage + ingest). See those modules
-// for the actual logic.
+// adapter -- auth -> project-ownership check -> lib/sources/manual-upload.ts
+// (validate + extract text) -> lib/sources/pipeline.ts (Storage + ingest).
+// See those modules for the actual logic.
+//
+// PROJECTS PIVOT: `projectId` is now a required form field (documents are
+// project-scoped, see the documents migration) -- it's read BEFORE the
+// project-ownership check and the (now project-keyed) rate limit, but
+// still strictly before any adapter/AI-provider work, preserving CLAUDE.md
+// rule 4's "checked before doing the billed work" intent even though the
+// exact ordering relative to "parse the request body" shifted (previously
+// the rate limit ran before even reading the multipart body at all, back
+// when it was keyed by the authenticated user id alone).
 //
 // Request contract:
 //   POST /api/sources/upload
-//   body: multipart/form-data, field "file"
+//   body: multipart/form-data, fields "file" and "projectId"
 //   -> 401 { error: "unauthorized" }
+//   -> 400 { error: "invalid_request", details } -- missing/oversized file, missing/malformed projectId
+//   -> 404 { error: "not_found" } -- projectId doesn't exist or doesn't belong to the signed-in user
 //   -> 429 { error: "rate_limited", message, retryAfterMs } -- Retry-After header set, in seconds
-//   -> 400 { error: "invalid_request", details } -- missing/oversized file
 //   -> 400/422/500 { error: <SourceError.kind>, message } -- see
 //      lib/sources/http-error.ts (unsupported type, empty content, ...)
-//   -> 422 { error: "no_credentials", message } if the signed-in user has no
-//      active AI provider configured yet (or its stored credential(s) are
-//      missing) -- see lib/ai/index.ts's getAIProviders() and
-//      lib/sources/http-error.ts's sourceErrorResponse(), same contract as
-//      app/api/chat/route.ts's 422 (nextjs-frontend's "add a provider" UI
-//      reacts to this code the same way regardless of which endpoint sent
-//      it). Deliberately not logged via console.error -- expected per-user
-//      state, not a server fault.
+//   -> 422 { error: "no_credentials", message } if this project has no
+//      active AI provider configured yet (or its owner's stored
+//      credential(s) are missing) -- see lib/ai/index.ts's getAIProviders()
+//      and lib/sources/http-error.ts's sourceErrorResponse(), same contract
+//      as app/api/chat/route.ts's 422 (nextjs-frontend's "add a provider"
+//      UI reacts to this code the same way regardless of which endpoint
+//      sent it). Deliberately not logged via console.error -- expected
+//      per-project state, not a server fault.
 //   -> 201 { documentId, chunkCount, status: "ready" }
 
 import "server-only";
 import { getServiceRoleClient } from "@/lib/supabase/service-client";
-import { getAuthenticatedUser, getRouteHandlerSupabaseClient } from "@/lib/supabase/server-client";
+import { getAuthenticatedUser, getRouteHandlerSupabaseClient, verifyProjectOwnership } from "@/lib/supabase/server-client";
 import { processManualUpload, MANUAL_UPLOAD_MAX_BYTES } from "@/lib/sources/manual-upload";
 import { createDocumentFromSource } from "@/lib/sources/pipeline";
 import { sourceErrorResponse, sourceIngestRateLimitedResponse } from "@/lib/sources/http-error";
@@ -41,22 +51,33 @@ export async function POST(request: Request): Promise<Response> {
     return Response.json({ error: "unauthorized" }, { status: 401 });
   }
 
-  // Rate limit check happens BEFORE reading the body / calling any
-  // adapter or AI-provider work -- CLAUDE.md rule 4, mirroring
-  // app/api/chat/route.ts's placement. See
-  // lib/rate-limit/source-ingest-rate-limiter.ts's module comment for why
-  // this is a separate, in-memory limiter rather than reusing the chat
-  // limiter's usage_events-backed one.
-  const rateLimit = checkSourceIngestRateLimit(user.id);
-  if (!rateLimit.allowed) {
-    return sourceIngestRateLimitedResponse(rateLimit);
-  }
-
   let formData: FormData;
   try {
     formData = await request.formData();
   } catch {
     return Response.json({ error: "invalid_request", details: "Expected multipart/form-data." }, { status: 400 });
+  }
+
+  const projectId = formData.get("projectId");
+  if (typeof projectId !== "string" || projectId.length === 0) {
+    return Response.json({ error: "invalid_request", details: "Missing 'projectId' field." }, { status: 400 });
+  }
+
+  const owned = await verifyProjectOwnership(authClient, projectId);
+  if (!owned) {
+    return Response.json({ error: "not_found" }, { status: 404 });
+  }
+
+  // Rate limit check happens after parsing/ownership (both cheap, no
+  // network/AI-provider work) but BEFORE any adapter/AI-provider work --
+  // CLAUDE.md rule 4, mirroring app/api/chat/route.ts's placement. See
+  // lib/rate-limit/source-ingest-rate-limiter.ts's module comment for why
+  // this is a separate, in-memory limiter rather than reusing the chat
+  // limiter's usage_events-backed one. Keyed by projectId now (not
+  // userId), same as every other sources route.
+  const rateLimit = checkSourceIngestRateLimit(projectId);
+  if (!rateLimit.allowed) {
+    return sourceIngestRateLimitedResponse(rateLimit);
   }
 
   const file = formData.get("file");
@@ -81,7 +102,8 @@ export async function POST(request: Request): Promise<Response> {
   try {
     const normalized = await processManualUpload({ filename: file.name, mimeType: file.type || null, buffer });
     const result = await createDocumentFromSource(supabase, {
-      userId: user.id,
+      projectId,
+      ownerUserId: user.id,
       title: normalized.title,
       sourceType: "manual_upload",
       sourceRef: null,

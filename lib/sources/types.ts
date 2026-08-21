@@ -15,8 +15,9 @@ export type DocumentSourceType = "manual_upload" | "notion" | "url" | "google_dr
  * origin, matching the `{ title, text, sourceType, sourceRef, storagePath?
  * }` shape from CLAUDE.md. `storagePath` is optional and, in this
  * implementation, always left undefined by adapters: the Storage object
- * path is "<user_id>/<document_id>/..." (see the documents table
- * migration), and document_id doesn't exist yet at the point an adapter
+ * path is "<project_id>/<document_id>/..." (see the documents table
+ * migration, rescoped from "<user_id>/..." by the projects architecture
+ * pivot), and document_id doesn't exist yet at the point an adapter
  * runs -- lib/sources/pipeline.ts computes and fills it in once the
  * `documents` row has been inserted. The field is kept on this interface
  * for contract-compatibility (an adapter that already knows its own

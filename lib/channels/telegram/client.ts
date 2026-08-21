@@ -1,0 +1,114 @@
+// lib/channels/telegram/client.ts
+//
+// Raw `fetch` wrapper over the Telegram Bot API (https://api.telegram.org/bot<token>/...)
+// -- no SDK dependency, per the task's explicit preference for this
+// module. Two calls only: sendMessage (outbound replies) and setWebhook
+// (used by scripts/telegram-set-webhook.ts, the bootstrap script -- not
+// called at request time). This file has no error-swallowing of its own:
+// every function here either resolves or throws a plain Error describing
+// the failure; it's the CALLER's job to decide whether that's fatal
+// (scripts/telegram-set-webhook.ts, run interactively) or something to
+// catch-log-and-continue (lib/channels/telegram/adapter.ts's webhook path,
+// which must never let an outbound failure propagate into a non-200
+// response -- see that file's own try/catch around every call here).
+
+import "server-only";
+
+const TELEGRAM_API_BASE = "https://api.telegram.org";
+// Telegram's documented hard limit on a single message's text length. A
+// reply longer than this is split into multiple sendMessage calls (see
+// splitTelegramMessage / sendTelegramMessage below) rather than truncated
+// or rejected.
+const TELEGRAM_MESSAGE_MAX_LENGTH = 4096;
+
+function botApiUrl(botToken: string, method: string): string {
+  return `${TELEGRAM_API_BASE}/bot${botToken}/${method}`;
+}
+
+/** Best-effort redaction so a thrown error's message never contains the live bot token, even though it's already embedded in the request URL this function builds -- errors from this module can end up in server logs. */
+function redactToken(url: string, botToken: string): string {
+  return url.replace(botToken, "<redacted>");
+}
+
+async function callTelegramApi(botToken: string, method: string, body: Record<string, unknown>): Promise<unknown> {
+  const url = botApiUrl(botToken, method);
+  let response: Response;
+  try {
+    response = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+  } catch (err) {
+    throw new Error(`Telegram API ${method} network error: ${err instanceof Error ? err.message : String(err)} (${redactToken(url, botToken)})`);
+  }
+  const payload = (await response.json().catch(() => null)) as { ok?: boolean; description?: string } | null;
+  if (!response.ok || !payload?.ok) {
+    throw new Error(
+      `Telegram API ${method} failed (${response.status}): ${payload?.description ?? "unknown error"} (${redactToken(url, botToken)})`
+    );
+  }
+  return payload;
+}
+
+/**
+ * Splits `text` into chunks no longer than `maxLength`, preferring to break
+ * at a paragraph boundary, then a line boundary, then a word boundary,
+ * falling back to a hard cut only if none of those exist within the limit
+ * (e.g. one extremely long unbroken line). Pure function, no I/O -- unit
+ * tested directly.
+ */
+export function splitTelegramMessage(text: string, maxLength: number = TELEGRAM_MESSAGE_MAX_LENGTH): string[] {
+  if (text.length <= maxLength) return text.length > 0 ? [text] : [];
+
+  const parts: string[] = [];
+  let remaining = text;
+  while (remaining.length > maxLength) {
+    const window = remaining.slice(0, maxLength);
+    let cut =
+      window.lastIndexOf("\n\n") > 0
+        ? window.lastIndexOf("\n\n")
+        : window.lastIndexOf("\n") > 0
+          ? window.lastIndexOf("\n")
+          : window.lastIndexOf(" ") > 0
+            ? window.lastIndexOf(" ")
+            : -1;
+    if (cut <= 0) cut = maxLength; // no good boundary at all -- hard cut
+    const chunk = remaining.slice(0, cut).trimEnd();
+    if (chunk.length > 0) parts.push(chunk);
+    remaining = remaining.slice(cut).trimStart();
+  }
+  if (remaining.length > 0) parts.push(remaining);
+  return parts;
+}
+
+/**
+ * Sends `text` to `chatId`, splitting into multiple messages if it exceeds
+ * Telegram's length limit (sent in order, awaited sequentially so they
+ * arrive in the right sequence). Deliberately plain text only -- NO
+ * `parse_mode` -- see lib/channels/telegram/adapter.ts's own comment on
+ * why: LLM output isn't guaranteed to be escaped for MarkdownV2/HTML, and
+ * a 400 from a malformed `parse_mode` payload here means the participant
+ * gets nothing back for an otherwise-successful turn.
+ */
+export async function sendTelegramMessage(botToken: string, chatId: string, text: string): Promise<void> {
+  const chunks = splitTelegramMessage(text);
+  for (const chunk of chunks) {
+    await callTelegramApi(botToken, "sendMessage", { chat_id: chatId, text: chunk });
+  }
+}
+
+/**
+ * Registers `webhookUrl` as this bot's webhook, with `secretToken` set as
+ * Telegram's `secret_token` (echoed back on every delivery as the
+ * `X-Telegram-Bot-Api-Secret-Token` header -- see adapter.ts's
+ * verification of it). Used only by scripts/telegram-set-webhook.ts, never
+ * at request time.
+ */
+export async function setTelegramWebhook(botToken: string, webhookUrl: string, secretToken: string): Promise<void> {
+  await callTelegramApi(botToken, "setWebhook", {
+    url: webhookUrl,
+    secret_token: secretToken,
+    allowed_updates: ["message"],
+  });
+}

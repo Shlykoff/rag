@@ -20,6 +20,7 @@ import { AIProviderError } from "@/lib/ai/errors";
 
 const mockGetRouteHandlerSupabaseClient = vi.fn();
 const mockGetAuthenticatedUser = vi.fn();
+const mockVerifyProjectOwnership = vi.fn();
 const mockGetServiceRoleClient = vi.fn();
 const mockSyncGoogleDriveFolder = vi.fn();
 const mockUpsertDocumentFromSource = vi.fn();
@@ -27,6 +28,7 @@ const mockUpsertDocumentFromSource = vi.fn();
 vi.mock("@/lib/supabase/server-client", () => ({
   getRouteHandlerSupabaseClient: () => mockGetRouteHandlerSupabaseClient(),
   getAuthenticatedUser: (client: unknown) => mockGetAuthenticatedUser(client),
+  verifyProjectOwnership: (...args: unknown[]) => mockVerifyProjectOwnership(...args),
 }));
 
 vi.mock("@/lib/supabase/service-client", () => ({
@@ -56,19 +58,34 @@ function noCredentialsError(): AIProviderError {
     provider: "none",
     kind: "no_credentials",
     retryable: false,
-    message: "getAIProviders: user user-1 has no active_ai_provider set.",
-    userMessage: "Добавьте и выберите AI-провайдера в профиле, чтобы начать общаться с ассистентом.",
+    message: "getAIProviders: project project-1 has no active_ai_provider set.",
+    userMessage: "Добавьте и выберите AI-провайдера для этого проекта, чтобы начать общаться с ассистентом.",
   });
 }
+
+const PROJECT_ID = "11111111-1111-4111-8111-111111111111";
 
 describe("POST /api/sources/google-drive", () => {
   afterEach(() => {
     vi.clearAllMocks();
   });
 
-  it("returns 422 { error: 'no_credentials' } and stops after the first file, without logging it as a server error, when the user has no active AI provider", async () => {
+  it("returns 404 { error: 'not_found' } when the project doesn't belong to the signed-in user, without touching Drive", async () => {
     mockGetRouteHandlerSupabaseClient.mockResolvedValue({});
     mockGetAuthenticatedUser.mockResolvedValue({ id: "user-1", email: "a@b.com" });
+    mockVerifyProjectOwnership.mockResolvedValue(false);
+
+    const response = await POST(makeRequest({ projectId: PROJECT_ID, folderId: "folder-1" }));
+
+    expect(response.status).toBe(404);
+    expect(await response.json()).toEqual({ error: "not_found" });
+    expect(mockSyncGoogleDriveFolder).not.toHaveBeenCalled();
+  });
+
+  it("returns 422 { error: 'no_credentials' } and stops after the first file, without logging it as a server error, when the project has no active AI provider", async () => {
+    mockGetRouteHandlerSupabaseClient.mockResolvedValue({});
+    mockGetAuthenticatedUser.mockResolvedValue({ id: "user-1", email: "a@b.com" });
+    mockVerifyProjectOwnership.mockResolvedValue(true);
     mockGetServiceRoleClient.mockReturnValue({});
     mockSyncGoogleDriveFolder.mockResolvedValue({
       imported: [
@@ -80,12 +97,12 @@ describe("POST /api/sources/google-drive", () => {
     mockUpsertDocumentFromSource.mockRejectedValue(noCredentialsError());
     const consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
 
-    const response = await POST(makeRequest({ folderId: "folder-1" }));
+    const response = await POST(makeRequest({ projectId: PROJECT_ID, folderId: "folder-1" }));
 
     expect(response.status).toBe(422);
     expect(await response.json()).toEqual({
       error: "no_credentials",
-      message: "Добавьте и выберите AI-провайдера в профиле, чтобы начать общаться с ассистентом.",
+      message: "Добавьте и выберите AI-провайдера для этого проекта, чтобы начать общаться с ассистентом.",
     });
     // Fails fast on the first file instead of retrying the same guaranteed
     // failure for every remaining file in the folder.
@@ -98,6 +115,7 @@ describe("POST /api/sources/google-drive", () => {
   it("still reports a genuinely per-file failure as status: 'error' for just that file and continues syncing the rest (unaffected by the no_credentials short-circuit)", async () => {
     mockGetRouteHandlerSupabaseClient.mockResolvedValue({});
     mockGetAuthenticatedUser.mockResolvedValue({ id: "user-2", email: "a@b.com" });
+    mockVerifyProjectOwnership.mockResolvedValue(true);
     mockGetServiceRoleClient.mockReturnValue({});
     mockSyncGoogleDriveFolder.mockResolvedValue({
       imported: [
@@ -111,7 +129,7 @@ describe("POST /api/sources/google-drive", () => {
       .mockResolvedValueOnce({ documentId: "doc-2", chunkCount: 3, created: true });
     const consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
 
-    const response = await POST(makeRequest({ folderId: "folder-1" }));
+    const response = await POST(makeRequest({ projectId: PROJECT_ID, folderId: "folder-1" }));
 
     expect(response.status).toBe(200);
     expect(await response.json()).toEqual({

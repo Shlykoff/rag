@@ -6,18 +6,20 @@
 // adapter from lib/ai/providers/, and never a vendor SDK directly
 // (CLAUDE.md rule 4).
 //
-// Bring-your-own-key: the provider pair returned here is per-USER, not
-// process-global. Each signed-in user picks one active provider
-// (`user_settings.active_ai_provider`) and supplies their own encrypted API
-// key(s) (`ai_provider_credentials`, see lib/ai/credentials.ts) via
-// app/api/profile/ai-providers/route.ts. There is no more `AI_PROVIDER`/
-// `*_API_KEY` env-var-driven global default for the running app -- those
-// env vars still exist in .env.example, but their only remaining purpose is
-// feeding scripts/seed-ai-credentials.ts (`npm run seed:ai-keys`), which
-// seeds the *demo account's* row in these same per-user tables from
-// .env.local at setup time. See that script's header and README "Running
-// locally" for why skipping it breaks the demo account exactly like an
-// unconfigured real user.
+// Bring-your-own-key, now PROJECT-scoped (projects architecture pivot):
+// each project picks one active provider (`projects.active_ai_provider`,
+// moved off the dropped `user_settings` table) and uses its owner's own
+// encrypted API key(s) (`ai_provider_credentials`, still account-level --
+// see lib/ai/credentials.ts) via app/api/profile/ai-providers/route.ts
+// (connect a credential, account-level) plus a project-level "which
+// connected provider does THIS project use" selection (Stage C UI). There
+// is no more `AI_PROVIDER`/`*_API_KEY` env-var-driven global default for
+// the running app -- those env vars still exist in .env.example, but their
+// only remaining purpose is feeding scripts/seed-ai-credentials.ts
+// (`npm run seed:ai-keys`), which seeds the *demo project's* row in these
+// same tables from .env.local at setup time. See that script's header and
+// README "Running locally" for why skipping it breaks the demo account
+// exactly like an unconfigured real project.
 //
 // anthropic has no embeddings API of its own, so activating 'anthropic'
 // always pairs AnthropicChatProvider with VoyageEmbeddingsProvider -- this
@@ -36,11 +38,13 @@ import { AIProviderError } from "./errors";
 import { getActiveProvider, getAIProviderCredential, type AIProviderCredentialType } from "./credentials";
 
 /**
- * Loads one provider's decrypted API key for `userId`, or throws a
- * normalized AIProviderError{kind:"no_credentials"} if it isn't stored.
- * This is the async, per-user replacement for the old `requireEnv(name)`
- * helper -- same "fail loudly and clearly, right where the key is needed"
- * shape, but reading from ai_provider_credentials instead of process.env.
+ * Loads one provider's decrypted API key for `ownerUserId` (the project's
+ * owner -- credentials stay account-level, see lib/ai/credentials.ts), or
+ * throws a normalized AIProviderError{kind:"no_credentials"} if it isn't
+ * stored. This is the async, per-account replacement for the old
+ * `requireEnv(name)` helper -- same "fail loudly and clearly, right where
+ * the key is needed" shape, but reading from ai_provider_credentials
+ * instead of process.env.
  *
  * The "credential row missing" case this guards against isn't just
  * theoretical: `active_ai_provider` can point at a provider whose
@@ -51,10 +55,10 @@ import { getActiveProvider, getAIProviderCredential, type AIProviderCredentialTy
  */
 async function requireCredential(
   supabase: SupabaseClient,
-  userId: string,
+  ownerUserId: string,
   provider: AIProviderCredentialType
 ): Promise<string> {
-  const apiKey = await getAIProviderCredential(supabase, userId, provider);
+  const apiKey = await getAIProviderCredential(supabase, ownerUserId, provider);
   if (!apiKey) {
     throw new AIProviderError({
       provider: "none",
@@ -63,7 +67,7 @@ async function requireCredential(
       // Internal/log message only -- never shown to the end user (see
       // AIProviderErrorInit's own field comments). Safe to be this
       // specific since it never reaches a response body.
-      message: `getAIProviders: user ${userId} has no stored '${provider}' credential.`,
+      message: `getAIProviders: user ${ownerUserId} has no stored '${provider}' credential.`,
       userMessage:
         "Добавьте свой API-ключ AI-провайдера в профиле, чтобы начать общаться с ассистентом.",
     });
@@ -74,7 +78,8 @@ async function requireCredential(
 interface ProviderRegistryEntry {
   /** Human-readable label for the "работает на: ..." UI badge (lib/ui/ai-provider.ts, via getActiveProviderLabel() below) -- kept next to the construction logic so a new provider's label can't be added in one place and forgotten in the other. */
   label: string;
-  build: (userId: string, supabase: SupabaseClient) => Promise<AIProviderPair>;
+  /** `ownerUserId` is the project owner whose account-level credentials are used to build this provider pair -- see requireCredential()'s comment. */
+  build: (ownerUserId: string, supabase: SupabaseClient) => Promise<AIProviderPair>;
 }
 
 /**
@@ -96,9 +101,9 @@ const PROVIDER_REGISTRY = {
     // comment for why a single dual-interface object was the bug here
     // (embeddingsProvider.modelName used to silently read back the chat
     // model, e.g. in document_chunks.embedding_model).
-    build: async (userId, supabase): Promise<AIProviderPair> =>
+    build: async (ownerUserId, supabase): Promise<AIProviderPair> =>
       createOpenAICompatiblePair({
-        apiKey: await requireCredential(supabase, userId, "openai"),
+        apiKey: await requireCredential(supabase, ownerUserId, "openai"),
         chatModel: process.env.OPENAI_CHAT_MODEL || "gpt-4.1-mini",
         embeddingModel: process.env.OPENAI_EMBEDDING_MODEL || "text-embedding-3-small",
       }),
@@ -112,10 +117,10 @@ const PROVIDER_REGISTRY = {
     // lib/ai/credentials.ts -- but this fetches them independently rather
     // than trusting that invariant still holds, per requireCredential()'s
     // own comment on credentials being deletable after activation).
-    build: async (userId, supabase): Promise<AIProviderPair> => {
+    build: async (ownerUserId, supabase): Promise<AIProviderPair> => {
       const [anthropicKey, voyageKey] = await Promise.all([
-        requireCredential(supabase, userId, "anthropic"),
-        requireCredential(supabase, userId, "voyage"),
+        requireCredential(supabase, ownerUserId, "anthropic"),
+        requireCredential(supabase, ownerUserId, "voyage"),
       ]);
       return {
         chatProvider: new AnthropicChatProvider({
@@ -133,9 +138,9 @@ const PROVIDER_REGISTRY = {
     label: "Google Gemini",
     // Same two-views-over-one-client shape as 'openai' above -- see
     // providers/gemini.ts's doc comment.
-    build: async (userId, supabase): Promise<AIProviderPair> =>
+    build: async (ownerUserId, supabase): Promise<AIProviderPair> =>
       createGeminiProvider({
-        apiKey: await requireCredential(supabase, userId, "gemini"),
+        apiKey: await requireCredential(supabase, ownerUserId, "gemini"),
         chatModel: process.env.GEMINI_CHAT_MODEL || "gemini-3.6-flash",
         embeddingModel: process.env.GEMINI_EMBEDDING_MODEL || "gemini-embedding-001",
       }),
@@ -151,45 +156,89 @@ export function getProviderLabel(provider: string): string | undefined {
   return (PROVIDER_REGISTRY as Record<string, ProviderRegistryEntry>)[provider]?.label;
 }
 
+/** Params for getAIProviders()/getEmbeddingsProvider() -- see those functions' doc comments. */
+export interface GetAIProvidersParams {
+  /** The project whose `active_ai_provider` selection to build a pair for. */
+  projectId: string;
+  /** The project's owner (already server-validated by the caller -- e.g. the RLS-scoped ownership check in app/api/chat/route.ts, or the gateway's own service-role project-owner lookup for external channels), whose account-level ai_provider_credentials are used. */
+  ownerUserId: string;
+}
+
 /**
  * The single entry point the rest of the app should use to get a working
  * {chatProvider, embeddingsProvider} pair for one request. Looks up
- * `userId`'s active provider (lib/ai/credentials.ts's getActiveProvider())
- * and, if set, builds that provider's adapter pair using `userId`'s own
- * stored, decrypted API key(s).
+ * `projectId`'s active provider (lib/ai/credentials.ts's
+ * getActiveProvider()) and, if set, builds that provider's adapter pair
+ * using `ownerUserId`'s own stored, decrypted API key(s) (credentials stay
+ * account-level -- see lib/ai/credentials.ts's header).
+ *
+ * Defense in depth (NOT the primary enforcement boundary -- that's the
+ * caller's own RLS-scoped ownership check before ever reaching here, per
+ * the match_document_chunks RPC's security comment): re-verifies
+ * `projects.user_id === ownerUserId` via this service-role client before
+ * building anything from the project. Mirrors the
+ * `documentRow.project_id !== doc.projectId` guard already in
+ * lib/ingestion/ingest.ts -- same class of "catch a server-side scoping
+ * mistake before it does damage" check, catching e.g. a stale/wrong
+ * ownerUserId being threaded through by a caller-side bug, not something an
+ * external attacker could reach without also forging the ownership check
+ * upstream.
  *
  * Throws AIProviderError{kind:"no_credentials"} (never a bare Error) if the
- * user has no active provider set, or if their active provider's
- * credential(s) are missing -- app/api/chat/route.ts special-cases exactly
+ * project has no active provider set, or if its owner's credential(s) for
+ * that provider are missing -- app/api/chat/route.ts special-cases exactly
  * this kind to return a clean 422 (see that route's header comment), and
  * lib/ingestion/ingest.ts's ingestDocumentWithDefaultProviders() catches it
  * to flip the document to processing_status: 'error' with a clear message,
- * same as any other AIProviderError.
+ * same as any other AIProviderError. A project/owner mismatch (the defense-
+ * in-depth check above) throws a plain Error instead -- that's a server-side
+ * scoping bug, not a normal "not configured yet" user-facing condition, so
+ * it deliberately does NOT get the same clean 422 treatment.
  *
  * Deliberately NOT memoized/cached (an earlier, pre-bring-your-own-key
  * version of this function cached one process-wide provider pair -- see
  * git history). Adapter construction is still cheap and side-effect-free
  * (no network calls in any constructor, same as before), and that's exactly
- * what makes a per-user cache not worth it: a keyed-by-userId cache would
- * need explicit invalidation the moment a user rotates or deletes a key
- * (app/api/profile/ai-providers/route.ts's POST/DELETE), and a stale cache
- * entry serving a revoked/rotated key -- or another user's warm entry,
- * indexed correctly but never invalidated -- is a worse bug surface than
- * reconstructing a cheap object on every call.
+ * what makes a per-project cache not worth it: a keyed cache would need
+ * explicit invalidation the moment an owner rotates or deletes a key
+ * (app/api/profile/ai-providers/route.ts's POST/DELETE) or changes a
+ * project's active provider, and a stale cache entry serving a revoked/
+ * rotated key -- or another project's warm entry, indexed correctly but
+ * never invalidated -- is a worse bug surface than reconstructing a cheap
+ * object on every call.
  */
-export async function getAIProviders(userId: string, supabase: SupabaseClient): Promise<AIProviderPair> {
-  const active = await getActiveProvider(supabase, userId);
+export async function getAIProviders(
+  params: GetAIProvidersParams,
+  supabase: SupabaseClient
+): Promise<AIProviderPair> {
+  const { projectId, ownerUserId } = params;
+
+  const { data: project, error: projectError } = await supabase
+    .from("projects")
+    .select("id, user_id")
+    .eq("id", projectId)
+    .maybeSingle<{ id: string; user_id: string }>();
+  if (projectError) {
+    throw new Error(`getAIProviders: failed to load project ${projectId}: ${projectError.message}`);
+  }
+  if (!project || project.user_id !== ownerUserId) {
+    throw new Error(
+      `getAIProviders: project ${projectId} does not exist or does not belong to user ${ownerUserId}`
+    );
+  }
+
+  const active = await getActiveProvider(supabase, projectId);
   if (!active) {
     throw new AIProviderError({
       provider: "none",
       kind: "no_credentials",
       retryable: false,
-      message: `getAIProviders: user ${userId} has no active_ai_provider set.`,
+      message: `getAIProviders: project ${projectId} has no active_ai_provider set.`,
       userMessage:
-        "Добавьте и выберите AI-провайдера в профиле, чтобы начать общаться с ассистентом.",
+        "Добавьте и выберите AI-провайдера для этого проекта, чтобы начать общаться с ассистентом.",
     });
   }
-  return PROVIDER_REGISTRY[active].build(userId, supabase);
+  return PROVIDER_REGISTRY[active].build(ownerUserId, supabase);
 }
 
 /**
@@ -201,21 +250,24 @@ export async function getAIProviders(userId: string, supabase: SupabaseClient): 
  * file, i.e. dead code, not something any current route/pipeline needs a
  * narrowed chat-only accessor for.)
  */
-export async function getEmbeddingsProvider(userId: string, supabase: SupabaseClient) {
-  return (await getAIProviders(userId, supabase)).embeddingsProvider;
+export async function getEmbeddingsProvider(params: GetAIProvidersParams, supabase: SupabaseClient) {
+  return (await getAIProviders(params, supabase)).embeddingsProvider;
 }
 
 /**
- * For the "Работает на: ..." sidebar badge (nextjs-frontend's
- * lib/ui/ai-provider.ts, called from a Server Component) -- returns the
- * signed-in user's active provider's display label, or null if they haven't
- * configured one yet (renders as "не настроен", same as today). Never
- * throws: unlike getAIProviders(), a badge has no fallback "show an error"
- * UI to fall back to, so "no active provider" is just represented as null,
- * not an exception to catch on every page render.
+ * For the "Работает на: ..." sidebar-style badge -- returns a project's
+ * active provider's display label, or null if it hasn't been configured
+ * yet (renders as "не настроен"). Never throws: unlike getAIProviders(), a
+ * badge has no fallback "show an error" UI to fall back to, so "no active
+ * provider" is just represented as null, not an exception to catch on
+ * every page render. Deliberately takes only `projectId` (no `ownerUserId`)
+ * -- this is a read-only display lookup of `projects.active_ai_provider`,
+ * not a credential-building call, so it doesn't need the same
+ * defense-in-depth ownership re-check getAIProviders() does; the caller is
+ * still expected to have already verified the viewer may see this project.
  */
-export async function getActiveProviderLabel(userId: string, supabase: SupabaseClient): Promise<string | null> {
-  const active = await getActiveProvider(supabase, userId);
+export async function getActiveProviderLabel(projectId: string, supabase: SupabaseClient): Promise<string | null> {
+  const active = await getActiveProvider(supabase, projectId);
   if (!active) return null;
   return getProviderLabel(active) ?? null;
 }

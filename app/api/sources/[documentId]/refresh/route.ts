@@ -7,27 +7,38 @@
 // "Ре-синхронизация... по кнопке Refresh вручную"). manual_upload
 // documents have nothing external to refresh (400).
 //
+// PROJECTS PIVOT: `documents` no longer carries a `user_id` column (see
+// the documents migration) -- this route fetches the document's
+// `project_id` first, then verifies that project's ownership via the
+// RLS-scoped session client (verifyProjectOwnership()), and only THEN
+// checks the (now project-keyed) rate limit -- a deliberate reordering
+// from the pre-pivot version (which rate-limited before the DB lookup,
+// back when the limiter was keyed by the authenticated user id alone and
+// didn't need the document row first). Still strictly before any
+// network/AI-provider work, preserving CLAUDE.md rule 4's intent.
+//
 // Request contract:
 //   POST /api/sources/{documentId}/refresh
 //   -> 401 { error: "unauthorized" }
+//   -> 404 { error: "not_found" } -- no such document, or its project
+//      belongs to another user (same response for both -- see comment
+//      below)
 //   -> 429 { error: "rate_limited", message, retryAfterMs } -- Retry-After header set, in seconds
-//   -> 404 { error: "not_found" } -- no such document, or it belongs to
-//      another user (same response for both -- see comment below)
 //   -> 400 { error: "invalid_request", details } -- manual_upload document
 //   -> 400/401/403/422/502 { error: <SourceError.kind>, message } -- see
 //      lib/sources/http-error.ts
-//   -> 422 { error: "no_credentials", message } if the signed-in user has no
-//      active AI provider configured yet (or its stored credential(s) are
-//      missing) -- see lib/ai/index.ts's getAIProviders() and
-//      lib/sources/http-error.ts's sourceErrorResponse(), same contract as
-//      app/api/chat/route.ts's 422. Deliberately not logged via
-//      console.error -- expected per-user state, not a server fault.
+//   -> 422 { error: "no_credentials", message } if this project has no
+//      active AI provider configured yet (or its owner's stored
+//      credential(s) are missing) -- see lib/ai/index.ts's getAIProviders()
+//      and lib/sources/http-error.ts's sourceErrorResponse(), same contract
+//      as app/api/chat/route.ts's 422. Deliberately not logged via
+//      console.error -- expected per-project state, not a server fault.
 //   -> 200 { documentId, chunkCount, status: "ready" }
 
 import "server-only";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { getServiceRoleClient } from "@/lib/supabase/service-client";
-import { getAuthenticatedUser, getRouteHandlerSupabaseClient } from "@/lib/supabase/server-client";
+import { getAuthenticatedUser, getRouteHandlerSupabaseClient, verifyProjectOwnership } from "@/lib/supabase/server-client";
 import { refreshDocumentFromSource, type StoredObject } from "@/lib/sources/pipeline";
 import { importUrlDocument } from "@/lib/sources/url";
 import { importNotionDocument } from "@/lib/sources/notion";
@@ -40,7 +51,7 @@ export const runtime = "nodejs";
 
 interface DocumentRow {
   id: string;
-  user_id: string;
+  project_id: string;
   title: string;
   source_type: "manual_upload" | "notion" | "url" | "google_drive";
   source_ref: string | null;
@@ -48,7 +59,8 @@ interface DocumentRow {
 
 async function refetchFromSource(
   supabase: SupabaseClient,
-  userId: string,
+  /** The credential owner -- source credentials stay account-level (see lib/sources/credentials.ts), never project-scoped. */
+  ownerUserId: string,
   sourceType: "notion" | "url" | "google_drive",
   sourceRef: string
 ): Promise<{ title: string; text: string; object: StoredObject }> {
@@ -61,7 +73,7 @@ async function refetchFromSource(
     };
   }
   if (sourceType === "notion") {
-    const normalized = await importNotionDocument(supabase, userId, sourceRef);
+    const normalized = await importNotionDocument(supabase, ownerUserId, sourceRef);
     return {
       title: normalized.title,
       text: normalized.text,
@@ -73,7 +85,7 @@ async function refetchFromSource(
   // that file rather than re-listing (and re-importing every file in) the
   // whole folder. Re-syncing the whole folder (picking up newly added
   // files) is POST /api/sources/google-drive's job, not this endpoint's.
-  const normalized = await importSingleDriveFile(supabase, userId, sourceRef);
+  const normalized = await importSingleDriveFile(supabase, ownerUserId, sourceRef);
   return {
     title: normalized.title,
     text: normalized.text,
@@ -91,31 +103,37 @@ export async function POST(
   const user = await getAuthenticatedUser(authClient);
   if (!user) return Response.json({ error: "unauthorized" }, { status: 401 });
 
-  // Rate limit check happens BEFORE re-fetching from the external source
-  // or calling any AI-provider work -- CLAUDE.md rule 4. See
-  // lib/rate-limit/source-ingest-rate-limiter.ts's module comment.
-  const rateLimit = checkSourceIngestRateLimit(user.id);
-  if (!rateLimit.allowed) {
-    return sourceIngestRateLimitedResponse(rateLimit);
-  }
-
   const supabase = getServiceRoleClient();
   const { data: doc, error } = await supabase
     .from("documents")
-    .select("id, user_id, title, source_type, source_ref")
+    .select("id, project_id, title, source_type, source_ref")
     .eq("id", documentId)
     .maybeSingle<DocumentRow>();
   if (error) {
     console.error(`refresh route: failed to load document ${documentId}:`, error);
     return Response.json({ error: "internal_error", message: "Не удалось загрузить документ." }, { status: 500 });
   }
-  if (!doc || doc.user_id !== user.id) {
-    // Identical response for "doesn't exist" and "belongs to someone
-    // else" -- don't let an authenticated-but-unauthorized caller
-    // distinguish the two (same posture as the RLS policies on this
-    // table, applied here since this route uses the service-role client).
+  if (!doc) {
+    // Identical response for "doesn't exist" and "project belongs to
+    // someone else" -- don't let an authenticated-but-unauthorized caller
+    // distinguish the two.
     return Response.json({ error: "not_found" }, { status: 404 });
   }
+  const owned = await verifyProjectOwnership(authClient, doc.project_id);
+  if (!owned) {
+    return Response.json({ error: "not_found" }, { status: 404 });
+  }
+
+  // Rate limit check happens right after the ownership check (which
+  // needed the document row's project_id first) but BEFORE re-fetching
+  // from the external source or calling any AI-provider work --
+  // CLAUDE.md rule 4. Keyed by projectId now, not userId. See
+  // lib/rate-limit/source-ingest-rate-limiter.ts's module comment.
+  const rateLimit = checkSourceIngestRateLimit(doc.project_id);
+  if (!rateLimit.allowed) {
+    return sourceIngestRateLimitedResponse(rateLimit);
+  }
+
   if (doc.source_type === "manual_upload") {
     return Response.json(
       { error: "invalid_request", details: "manual_upload documents have no external source to refresh." },
@@ -133,7 +151,8 @@ export async function POST(
     const { title, text, object } = await refetchFromSource(supabase, user.id, doc.source_type, doc.source_ref);
     const result = await refreshDocumentFromSource(supabase, {
       documentId: doc.id,
-      userId: user.id,
+      projectId: doc.project_id,
+      ownerUserId: user.id,
       title: title || doc.title,
       text,
       object,

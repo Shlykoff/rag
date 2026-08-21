@@ -1,130 +1,65 @@
-"use client";
-
 // components/profile/ActiveProviderSection.tsx
 //
-// Radio picker for `user_settings.active_ai_provider`, calling PUT
-// /api/profile/ai-providers. Only providers that are actually fully
-// configured are selectable (openai/gemini: their own key; anthropic:
-// BOTH its own key AND a voyage key -- see app/api/profile/ai-providers/
-// route.ts's PUT contract and lib/ai/credentials.ts's setActiveProvider()).
+// PROJECTS PIVOT DAMAGE CONTROL (see app/api/profile/ai-providers/route.ts's
+// own PROJECTS PIVOT NOTE for the full story): this used to be an
+// interactive radio picker for `user_settings.active_ai_provider`, calling
+// `PUT /api/profile/ai-providers`. That endpoint is gone -- "which provider
+// is active" moved to a per-PROJECT selection (`projects.active_ai_provider`),
+// which needs an actual `projectId` this account-level page doesn't have.
+// Live-reproduced regression this fixes: with the old interactive version
+// left in place, clicking a radio option hit the now-405'd `PUT` and showed
+// a raw `"Не удалось выполнить запрос (405)."` banner, and the radio group
+// always rendered with nothing selected anyway (the old `GET`'s
+// `activeProvider` field is gone too, see ProfileForm.tsx).
 //
-// The UI never lets you click a disabled (not-yet-configured) option, but
-// PUT can still race (e.g. the key was deleted in another tab a moment
-// before this click resolves) -- `400 { error: "missing_credentials",
-// message }` is handled explicitly below with a plain-language message
-// instead of surfacing that response's raw `message`, which is an
-// internal-log-style string (see MissingProviderCredentialsError's
-// constructor in lib/ai/credentials.ts) not meant for end users.
+// Downgraded, for this stage only, to a READ-ONLY summary of which
+// providers are fully configured at the account level -- no PUT call, no
+// interactivity, no `activeProvider` prop. A real per-project picker
+// belongs on a future `/projects/[projectId]/model`-style screen
+// (nextjs-frontend's next stage), not bolted onto this page against a
+// made-up project id.
 
-import { useState } from "react";
-import { putJson, retryAfterSuffix } from "@/components/sources/request-helpers";
-import { redirectToLogin } from "@/lib/ui/client-redirect";
-import type { ActiveAIProvider, ConfiguredFlags } from "./types";
+import type { ConfiguredFlags } from "./types";
 
 export interface ActiveProviderSectionProps {
   configured: ConfiguredFlags;
-  activeProvider: ActiveAIProvider | null;
-  onActiveProviderChange: (provider: ActiveAIProvider) => void;
 }
 
-interface ProviderOption {
-  value: ActiveAIProvider;
+interface ProviderSummary {
+  key: string;
   label: string;
   available: boolean;
-  unavailableHint: string;
 }
 
-export function ActiveProviderSection({ configured, activeProvider, onActiveProviderChange }: ActiveProviderSectionProps) {
-  const [saving, setSaving] = useState<ActiveAIProvider | null>(null);
-  const [error, setError] = useState<string | null>(null);
-
-  const options: ProviderOption[] = [
+export function ActiveProviderSection({ configured }: ActiveProviderSectionProps) {
+  const providers: ProviderSummary[] = [
+    { key: "openai", label: "OpenAI", available: configured.openai },
     {
-      value: "openai",
-      label: "OpenAI",
-      available: configured.openai,
-      unavailableHint: "сначала добавьте ключ OpenAI выше",
-    },
-    {
-      value: "anthropic",
+      key: "anthropic",
       label: "Anthropic Claude (+ Voyage AI для embeddings)",
       available: configured.anthropic && configured.voyage,
-      unavailableHint: "нужны оба ключа: Anthropic и Voyage",
     },
-    {
-      value: "gemini",
-      label: "Google Gemini",
-      available: configured.gemini,
-      unavailableHint: "сначала добавьте ключ Gemini выше",
-    },
+    { key: "gemini", label: "Google Gemini", available: configured.gemini },
   ];
-
-  async function handleSelect(provider: ActiveAIProvider) {
-    setError(null);
-    setSaving(provider);
-    const result = await putJson<{ status: string; activeProvider: ActiveAIProvider }>("/api/profile/ai-providers", {
-      activeProvider: provider,
-    });
-    setSaving(null);
-    if (!result.ok) {
-      if (result.kind === "unauthorized") {
-        redirectToLogin();
-        return;
-      }
-      if (result.kind === "error" && result.code === "missing_credentials") {
-        setError(
-          "Не удалось выбрать этого провайдера — не все нужные ключи сохранены (для Anthropic нужны оба: Anthropic и Voyage). Обновите страницу и попробуйте снова."
-        );
-        return;
-      }
-      setError(result.message + retryAfterSuffix(result.retryAfterMs));
-      return;
-    }
-    onActiveProviderChange(provider);
-  }
 
   return (
     <fieldset className="provider-active-fieldset">
-      <legend className="provider-section-title">Активный провайдер</legend>
+      <legend className="provider-section-title">Готовые к использованию провайдеры</legend>
       <p className="field-hint">
-        Используется для всех ваших запросов к ассистенту — чата и поиска по документам. Доступны только
-        полностью настроенные провайдеры.
+        Какой из подключённых провайдеров использует конкретный проект/бот, теперь выбирается отдельно
+        для каждого проекта (этот экран появится позже) — здесь только видно, какие ключи у вас на
+        аккаунте полностью настроены.
       </p>
-      <div
-        role="radiogroup"
-        aria-label="Выбор активного AI-провайдера"
-        style={{ display: "flex", flexDirection: "column", gap: "0.5rem", marginTop: "0.6rem" }}
-      >
-        {options.map((option) => {
-          const checked = activeProvider === option.value;
-          const disabled = !option.available || saving !== null;
-          return (
-            <label
-              key={option.value}
-              className={`provider-active-option${checked ? " provider-active-option-checked" : ""}`}
-            >
-              <input
-                type="radio"
-                name="active-provider"
-                value={option.value}
-                checked={checked}
-                disabled={disabled}
-                onChange={() => handleSelect(option.value)}
-              />
-              <span>
-                {option.label}
-                {saving === option.value ? " — сохраняем…" : null}
-                {!option.available ? <span className="field-hint"> ({option.unavailableHint})</span> : null}
-              </span>
-            </label>
-          );
-        })}
-      </div>
-      {error ? (
-        <p className="alert alert-danger" role="alert" style={{ marginTop: "0.6rem" }}>
-          {error}
-        </p>
-      ) : null}
+      <ul style={{ display: "flex", flexDirection: "column", gap: "0.4rem", marginTop: "0.6rem", listStyle: "none", padding: 0 }}>
+        {providers.map((provider) => (
+          <li key={provider.key} className="provider-active-option" style={{ display: "flex", gap: "0.5rem", alignItems: "center" }}>
+            <span className={`badge ${provider.available ? "badge-success" : "badge-neutral"}`}>
+              {provider.available ? "готов" : "не настроен"}
+            </span>
+            <span>{provider.label}</span>
+          </li>
+        ))}
+      </ul>
     </fieldset>
   );
 }

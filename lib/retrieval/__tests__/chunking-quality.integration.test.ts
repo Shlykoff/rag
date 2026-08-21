@@ -25,6 +25,7 @@ import { ingestDocument } from "../../ingestion/ingest";
 import { runRetrieval } from "../search";
 import { createKeywordEmbeddingsProvider } from "../../testing/keyword-embeddings";
 import {
+  createTestProject,
   createTestUser,
   deleteTestUser,
   hasIntegrationEnv,
@@ -48,6 +49,7 @@ const ONBOARDING_TEXT = [
 describe.skipIf(!hasIntegrationEnv())("chunking + retrieval quality (integration, real Supabase)", () => {
   let supabase: SupabaseClient;
   let userId: string;
+  let projectId: string;
   let returnsDocId: string;
   let onboardingDocId: string;
 
@@ -55,12 +57,13 @@ describe.skipIf(!hasIntegrationEnv())("chunking + retrieval quality (integration
     supabase = makeIntegrationSupabaseClient();
     const user = await createTestUser(supabase, "chunk-quality");
     userId = user.id;
+    projectId = (await createTestProject(supabase, userId)).id;
 
     const embeddingsProvider = createKeywordEmbeddingsProvider();
 
     const { data: returnsDoc, error: returnsErr } = await supabase
       .from("documents")
-      .insert({ user_id: userId, title: "Return & Refund Policy.pdf", source_type: "manual_upload" })
+      .insert({ project_id: projectId, title: "Return & Refund Policy.pdf", source_type: "manual_upload" })
       .select("id")
       .single();
     if (returnsErr) throw new Error(returnsErr.message);
@@ -68,18 +71,18 @@ describe.skipIf(!hasIntegrationEnv())("chunking + retrieval quality (integration
 
     const { data: onboardingDoc, error: onboardingErr } = await supabase
       .from("documents")
-      .insert({ user_id: userId, title: "Employee Onboarding Guide", source_type: "url", source_ref: "https://example.com/handbook/onboarding" })
+      .insert({ project_id: projectId, title: "Employee Onboarding Guide", source_type: "url", source_ref: "https://example.com/handbook/onboarding" })
       .select("id")
       .single();
     if (onboardingErr) throw new Error(onboardingErr.message);
     onboardingDocId = onboardingDoc.id as string;
 
     await ingestDocument(
-      { documentId: returnsDocId, userId, title: "Return & Refund Policy.pdf", text: RETURN_POLICY_TEXT },
+      { documentId: returnsDocId, projectId, ownerUserId: userId, title: "Return & Refund Policy.pdf", text: RETURN_POLICY_TEXT },
       { supabase, embeddingsProvider }
     );
     await ingestDocument(
-      { documentId: onboardingDocId, userId, title: "Employee Onboarding Guide", text: ONBOARDING_TEXT },
+      { documentId: onboardingDocId, projectId, ownerUserId: userId, title: "Employee Onboarding Guide", text: ONBOARDING_TEXT },
       { supabase, embeddingsProvider }
     );
   });
@@ -107,7 +110,7 @@ describe.skipIf(!hasIntegrationEnv())("chunking + retrieval quality (integration
   ])(
     "retrieves the correct document as the top match for: $question",
     async ({ question, expectedDocumentId, expectedSubstring }) => {
-      const result = await runRetrieval(question, userId, {
+      const result = await runRetrieval(question, projectId, {
         supabase,
         embeddingsProvider: createKeywordEmbeddingsProvider(),
       });

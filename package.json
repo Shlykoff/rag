@@ -18,7 +18,8 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "test:integration": "node --env-file=.env.local node_modules/.bin/vitest run --config vitest.integration.config.mts",
-    "seed:ai-keys": "node --env-file=.env.local scripts/run-seed-ai-credentials.mjs"
+    "seed:ai-keys": "node --env-file=.env.local scripts/run-seed-ai-credentials.mjs",
+    "telegram:set-webhook": "node --env-file=.env.local scripts/run-telegram-set-webhook.mjs"
   },
   "dependencies": {
     "@ai-sdk/anthropic": "4.0.39",

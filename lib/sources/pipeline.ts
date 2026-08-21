@@ -5,10 +5,21 @@
 // behalf of a source adapter. Every API route in app/api/sources/ funnels
 // through here so "create a document" and "refresh an existing one" share
 // identical Storage-path + ingest wiring -- duplicating this per-route
-// would be an easy place for the "<user_id>/..." Storage path convention
-// (enforced by the documents_storage_path_prefixed_with_user_id DB
-// constraint) or the delete-before-insert ingest contract to quietly drift
-// between sources.
+// would be an easy place for the "<project_id>/..." Storage path
+// convention (enforced by the
+// documents_storage_path_prefixed_with_project_id DB constraint) or the
+// delete-before-insert ingest contract to quietly drift between sources.
+//
+// PROJECTS PIVOT: documents are project-scoped now (see the documents
+// migration), not user-scoped -- every function below takes a `projectId`
+// (what Storage paths/the `documents` row/dedup lookups key off) alongside
+// an `ownerUserId` (the project's owner, threaded through to
+// lib/ingestion/ingest.ts purely so it can resolve the right account-level
+// AI-provider credentials -- see that module's own header). Callers (the
+// app/api/sources/** routes) are responsible for independently verifying
+// `projectId` actually belongs to the authenticated caller BEFORE calling
+// anything here -- this module trusts its caller, the same trust boundary
+// lib/ingestion/ingest.ts documents for itself.
 
 import "server-only";
 import type { SupabaseClient } from "@supabase/supabase-js";
@@ -16,7 +27,7 @@ import { ingestDocumentWithDefaultProviders, type IngestResult } from "../ingest
 import type { DocumentSourceType } from "./types";
 
 export interface StoredObject {
-  /** Appended after `${userId}/${documentId}/` -- e.g. "original.pdf" (manual_upload) or "content.txt" (every other source's cached text extraction). */
+  /** Appended after `${projectId}/${documentId}/` -- e.g. "original.pdf" (manual_upload) or "content.txt" (every other source's cached text extraction). */
   suffix: string;
   content: Buffer | string;
   contentType: string;
@@ -24,11 +35,11 @@ export interface StoredObject {
 
 async function uploadObject(
   supabase: SupabaseClient,
-  userId: string,
+  projectId: string,
   documentId: string,
   object: StoredObject
 ): Promise<string> {
-  const path = `${userId}/${documentId}/${object.suffix}`;
+  const path = `${projectId}/${documentId}/${object.suffix}`;
   const { error } = await supabase.storage.from("documents").upload(path, object.content, {
     contentType: object.contentType,
     upsert: true, // re-sync overwrites the previous object at the same path rather than erroring
@@ -40,7 +51,9 @@ async function uploadObject(
 }
 
 export interface CreateDocumentParams {
-  userId: string;
+  projectId: string;
+  /** The project's owner -- see this module's header. */
+  ownerUserId: string;
   title: string;
   sourceType: DocumentSourceType;
   sourceRef: string | null;
@@ -56,7 +69,7 @@ export async function createDocumentFromSource(
   const { data, error } = await supabase
     .from("documents")
     .insert({
-      user_id: params.userId,
+      project_id: params.projectId,
       title: params.title,
       source_type: params.sourceType,
       source_ref: params.sourceRef,
@@ -73,7 +86,7 @@ export async function createDocumentFromSource(
   // above -- this ordering (insert row -> upload object -> set
   // storage_path -> ingest) is why NormalizedDocument.storagePath (see
   // lib/sources/types.ts) is always undefined coming out of an adapter.
-  const storagePath = await uploadObject(supabase, params.userId, documentId, params.object);
+  const storagePath = await uploadObject(supabase, params.projectId, documentId, params.object);
 
   const { error: updateError } = await supabase.from("documents").update({ storage_path: storagePath }).eq("id", documentId);
   if (updateError) {
@@ -84,7 +97,8 @@ export async function createDocumentFromSource(
   // `documentId` (see lib/ingestion/ingest.ts) -- no need to re-attach it.
   return ingestDocumentWithDefaultProviders({
     documentId,
-    userId: params.userId,
+    projectId: params.projectId,
+    ownerUserId: params.ownerUserId,
     title: params.title,
     text: params.text,
   });
@@ -92,7 +106,9 @@ export async function createDocumentFromSource(
 
 export interface RefreshDocumentParams {
   documentId: string;
-  userId: string;
+  projectId: string;
+  /** The project's owner -- see this module's header. */
+  ownerUserId: string;
   title: string;
   text: string;
   object: StoredObject;
@@ -103,27 +119,30 @@ export async function refreshDocumentFromSource(
   supabase: SupabaseClient,
   params: RefreshDocumentParams
 ): Promise<IngestResult> {
-  const storagePath = await uploadObject(supabase, params.userId, params.documentId, params.object);
+  const storagePath = await uploadObject(supabase, params.projectId, params.documentId, params.object);
 
   const { error: updateError } = await supabase
     .from("documents")
     .update({ title: params.title, storage_path: storagePath })
     .eq("id", params.documentId)
-    .eq("user_id", params.userId);
+    .eq("project_id", params.projectId);
   if (updateError) {
     throw new Error(`refreshDocumentFromSource: failed to update document ${params.documentId}: ${updateError.message}`);
   }
 
   return ingestDocumentWithDefaultProviders({
     documentId: params.documentId,
-    userId: params.userId,
+    projectId: params.projectId,
+    ownerUserId: params.ownerUserId,
     title: params.title,
     text: params.text,
   });
 }
 
 export interface UpsertDocumentParams {
-  userId: string;
+  projectId: string;
+  /** The project's owner -- see this module's header. */
+  ownerUserId: string;
   title: string;
   sourceType: DocumentSourceType;
   /** Required (non-null) here, unlike CreateDocumentParams -- this is the lookup key for "does a document for this external ref already exist", which only makes sense for sources that have one (Notion/URL/Drive, never manual_upload). */
@@ -133,12 +152,16 @@ export interface UpsertDocumentParams {
 }
 
 /**
- * Create-or-refresh keyed by (userId, sourceType, sourceRef): what
+ * Create-or-refresh keyed by (projectId, sourceType, sourceRef): what
  * app/api/sources/{notion,url,google-drive}/route.ts call, so importing
- * the same Notion page / URL / Drive file a second time updates the
- * existing document in place instead of creating a duplicate row every
- * time a user re-submits the same source (a very likely real-world click
- * pattern -- e.g. re-pasting the same URL after it's already been added).
+ * the same Notion page / URL / Drive file a second time into the SAME
+ * project updates the existing document in place instead of creating a
+ * duplicate row every time the same source is re-submitted (a very likely
+ * real-world click pattern -- e.g. re-pasting the same URL after it's
+ * already been added). Scoped to the project (not the account) so the same
+ * external source can independently be imported into two different
+ * projects owned by the same user without one "refresh" clobbering the
+ * other's document.
  */
 export async function upsertDocumentFromSource(
   supabase: SupabaseClient,
@@ -147,7 +170,7 @@ export async function upsertDocumentFromSource(
   const { data: existing, error: lookupError } = await supabase
     .from("documents")
     .select("id")
-    .eq("user_id", params.userId)
+    .eq("project_id", params.projectId)
     .eq("source_type", params.sourceType)
     .eq("source_ref", params.sourceRef)
     .maybeSingle<{ id: string }>();
@@ -158,7 +181,8 @@ export async function upsertDocumentFromSource(
   if (existing) {
     const result = await refreshDocumentFromSource(supabase, {
       documentId: existing.id,
-      userId: params.userId,
+      projectId: params.projectId,
+      ownerUserId: params.ownerUserId,
       title: params.title,
       text: params.text,
       object: params.object,

@@ -1,12 +1,18 @@
 // lib/ai/credentials.ts
 //
 // Server-side read/write of per-user AI-provider credentials
-// (`ai_provider_credentials`) and the per-user active-provider selection
-// (`user_settings.active_ai_provider`), encrypting/decrypting via
-// lib/ai/crypto.ts. lib/ai/index.ts's getAIProviders() calls
+// (`ai_provider_credentials`, account-level -- unchanged by the projects
+// pivot) and the per-PROJECT active-provider selection
+// (`projects.active_ai_provider` -- moved off the now-dropped
+// `user_settings` table by that pivot, see the projects migration's
+// header). lib/ai/index.ts's getAIProviders() calls
 // getActiveProvider()/getAIProviderCredential() to build the active
 // ChatProvider/EmbeddingsProvider pair for one request, and
-// app/api/profile/ai-providers/route.ts calls every export here directly.
+// app/api/profile/ai-providers/route.ts calls the account-level credential
+// CRUD exports here directly (it no longer touches
+// getActiveProvider/setActiveProvider -- picking which connected provider a
+// PROJECT uses is project-scoped now, out of that account-level route's
+// remit; see that route's own header comment).
 // Deliberately mirrors lib/sources/credentials.ts's shape (including the
 // bytea hex-encoding helpers, duplicated rather than imported -- see
 // lib/ai/crypto.ts's header for why lib/ai/ and lib/sources/ stay
@@ -148,24 +154,40 @@ export async function deleteAIProviderCredential(
   }
 }
 
-interface UserSettingsRow {
+interface ProjectActiveProviderRow {
   active_ai_provider: ActiveAIProvider | null;
 }
 
-/** Reads `user_settings.active_ai_provider` -- null both when the row doesn't exist yet (brand-new user, see the user_settings migration's "lazy row" comment) and when it exists but the column itself is null. Callers never need to distinguish those two cases. */
+/**
+ * Reads `projects.active_ai_provider` for `projectId`. Unlike the old
+ * `user_settings` row (which was lazily created, so "no row" and "row with
+ * a null column" both meant "not configured"), a `projects` row always
+ * exists by the time this is called -- every project is created with a
+ * (possibly null) `active_ai_provider` column, never lazily. A genuinely
+ * missing project is therefore a real error (a stale/bogus projectId
+ * reaching this far is a caller bug -- the caller must have already
+ * verified project ownership before calling anything in lib/ai/, per
+ * CLAUDE.md/the match_document_chunks RPC's security comment), not just
+ * "not configured yet" -- that distinction is why this throws on a missing
+ * row instead of quietly returning null the way the old lazy-row lookup
+ * did.
+ */
 export async function getActiveProvider(
   supabase: SupabaseClient,
-  userId: string
+  projectId: string
 ): Promise<ActiveAIProvider | null> {
   const { data, error } = await supabase
-    .from("user_settings")
+    .from("projects")
     .select("active_ai_provider")
-    .eq("user_id", userId)
-    .maybeSingle<UserSettingsRow>();
+    .eq("id", projectId)
+    .maybeSingle<ProjectActiveProviderRow>();
   if (error) {
-    throw new Error(`getActiveProvider: failed to load user_settings: ${error.message}`);
+    throw new Error(`getActiveProvider: failed to load project ${projectId}: ${error.message}`);
   }
-  return data?.active_ai_provider ?? null;
+  if (!data) {
+    throw new Error(`getActiveProvider: project ${projectId} does not exist`);
+  }
+  return data.active_ai_provider ?? null;
 }
 
 /**
@@ -194,28 +216,56 @@ export class MissingProviderCredentialsError extends Error {
 }
 
 /**
- * Sets `user_settings.active_ai_provider`, upserting the (lazily-created --
- * see the user_settings migration comment) row for this user.
+ * Sets `projects.active_ai_provider` for `projectId`.
  *
- * This is the app-level enforcement of "active_ai_provider must reference
- * credentials the user actually has" that the ai_provider_credentials/
- * user_settings migration deliberately left unimplemented at the DB layer
- * (see that migration's column comment on user_settings.active_ai_provider):
- * checked HERE, before the write, not after -- so a rejected call never
- * leaves user_settings pointing at a provider with no usable credential.
- * 'anthropic' specifically requires BOTH an 'anthropic' row (the chat model)
- * AND a 'voyage' row (Anthropic has no embeddings API of its own -- see
- * lib/ai/index.ts's PROVIDER_REGISTRY) to exist before it can be activated;
- * every other provider just needs its own single row.
+ * `ownerUserId` (new, from the projects pivot) is the caller's already
+ * server-validated notion of who owns this project (e.g. the signed-in
+ * user, verified via the RLS-scoped session client before this is ever
+ * called -- see app/api/chat/route.ts's/the sources routes' ownership-check
+ * pattern). Two things are checked against it before the write, both
+ * app-level (not DB constraints, same tradeoff this project already made
+ * for the old user_settings.active_ai_provider -- see the projects
+ * migration's column comment):
+ *   1. `projectId` actually belongs to `ownerUserId` -- defense in depth
+ *      against a caller-side scoping bug (mirrors the
+ *      `documentRow.project_id !== doc.projectId` guard in
+ *      lib/ingestion/ingest.ts), not the primary enforcement boundary.
+ *   2. `ownerUserId` (not some other account) actually holds the
+ *      credential(s) `provider` needs -- 'anthropic' specifically requires
+ *      BOTH an 'anthropic' row (the chat model) AND a 'voyage' row
+ *      (Anthropic has no embeddings API of its own -- see
+ *      lib/ai/index.ts's PROVIDER_REGISTRY); every other provider just
+ *      needs its own single row.
+ * Both checks run BEFORE the write, so a rejected call never leaves
+ * `projects.active_ai_provider` pointing at a provider with no usable
+ * credential (or at a provider chosen by/for the wrong account).
  */
 export async function setActiveProvider(
   supabase: SupabaseClient,
-  userId: string,
+  projectId: string,
+  ownerUserId: string,
   provider: ActiveAIProvider
 ): Promise<void> {
+  const { data: project, error: projectError } = await supabase
+    .from("projects")
+    .select("id, user_id")
+    .eq("id", projectId)
+    .maybeSingle<{ id: string; user_id: string }>();
+  if (projectError) {
+    throw new Error(`setActiveProvider: failed to load project ${projectId}: ${projectError.message}`);
+  }
+  if (!project) {
+    throw new Error(`setActiveProvider: project ${projectId} does not exist`);
+  }
+  if (project.user_id !== ownerUserId) {
+    throw new Error(
+      `setActiveProvider: project ${projectId} belongs to user ${project.user_id}, not ${ownerUserId}`
+    );
+  }
+
   const required: AIProviderCredentialType[] = provider === "anthropic" ? ["anthropic", "voyage"] : [provider];
   const haveEach = await Promise.all(
-    required.map((p) => hasAIProviderCredential(supabase, userId, p))
+    required.map((p) => hasAIProviderCredential(supabase, ownerUserId, p))
   );
   const missing = required.filter((_, i) => !haveEach[i]);
   if (missing.length > 0) {
@@ -223,9 +273,10 @@ export async function setActiveProvider(
   }
 
   const { error } = await supabase
-    .from("user_settings")
-    .upsert({ user_id: userId, active_ai_provider: provider }, { onConflict: "user_id" });
+    .from("projects")
+    .update({ active_ai_provider: provider })
+    .eq("id", projectId);
   if (error) {
-    throw new Error(`setActiveProvider: failed to update user_settings: ${error.message}`);
+    throw new Error(`setActiveProvider: failed to update project ${projectId}: ${error.message}`);
   }
 }

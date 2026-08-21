@@ -84,3 +84,33 @@ export async function getAuthenticatedUser(
 function toAuthenticatedUser(user: User): AuthenticatedUser {
   return { id: user.id, email: user.email ?? null };
 }
+
+/**
+ * Verifies that `projectId` is visible to the CURRENT session on `supabase`
+ * (i.e. this MUST be an RLS-scoped client from getRouteHandlerSupabaseClient()
+ * above, never the service-role client) -- relies entirely on the
+ * `projects_select_own` RLS policy (`auth.uid() = user_id`, see the
+ * projects migration) to do the actual ownership check: a project that
+ * doesn't exist and a project that exists but belongs to someone else are
+ * indistinguishable here (both resolve `data: null`), which is exactly
+ * what callers want -- see their own 404-not-403 comments.
+ *
+ * This is the projects-pivot generalization of the "own vs. someone else's
+ * row, respond identically" pattern already used by
+ * app/api/sources/[documentId]/route.ts (that route's own ownership check
+ * predates this helper and is not yet routed through it -- see this task's
+ * report for why). Every route that accepts a projectId (directly, or
+ * derived from a document/conversation row) MUST call this -- or an
+ * equivalent RLS-backed check -- before ever passing that projectId into a
+ * service-role call (lib/ai/, lib/retrieval/, lib/rate-limit/,
+ * lib/ingestion/), per the match_document_chunks RPC's own security
+ * comment: those service-role paths trust their caller completely and do
+ * not re-derive ownership from RLS themselves.
+ */
+export async function verifyProjectOwnership(supabase: SupabaseClient, projectId: string): Promise<boolean> {
+  const { data, error } = await supabase.from("projects").select("id").eq("id", projectId).maybeSingle();
+  if (error) {
+    throw new Error(`verifyProjectOwnership: failed to verify project ${projectId}: ${error.message}`);
+  }
+  return data !== null;
+}

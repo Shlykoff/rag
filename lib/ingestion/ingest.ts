@@ -2,8 +2,8 @@
 //
 // The ingestion pipeline: chunk -> embed -> delete-before-insert into
 // document_chunks -> flip documents.processing_status. Takes an already-
-// normalized document ({ documentId, userId, title, text }) -- this module
-// never fetches from Notion/URL/Drive/disk itself, that's
+// normalized document ({ documentId, projectId, ownerUserId, title, text })
+// -- this module never fetches from Notion/URL/Drive/disk itself, that's
 // document-sources-specialist's job (see CLAUDE.md). Called once per
 // initial ingest AND once per manual "Refresh" re-sync; both paths go
 // through this exact same function, which is what makes re-sync
@@ -11,6 +11,15 @@
 // document_chunks migration's table comment for why that contract is
 // load-bearing (a shrinking document must not leave orphaned trailing
 // chunks behind).
+//
+// PROJECTS PIVOT: documents belong to a project, not directly to a user
+// (see the documents migration) -- `projectId` is what's verified against
+// the document row below and what Storage paths/RPCs key off. `ownerUserId`
+// (the project's owner) is carried alongside it purely so this module can
+// hand it to lib/ai/index.ts's getEmbeddingsProvider({projectId,
+// ownerUserId}, supabase) -- AI-provider credentials stay account-level
+// (lib/ai/credentials.ts), so building an embeddings provider for this
+// project still needs to know whose stored key to decrypt.
 
 import "server-only";
 import type { SupabaseClient } from "@supabase/supabase-js";
@@ -22,7 +31,9 @@ import { getEmbeddingsProvider } from "../ai";
 
 export interface NormalizedDocument {
   documentId: string;
-  userId: string;
+  projectId: string;
+  /** The project's owner -- see the module header for why this module needs it in addition to projectId. */
+  ownerUserId: string;
   title: string;
   text: string;
 }
@@ -42,7 +53,7 @@ export interface IngestResult {
 /** Row shape this module needs from `documents` -- just enough to verify ownership and decide whether to stamp last_synced_at (manual_upload never gets one; see the documents migration's column comment). */
 interface DocumentRow {
   id: string;
-  user_id: string;
+  project_id: string;
   source_type: "manual_upload" | "notion" | "url" | "google_drive";
 }
 
@@ -81,7 +92,7 @@ export async function ingestDocument(
 
   const { data: documentRow, error: fetchError } = await supabase
     .from("documents")
-    .select("id, user_id, source_type")
+    .select("id, project_id, source_type")
     .eq("id", doc.documentId)
     .maybeSingle<DocumentRow>();
 
@@ -94,12 +105,12 @@ export async function ingestDocument(
   // Defense in depth: even though this pipeline always runs server-side
   // with a service-role client (which bypasses RLS), never silently
   // process a document that doesn't actually belong to the caller-supplied
-  // userId -- a mismatch here means the caller (document-sources-
+  // projectId -- a mismatch here means the caller (document-sources-
   // specialist / an API route) has a bug, and we'd rather fail loudly than
-  // embed one user's content under another user's document row.
-  if (documentRow.user_id !== doc.userId) {
+  // embed one project's content under another project's document row.
+  if (documentRow.project_id !== doc.projectId) {
     throw new Error(
-      `ingestDocument: document ${doc.documentId} belongs to user ${documentRow.user_id}, not ${doc.userId}`
+      `ingestDocument: document ${doc.documentId} belongs to project ${documentRow.project_id}, not ${doc.projectId}`
     );
   }
 
@@ -153,8 +164,8 @@ export async function ingestDocument(
       chunk_index: chunk.index,
       content: chunk.content,
       // page_number is left null: the normalized-document contract this
-      // pipeline receives ({ documentId, userId, title, text }) is a flat
-      // string with no page markers (see CLAUDE.md's DocumentSource
+      // pipeline receives ({ documentId, projectId, ownerUserId, title,
+      // text }) is a flat string with no page markers (see CLAUDE.md's DocumentSource
       // interface) -- only chunk_position (ordinal) is available for
       // citation until/unless document-sources-specialist starts passing
       // page boundaries through for PDF sources.
@@ -225,16 +236,17 @@ export async function ingestDocumentWithDefaultProviders(
 
   let embeddingsProvider: EmbeddingsProvider;
   try {
-    // Per-user, bring-your-own-key (see lib/ai/index.ts): doc.userId is
-    // already part of this function's NormalizedDocument contract (the
-    // document's owner), so it's threaded straight through -- there is no
-    // more process-global "the" embeddings provider.
-    embeddingsProvider = await getEmbeddingsProvider(doc.userId, supabase);
+    // Bring-your-own-key, project-scoped (see lib/ai/index.ts): doc.projectId
+    // / doc.ownerUserId are already part of this function's
+    // NormalizedDocument contract, so they're threaded straight through --
+    // there is no more process-global "the" embeddings provider.
+    embeddingsProvider = await getEmbeddingsProvider({ projectId: doc.projectId, ownerUserId: doc.ownerUserId }, supabase);
   } catch (err) {
-    // getEmbeddingsProvider() (via getAIProviders()) rejects when doc.userId
-    // has no active AI provider configured, or their active provider's
-    // credential(s) are missing (AIProviderError{kind:"no_credentials"} --
-    // see lib/ai/index.ts) -- or, less commonly, on any other AI-provider
+    // getEmbeddingsProvider() (via getAIProviders()) rejects when
+    // doc.projectId has no active AI provider configured, or its owner's
+    // credential(s) for that provider are missing
+    // (AIProviderError{kind:"no_credentials"} -- see lib/ai/index.ts) --
+    // or, less commonly, on any other AI-provider
     // failure. Before an earlier fix (back when this was the global-env
     // AI_PROVIDER path), an equivalent throw happened while evaluating an
     // eagerly-computed argument to ingestDocument(doc, { ...

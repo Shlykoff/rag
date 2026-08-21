@@ -16,6 +16,7 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 import { ingestDocument } from "../ingest";
 import type { EmbeddingsProvider } from "../../ai/types";
 import {
+  createTestProject,
   createTestUser,
   deleteTestUser,
   hasIntegrationEnv,
@@ -39,16 +40,18 @@ function deterministicEmbeddings(): EmbeddingsProvider {
 describe.skipIf(!hasIntegrationEnv())("ingestDocument (integration, real Supabase)", () => {
   let supabase: SupabaseClient;
   let userId: string;
+  let projectId: string;
   let documentId: string;
 
   beforeAll(async () => {
     supabase = makeIntegrationSupabaseClient();
     const user = await createTestUser(supabase, "ingest");
     userId = user.id;
+    projectId = (await createTestProject(supabase, userId)).id;
 
     const { data, error } = await supabase
       .from("documents")
-      .insert({ user_id: userId, title: "Integration test doc", source_type: "notion", source_ref: "notion://fake-page" })
+      .insert({ project_id: projectId, title: "Integration test doc", source_type: "notion", source_ref: "notion://fake-page" })
       .select("id")
       .single();
     if (error) throw new Error(error.message);
@@ -66,7 +69,7 @@ describe.skipIf(!hasIntegrationEnv())("ingestDocument (integration, real Supabas
     ).join(" ");
 
     const result = await ingestDocument(
-      { documentId, userId, title: "Integration test doc", text: longText },
+      { documentId, projectId, ownerUserId: userId, title: "Integration test doc", text: longText },
       { supabase, embeddingsProvider: deterministicEmbeddings() },
       { targetTokens: 100, overlapTokens: 15 }
     );
@@ -100,7 +103,7 @@ describe.skipIf(!hasIntegrationEnv())("ingestDocument (integration, real Supabas
     // Re-ingest with much shorter text than the first run -> fewer chunks.
     const shortText = "Just one short sentence for the refreshed version.";
     const result = await ingestDocument(
-      { documentId, userId, title: "Integration test doc", text: shortText },
+      { documentId, projectId, ownerUserId: userId, title: "Integration test doc", text: shortText },
       { supabase, embeddingsProvider: deterministicEmbeddings() }
     );
 

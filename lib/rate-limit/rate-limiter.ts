@@ -1,18 +1,21 @@
 // lib/rate-limit/rate-limiter.ts
 //
-// Per-user request rate limiting, backed by the append-only `usage_events`
-// table (db-architect's design -- see the migration's "Atomicity note": an
-// event log + COUNT(*) range query, not a counter column, so concurrent
-// requests never race on a shared UPDATE). Checked server-side, BEFORE
-// calling the AI provider, per CLAUDE.md rule 4.
+// Per-PROJECT request rate limiting (projects architecture pivot -- this is
+// "layer 1", the aggregate budget shared by a project's owner test chat
+// AND every external channel session of that project, see
+// lib/gateway/answer.ts), backed by the append-only `usage_events` table
+// (db-architect's design -- see the migration's "Atomicity note": an event
+// log + COUNT(*) range query, not a counter column, so concurrent requests
+// never race on a shared UPDATE). Checked server-side, BEFORE calling the
+// AI provider, per CLAUDE.md rule 4.
 //
 // This is deliberately NOT Vercel KV/Upstash: the project already has a
 // Postgres table purpose-built for this by db-architect, with an index
-// (user_id, created_at desc) sized exactly for "count this user's rows in
-// the last N minutes". Adding a second stateful dependency (Upstash) for
-// the same job would be complexity without benefit for a project already
-// on Supabase Postgres. See README "Rate limiting" for this tradeoff
-// written out for reviewers.
+// (project_id, created_at desc) sized exactly for "count this project's
+// rows in the last N minutes". Adding a second stateful dependency
+// (Upstash) for the same job would be complexity without benefit for a
+// project already on Supabase Postgres. See README "Rate limiting" for
+// this tradeoff written out for reviewers.
 //
 // KNOWN GAP closed by reserveChatRateLimitSlot() below (see its own
 // comment for the full story, and README "Rate limiting" for the
@@ -42,7 +45,7 @@ export const DEFAULT_CHAT_RATE_LIMIT: RateLimitConfig = {
 
 export interface RateLimitResult {
   allowed: boolean;
-  /** How many chat_request events this user has in the current window (before this request). */
+  /** How many chat_request events this project has in the current window (before this request). */
   currentCount: number;
   limit: number;
   /** Milliseconds until the oldest event in the window ages out, i.e. a reasonable "try again in" hint. Only meaningful when allowed === false. */
@@ -50,8 +53,8 @@ export interface RateLimitResult {
 }
 
 /**
- * Checks (without recording) whether `userId` is currently under the chat
- * rate limit, by counting their `chat_request` usage_events rows in the
+ * Checks (without recording) whether `projectId` is currently under the
+ * chat rate limit, by counting its `chat_request` usage_events rows in the
  * trailing `windowMs`. Call this BEFORE invoking the AI provider; the
  * actual usage_events row for *this* request is inserted separately, after
  * the call succeeds (see app/api/chat/route.ts) -- so a request that gets
@@ -66,7 +69,7 @@ export interface RateLimitResult {
  */
 export async function checkChatRateLimit(
   supabase: Pick<SupabaseClient, "from">,
-  userId: string,
+  projectId: string,
   config: RateLimitConfig = DEFAULT_CHAT_RATE_LIMIT
 ): Promise<RateLimitResult> {
   const windowStart = new Date(Date.now() - config.windowMs).toISOString();
@@ -74,7 +77,7 @@ export async function checkChatRateLimit(
   const { data, error, count } = await supabase
     .from("usage_events")
     .select("created_at", { count: "exact" })
-    .eq("user_id", userId)
+    .eq("project_id", projectId)
     .eq("event_type", "chat_request")
     .gte("created_at", windowStart)
     .order("created_at", { ascending: true });
@@ -97,7 +100,7 @@ export async function checkChatRateLimit(
 
 // --- Burst-bypass fix: in-process reservation layer -----------------------
 //
-// Module-level (per Node process/instance) map of userId -> reservation
+// Module-level (per Node process/instance) map of projectId -> reservation
 // timestamps (ms). A "reservation" represents one request that has passed
 // the rate limit check and started processing, but has not yet (and may
 // never) written its own usage_events row. It's counted alongside the real
@@ -117,14 +120,14 @@ export async function checkChatRateLimit(
 // for that explicit, written-down limitation).
 const activeReservations = new Map<string, number[]>();
 
-/** Drops this user's reservation timestamps older than windowMs, and returns what's left (so callers get the post-purge list without a second map lookup). */
-function purgeExpiredReservations(userId: string, windowMs: number): number[] {
+/** Drops this project's reservation timestamps older than windowMs, and returns what's left (so callers get the post-purge list without a second map lookup). */
+function purgeExpiredReservations(projectId: string, windowMs: number): number[] {
   const cutoff = Date.now() - windowMs;
-  const existing = activeReservations.get(userId);
+  const existing = activeReservations.get(projectId);
   if (!existing) return [];
   const fresh = existing.filter((ts) => ts > cutoff);
-  if (fresh.length > 0) activeReservations.set(userId, fresh);
-  else activeReservations.delete(userId);
+  if (fresh.length > 0) activeReservations.set(projectId, fresh);
+  else activeReservations.delete(projectId);
   return fresh;
 }
 
@@ -170,20 +173,20 @@ export type ReservedChatRateLimitSlot =
  * checkChatRateLimit); everything from that await resolving through the
  * `activeReservations.set(...)` reservation below runs synchronously (no
  * further `await` in between). Node's single-threaded event loop means no
- * other call to this function for the same user can interleave inside that
+ * other call to this function for the same project can interleave inside that
  * synchronous span, so two concurrent callers can never both observe the
  * same combined count and both reserve a slot for a count that's already
  * at the limit -- this is what "atomic" means here, not a DB-level lock.
  */
 export async function reserveChatRateLimitSlot(
   supabase: Pick<SupabaseClient, "from">,
-  userId: string,
+  projectId: string,
   config: RateLimitConfig = DEFAULT_CHAT_RATE_LIMIT
 ): Promise<ReservedChatRateLimitSlot> {
-  const dbResult = await checkChatRateLimit(supabase, userId, config);
+  const dbResult = await checkChatRateLimit(supabase, projectId, config);
 
   // Everything below this line is synchronous -- see the atomicity note above.
-  const reserved = purgeExpiredReservations(userId, config.windowMs);
+  const reserved = purgeExpiredReservations(projectId, config.windowMs);
   const currentCount = dbResult.currentCount + reserved.length;
   const allowed = currentCount < config.maxRequests;
 
@@ -202,19 +205,19 @@ export async function reserveChatRateLimitSlot(
   }
 
   const stamp = Date.now();
-  const arr = activeReservations.get(userId) ?? [];
+  const arr = activeReservations.get(projectId) ?? [];
   arr.push(stamp);
-  activeReservations.set(userId, arr);
+  activeReservations.set(projectId, arr);
 
   let released = false;
   const release = (): void => {
     if (released) return;
     released = true;
-    const cur = activeReservations.get(userId);
+    const cur = activeReservations.get(projectId);
     if (!cur) return;
     const idx = cur.indexOf(stamp);
     if (idx !== -1) cur.splice(idx, 1);
-    if (cur.length === 0) activeReservations.delete(userId);
+    if (cur.length === 0) activeReservations.delete(projectId);
   };
 
   return { allowed: true, currentCount, limit: config.maxRequests, release };

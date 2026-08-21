@@ -6,7 +6,9 @@
 // GET /api/profile/ai-providers on mount (loading skeleton -> ready/error),
 // then renders one section per provider slot (OpenAI, "Anthropic (+
 // Voyage)" -- one section, two key fields, since that pairing is fixed --
-// and Gemini) plus the active-provider picker.
+// and Gemini) plus a read-only summary of which providers are fully
+// configured (see ActiveProviderSection.tsx's own PROJECTS PIVOT DAMAGE
+// CONTROL header comment for why that's no longer an interactive picker).
 //
 // Deliberately goes through app/api/profile/ai-providers/route.ts for
 // everything, never lib/ai/credentials.ts directly -- same
@@ -18,17 +20,16 @@ import { useEffect, useState } from "react";
 import { redirectToLogin } from "@/lib/ui/client-redirect";
 import { ProviderKeyField } from "./ProviderKeyField";
 import { ActiveProviderSection } from "./ActiveProviderSection";
-import type { AIProviderCredentialType, ActiveAIProvider, ConfiguredFlags } from "./types";
+import type { AIProviderCredentialType, ConfiguredFlags } from "./types";
 
 interface GetResponseBody {
   configured: ConfiguredFlags;
-  activeProvider: ActiveAIProvider | null;
 }
 
 type LoadState =
   | { status: "loading" }
   | { status: "error"; message: string }
-  | { status: "ready"; configured: ConfiguredFlags; activeProvider: ActiveAIProvider | null };
+  | { status: "ready"; configured: ConfiguredFlags };
 
 /**
  * Pure request -> LoadState mapping, no setState of its own -- callers
@@ -64,7 +65,7 @@ async function fetchProviderState(): Promise<LoadState> {
       };
     }
     const data = (await response.json()) as GetResponseBody;
-    return { status: "ready", configured: data.configured, activeProvider: data.activeProvider };
+    return { status: "ready", configured: data.configured };
   } catch {
     return {
       status: "error",
@@ -108,16 +109,12 @@ export function ProfileForm() {
     );
   }
 
-  const { configured, activeProvider } = state;
+  const { configured } = state;
 
   function handleConfiguredChange(provider: AIProviderCredentialType, isConfigured: boolean) {
     setState((prev) =>
       prev.status === "ready" ? { ...prev, configured: { ...prev.configured, [provider]: isConfigured } } : prev
     );
-  }
-
-  function handleActiveProviderChange(provider: ActiveAIProvider) {
-    setState((prev) => (prev.status === "ready" ? { ...prev, activeProvider: provider } : prev));
   }
 
   return (
@@ -140,7 +137,6 @@ export function ProfileForm() {
           configured={configured.openai}
           placeholder="sk-..."
           onConfiguredChange={handleConfiguredChange}
-          onActiveProviderChange={handleActiveProviderChange}
         />
       </section>
 
@@ -150,7 +146,7 @@ export function ProfileForm() {
         </h2>
         <p className="field-hint" style={{ marginBottom: "0.7rem" }}>
           У Anthropic нет собственных embeddings — для поиска по документам нужен ещё ключ Voyage AI.
-          Оба нужны, чтобы выбрать Anthropic активным провайдером ниже. Ключи — на{" "}
+          Оба нужны, чтобы использовать Anthropic в проекте. Ключи — на{" "}
           <a href="https://console.anthropic.com/settings/keys" target="_blank" rel="noopener noreferrer">
             console.anthropic.com
           </a>{" "}
@@ -167,7 +163,6 @@ export function ProfileForm() {
             configured={configured.anthropic}
             placeholder="sk-ant-..."
             onConfiguredChange={handleConfiguredChange}
-            onActiveProviderChange={handleActiveProviderChange}
           />
           <ProviderKeyField
             provider="voyage"
@@ -175,7 +170,6 @@ export function ProfileForm() {
             configured={configured.voyage}
             placeholder="pa-..."
             onConfiguredChange={handleConfiguredChange}
-            onActiveProviderChange={handleActiveProviderChange}
           />
         </div>
       </section>
@@ -197,16 +191,11 @@ export function ProfileForm() {
           configured={configured.gemini}
           placeholder="AIza..."
           onConfiguredChange={handleConfiguredChange}
-          onActiveProviderChange={handleActiveProviderChange}
         />
       </section>
 
       <section className="card">
-        <ActiveProviderSection
-          configured={configured}
-          activeProvider={activeProvider}
-          onActiveProviderChange={handleActiveProviderChange}
-        />
+        <ActiveProviderSection configured={configured} />
       </section>
     </div>
   );

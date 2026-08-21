@@ -21,12 +21,23 @@
 // lib/sources/__tests__/manual-upload.integration.test.ts's header comment:
 // no HTTP server harness in this project's test setup) so the test can
 // assert on a stable authenticated user without going through the full
-// cookie-based session flow; lib/supabase/service-client.ts (and the real
-// Postgres/PostgREST it talks to) is NOT mocked -- that's the whole point.
+// cookie-based session flow. `getRouteHandlerSupabaseClient()` is mocked to
+// return the REAL service-role client (not `{}`) so
+// `verifyProjectOwnership()` -- which is NOT mocked, it's the real
+// implementation from lib/supabase/server-client.ts -- can run a real query
+// against real Postgres. This works even though a service-role client
+// bypasses RLS (unlike the RLS-scoped session client a real browser session
+// would use): the query still correctly returns "no row" for a project
+// this test's `userId` doesn't own, because every project inserted below
+// is genuinely owned by `userId` -- there's no cross-user case to
+// misrepresent in this file. lib/supabase/service-client.ts itself (and the
+// real Postgres/PostgREST it talks to) is NOT mocked either -- that's the
+// whole point of this suite.
 
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import {
+  createTestProject,
   createTestUser,
   deleteTestUser,
   hasIntegrationEnv,
@@ -34,11 +45,18 @@ import {
 } from "../../../../../lib/testing/integration-helpers";
 
 let currentUser: { id: string; email: string } | null = null;
+let sharedSupabase: SupabaseClient;
 
-vi.mock("@/lib/supabase/server-client", () => ({
-  getRouteHandlerSupabaseClient: async () => ({}),
-  getAuthenticatedUser: async () => currentUser,
-}));
+vi.mock("@/lib/supabase/server-client", async () => {
+  const actual = await vi.importActual<typeof import("../../../../../lib/supabase/server-client")>(
+    "../../../../../lib/supabase/server-client"
+  );
+  return {
+    getRouteHandlerSupabaseClient: async () => sharedSupabase,
+    getAuthenticatedUser: async () => currentUser,
+    verifyProjectOwnership: actual.verifyProjectOwnership,
+  };
+});
 
 // NOT mocked: lib/supabase/service-client.ts's getServiceRoleClient() reads
 // NEXT_PUBLIC_SUPABASE_URL/SUPABASE_SERVICE_ROLE_KEY straight from
@@ -61,12 +79,15 @@ function makeParams(documentId: string): { params: Promise<{ documentId: string 
 describe.skipIf(!hasIntegrationEnv())("DELETE /api/sources/{documentId} (integration, real Supabase)", () => {
   let supabase: SupabaseClient;
   let userId: string;
+  let projectId: string;
 
   beforeAll(async () => {
     supabase = makeIntegrationSupabaseClient();
+    sharedSupabase = supabase;
     const user = await createTestUser(supabase, "delete-race");
     userId = user.id;
     currentUser = user;
+    projectId = (await createTestProject(supabase, userId)).id;
   });
 
   afterAll(async () => {
@@ -80,7 +101,7 @@ describe.skipIf(!hasIntegrationEnv())("DELETE /api/sources/{documentId} (integra
   async function insertDocument(): Promise<string> {
     const { data, error } = await supabase
       .from("documents")
-      .insert({ user_id: userId, title: "race test doc", source_type: "manual_upload", source_ref: null, processing_status: "ready" })
+      .insert({ project_id: projectId, title: "race test doc", source_type: "manual_upload", source_ref: null, processing_status: "ready" })
       .select("id")
       .single();
     if (error || !data) throw new Error(`insertDocument failed: ${error?.message}`);

@@ -29,6 +29,7 @@ import { ingestDocument } from "../../ingestion/ingest";
 import type { EmbeddingsProvider } from "../../ai/types";
 import { processManualUpload } from "../manual-upload";
 import {
+  createTestProject,
   createTestUser,
   deleteTestUser,
   hasIntegrationEnv,
@@ -57,6 +58,7 @@ const SAMPLE_TEXT = Array.from(
 describe.skipIf(!hasIntegrationEnv())("manual upload (integration, real Supabase Storage + Postgres)", () => {
   let supabase: SupabaseClient;
   let userId: string;
+  let projectId: string;
   let documentId: string;
   const uploadedPaths: string[] = [];
 
@@ -64,6 +66,7 @@ describe.skipIf(!hasIntegrationEnv())("manual upload (integration, real Supabase
     supabase = makeIntegrationSupabaseClient();
     const user = await createTestUser(supabase, "manual-upload");
     userId = user.id;
+    projectId = (await createTestProject(supabase, userId)).id;
   });
 
   afterAll(async () => {
@@ -87,16 +90,17 @@ describe.skipIf(!hasIntegrationEnv())("manual upload (integration, real Supabase
     // createDocumentFromSource does (pending -> upload -> set storage_path).
     const { data: docRow, error: insertError } = await supabase
       .from("documents")
-      .insert({ user_id: userId, title: normalized.title, source_type: "manual_upload", source_ref: null, processing_status: "pending" })
+      .insert({ project_id: projectId, title: normalized.title, source_type: "manual_upload", source_ref: null, processing_status: "pending" })
       .select("id")
       .single();
     if (insertError) throw new Error(insertError.message);
     documentId = docRow.id as string;
 
     // 3. Real upload to the real, private "documents" Storage bucket, at
-    // the "<user_id>/<document_id>/original.<ext>" path the
-    // documents_storage_path_prefixed_with_user_id DB constraint requires.
-    const storagePath = `${userId}/${documentId}/original.${normalized.original.extension}`;
+    // the "<project_id>/<document_id>/original.<ext>" path the
+    // documents_storage_path_prefixed_with_project_id DB constraint
+    // requires (rescoped from "<user_id>/..." by the projects pivot).
+    const storagePath = `${projectId}/${documentId}/original.${normalized.original.extension}`;
     uploadedPaths.push(storagePath);
     const { error: uploadError } = await supabase.storage
       .from("documents")
@@ -121,7 +125,7 @@ describe.skipIf(!hasIntegrationEnv())("manual upload (integration, real Supabase
     // module header for why this is injected here rather than going
     // through lib/sources/pipeline.ts's real-provider-hardcoded wrapper.
     const result = await ingestDocument(
-      { documentId, userId, title: normalized.title, text: normalized.text },
+      { documentId, projectId, ownerUserId: userId, title: normalized.title, text: normalized.text },
       { supabase, embeddingsProvider: deterministicEmbeddings() },
       { targetTokens: 80, overlapTokens: 10 }
     );

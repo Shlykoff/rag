@@ -1,11 +1,14 @@
 // scripts/seed-ai-credentials.ts
 //
-// Populates the seeded demo account's per-user AI-provider credentials
-// (`ai_provider_credentials` / `user_settings`) from whichever of
-// OPENAI_API_KEY / ANTHROPIC_API_KEY / VOYAGE_API_KEY / GEMINI_API_KEY are
-// set in .env.local -- the SAME env vars that used to drive the old
+// Populates the seeded demo account's account-level AI-provider credentials
+// (`ai_provider_credentials`) AND the seeded demo PROJECT's
+// `projects.active_ai_provider` (projects architecture pivot -- that
+// selection moved off the now-dropped `user_settings` table, see the
+// projects migration's header) from whichever of OPENAI_API_KEY /
+// ANTHROPIC_API_KEY / VOYAGE_API_KEY / GEMINI_API_KEY are set in
+// .env.local -- the SAME env vars that used to drive the old
 // process-global `AI_PROVIDER` selection (lib/ai/index.ts). Now that every
-// user (including the demo account) reads their own encrypted credentials
+// account (including the demo account) reads its own encrypted credentials
 // from the DB instead, those env vars' only remaining job is feeding THIS
 // script.
 //
@@ -72,6 +75,8 @@ import { ingestDocumentWithDefaultProviders } from "../lib/ingestion/ingest";
 
 /** Fixed demo user id, created by supabase/seed.sql (demo@example.com) -- see that file's own comment block for the full local-dev-only rationale. */
 const DEMO_USER_ID = "00000000-0000-0000-0000-000000000001";
+/** Fixed demo project id ("Demo Project"), also created by supabase/seed.sql -- owned by DEMO_USER_ID. Every project-scoped call in this script (active_ai_provider, document re-embedding) targets this id, not the account directly -- see the projects migration's header for why active_ai_provider moved off the account level. */
+const DEMO_PROJECT_ID = "00000000-0000-0000-0000-000000000002";
 
 const ENV_KEY_BY_PROVIDER: Record<AIProviderCredentialType, string> = {
   openai: "OPENAI_API_KEY",
@@ -81,12 +86,13 @@ const ENV_KEY_BY_PROVIDER: Record<AIProviderCredentialType, string> = {
 };
 
 /**
- * The script's original job (unchanged): upsert whichever `.env.local`
- * provider keys are present, then default `active_ai_provider` to
- * 'gemini' if nothing has been chosen yet. Split out from `main()` so the
- * demo-document re-embed step below (`reembedDemoDocuments`) can never
- * prevent this part from completing -- see `main()`'s own comment for why
- * that ordering matters.
+ * The script's original job (adapted for the projects pivot): upsert
+ * whichever `.env.local` provider keys are present as the demo ACCOUNT's
+ * credentials (unchanged, account-level), then default the demo PROJECT's
+ * `active_ai_provider` to 'gemini' if nothing has been chosen for it yet.
+ * Split out from `main()` so the demo-document re-embed step below
+ * (`reembedDemoDocuments`) can never prevent this part from completing --
+ * see `main()`'s own comment for why that ordering matters.
  */
 async function seedCredentialsAndActiveProvider(supabase: SupabaseClient): Promise<void> {
   const seededThisRun: AIProviderCredentialType[] = [];
@@ -107,10 +113,10 @@ async function seedCredentialsAndActiveProvider(supabase: SupabaseClient): Promi
     console.info(`seed-ai-credentials: stored an encrypted '${provider}' credential for the demo user.`);
   }
 
-  const currentActive = await getActiveProvider(supabase, DEMO_USER_ID);
+  const currentActive = await getActiveProvider(supabase, DEMO_PROJECT_ID);
   if (currentActive) {
     console.info(
-      `seed-ai-credentials: active_ai_provider is already '${currentActive}' -- leaving it as-is (this script never overrides a choice already made, e.g. via /profile).`
+      `seed-ai-credentials: the demo project's active_ai_provider is already '${currentActive}' -- leaving it as-is (this script never overrides a choice already made, e.g. via the project's model-selection UI).`
     );
     return;
   }
@@ -119,20 +125,20 @@ async function seedCredentialsAndActiveProvider(supabase: SupabaseClient): Promi
   // verified live"), it's the one provider with a real, working account
   // balance in this environment -- openai/anthropic are correctly wired
   // end-to-end but currently blocked on billing, so defaulting to either
-  // of those would leave the demo account's very first chat message
+  // of those would leave the demo project's very first chat message
   // failing with a real vendor error instead of a clean local success.
   const geminiIsConfigured =
     seededThisRun.includes("gemini") || (await hasAIProviderCredential(supabase, DEMO_USER_ID, "gemini"));
   if (!geminiIsConfigured) {
     console.warn(
       "seed-ai-credentials: GEMINI_API_KEY is not set (in this run or a previous one) -- cannot default " +
-        "active_ai_provider to 'gemini'. Set GEMINI_API_KEY in .env.local and re-run `npm run seed:ai-keys`, " +
-        "or pick a provider manually for the demo account via POST/PUT /api/profile/ai-providers once signed in as it."
+        "the demo project's active_ai_provider to 'gemini'. Set GEMINI_API_KEY in .env.local and re-run " +
+        "`npm run seed:ai-keys`, or pick a provider manually for the demo project once its model-selection UI exists."
     );
     return;
   }
-  await setActiveProvider(supabase, DEMO_USER_ID, "gemini");
-  console.info("seed-ai-credentials: set active_ai_provider = 'gemini' for the demo user.");
+  await setActiveProvider(supabase, DEMO_PROJECT_ID, DEMO_USER_ID, "gemini");
+  console.info("seed-ai-credentials: set active_ai_provider = 'gemini' for the demo project.");
 }
 
 // ---------------------------------------------------------------------------
@@ -158,7 +164,7 @@ interface DemoDocumentRow {
 }
 
 /**
- * Finds every document owned by the demo user that still has at least one
+ * Finds every document under the demo project that still has at least one
  * chunk with `embedding IS NULL` -- i.e. has never been successfully run
  * through the real ingestion pipeline. This is what makes re-running this
  * step idempotent for free, with no extra bookkeeping: once
@@ -173,7 +179,7 @@ async function findDemoDocumentsNeedingEmbeddings(supabase: SupabaseClient): Pro
   const { data: documents, error: documentsError } = await supabase
     .from("documents")
     .select("id, title, storage_path")
-    .eq("user_id", DEMO_USER_ID)
+    .eq("project_id", DEMO_PROJECT_ID)
     .returns<DemoDocumentRow[]>();
   if (documentsError) {
     throw new Error(`findDemoDocumentsNeedingEmbeddings: failed to load demo documents: ${documentsError.message}`);
@@ -278,10 +284,10 @@ async function getDocumentText(supabase: SupabaseClient, doc: DemoDocumentRow): 
  * required step.
  */
 async function reembedDemoDocuments(supabase: SupabaseClient): Promise<void> {
-  const activeProvider = await getActiveProvider(supabase, DEMO_USER_ID);
+  const activeProvider = await getActiveProvider(supabase, DEMO_PROJECT_ID);
   if (!activeProvider) {
     console.warn(
-      "seed-ai-credentials: no active_ai_provider configured for the demo user -- skipping demo document " +
+      "seed-ai-credentials: no active_ai_provider configured for the demo project -- skipping demo document " +
         "re-embedding. Re-run `npm run seed:ai-keys` once at least one working provider key is available."
     );
     return;
@@ -309,7 +315,8 @@ async function reembedDemoDocuments(supabase: SupabaseClient): Promise<void> {
       const text = await getDocumentText(supabase, doc);
       const result = await ingestDocumentWithDefaultProviders({
         documentId: doc.id,
-        userId: DEMO_USER_ID,
+        projectId: DEMO_PROJECT_ID,
+        ownerUserId: DEMO_USER_ID,
         title: doc.title,
         text,
       });

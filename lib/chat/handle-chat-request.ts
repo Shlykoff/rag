@@ -6,20 +6,41 @@
 // sources + usage_events. Deliberately has no knowledge of Next.js/HTTP --
 // app/api/chat/route.ts is a thin adapter that does auth + rate limiting
 // (proper 401/429 status codes) and turns this generator into an SSE
-// Response. Keeping this split is what makes the pipeline unit-testable
-// with fakes (see __tests__/handle-chat-request.test.ts) instead of
-// needing a running Next.js server.
+// Response; lib/gateway/answer.ts is a second, non-streaming caller for
+// external channel messages (Telegram etc, see that module). Keeping this
+// split is what makes the pipeline unit-testable with fakes (see
+// __tests__/handle-chat-request.test.ts) instead of needing a running
+// Next.js server, and is what lets ONE persistence code path serve both the
+// owner's own test chat and every external channel session of a project
+// (projects architecture pivot) without forking by caller type.
 //
-// SECURITY: `userId` must come from a validated server-side session (see
-// app/api/chat/route.ts / lib/supabase/server-client.ts) -- it is used
-// both as the match_document_chunks p_user_id (via lib/retrieval/search.ts)
-// and to scope/authorize conversation access. Never pass a client-supplied
-// userId here.
+// SECURITY: `projectId`/`ownerUserId` must come from an already
+// independently-verified source -- see app/api/chat/route.ts (RLS-scoped
+// ownership check before ever calling this) / lib/gateway/answer.ts (the
+// gateway's own service-role project-owner lookup, keyed off the
+// channel_integrations row that received the inbound webhook, never off
+// anything in the inbound payload itself). Never pass a client-supplied
+// projectId/ownerUserId here.
+//
+// Two ownership shapes share this one pipeline (see the conversations
+// migration's table comment): the project OWNER's own in-app test chat
+// (`input.externalParticipant` omitted -- conversations.user_id =
+// ownerUserId, channel/external_participant_id null) and an EXTERNAL
+// channel participant's session (`input.externalParticipant` set --
+// conversations.user_id = null, channel/external_participant_id set, found
+// via upsert against the (project_id, channel, external_participant_id)
+// partial unique index rather than a client-supplied conversationId, since
+// an inbound Telegram update carries none). `usage_events.user_id` is
+// always `input.ownerUserId` for BOTH shapes -- external participants have
+// no auth.users row of their own to attribute cost to; it's the project
+// owner's credentials/budget being spent either way.
 //
 // Rate limiting is intentionally NOT checked in here -- see
-// app/api/chat/route.ts, which checks it before starting this generator so
-// a rejected request gets a plain 429 response instead of a partially
-//-started SSE stream.
+// app/api/chat/route.ts (layer 1 only, web path) / lib/gateway/answer.ts
+// (all three concurrency layers, external-channel path), which check it
+// before starting this generator so a rejected request gets a plain 429 (or
+// GatewayAnswerResult{kind:"rate_limited"}) instead of a partially-started
+// stream.
 
 import "server-only";
 import type { SupabaseClient } from "@supabase/supabase-js";
@@ -29,15 +50,26 @@ import { runRetrieval, type ContextSource } from "../retrieval/search";
 import { RAG_SYSTEM_PROMPT } from "../retrieval/system-prompt";
 import { estimateTokens } from "../tokens";
 
+/** Identifies an external channel participant (e.g. a Telegram chat_id) -- see the module header's "two ownership shapes" comment. Opaque strings: this module doesn't interpret `channel` beyond using it as part of the conversations find-or-create key. */
+export interface ExternalParticipant {
+  channel: string;
+  participantId: string;
+}
+
 export interface ChatRequestInput {
-  userId: string;
-  /** Existing conversation to continue, or omitted to start a new one. */
+  /** The project this chat turn is scoped to -- documents/retrieval/rate-limiting/usage_events all key off this. */
+  projectId: string;
+  /** The project's owner -- always the account whose credentials/budget this turn spends, and the `conversations.user_id`/`usage_events.user_id` value for the OWNER (non-external) path. See the module header. */
+  ownerUserId: string;
+  /** Existing conversation to continue, or omitted to start a new one. Owner path only -- ignored (never consulted) when `externalParticipant` is set, since an inbound channel message carries no conversationId of its own; see resolveConversationId(). */
   conversationId?: string;
+  /** Set for an external-channel-shaped turn (e.g. a Telegram message) -- see the module header's "two ownership shapes" comment. Omit for the project owner's own test chat. */
+  externalParticipant?: ExternalParticipant;
   message: string;
 }
 
 export interface ChatRequestDeps {
-  /** Service-role client -- see lib/supabase/service-client.ts. All reads/writes here are already scoped by the validated userId above, not by RLS. */
+  /** Service-role client -- see lib/supabase/service-client.ts. All reads/writes here are already scoped by the validated projectId/ownerUserId above, not by RLS. */
   supabase: SupabaseClient;
   chatProvider: ChatProvider;
   embeddingsProvider: EmbeddingsProvider;
@@ -61,27 +93,120 @@ function deriveConversationTitle(message: string): string {
     : `${trimmed.slice(0, MAX_TITLE_LENGTH - 1)}…`;
 }
 
+/**
+ * Find-or-create for an external channel session, keyed by
+ * (project_id, channel, external_participant_id) -- the partial unique
+ * index `conversations_external_participant_unique` (`where channel is not
+ * null`, see the conversations migration).
+ *
+ * NOT implemented as `supabase.from("conversations").upsert(..., {
+ * onConflict: "..." })`, even though that's the idiomatic
+ * supabase-js shape for find-or-create elsewhere in this codebase (e.g.
+ * lib/ai/credentials.ts's saveAIProviderCredential) -- deliberately, after
+ * hitting this live against real Postgres: PostgREST's `on_conflict` query
+ * param only ever emits a plain `ON CONFLICT (col1, col2, ...)` column-list
+ * target, with no way to also pass the index's `WHERE channel IS NOT NULL`
+ * predicate. Postgres requires an ON CONFLICT target to match a unique
+ * index/constraint EXACTLY, including any partial predicate, to infer it --
+ * a bare column-list target cannot match a partial unique index at all, and
+ * the query fails with "there is no unique or exclusion constraint
+ * matching the ON CONFLICT specification" (reproduced live, not a
+ * theoretical concern). A non-partial unique index would work with
+ * `upsert()`, but the partial index is deliberate on db-architect's side
+ * (see the conversations migration: the owner's own test-chat rows have no
+ * such natural dedup key and can legitimately have many
+ * channel/external_participant_id-both-null rows).
+ *
+ * Instead: SELECT first (this is the fast path on every message after the
+ * first -- a repeat Telegram sender's conversation already exists), and
+ * only INSERT on a miss. A concurrent double-insert race (two overlapping
+ * webhook deliveries for a brand-new participant, both missing the SELECT)
+ * is closed by catching Postgres's unique-violation error code (23505) on
+ * the INSERT and re-SELECTing -- the losing request ends up with the
+ * winner's row, not a duplicate. This is a real, not just theoretical,
+ * race window this module's caller (lib/gateway/answer.ts) additionally
+ * narrows with its own per-conversation lock (layer 3) -- see that
+ * module's header -- but the DB-level catch here is what makes this
+ * function correct even without that lock (e.g. if the lock is ever
+ * bypassed or this function is reused by a future caller that doesn't
+ * have one).
+ */
+async function resolveExternalConversation(
+  supabase: SupabaseClient,
+  projectId: string,
+  externalParticipant: ExternalParticipant
+): Promise<{ id: string; isNew: boolean } | { error: string }> {
+  const { channel, participantId } = externalParticipant;
+  const matchFilter = { project_id: projectId, channel, external_participant_id: participantId };
+
+  const { data: existing, error: selectError } = await supabase
+    .from("conversations")
+    .select("id")
+    .match(matchFilter)
+    .maybeSingle();
+  if (selectError) {
+    return { error: `Не удалось найти диалог: ${selectError.message}` };
+  }
+  if (existing) {
+    return { id: existing.id as string, isNew: false };
+  }
+
+  const { data: inserted, error: insertError } = await supabase
+    .from("conversations")
+    .insert(matchFilter)
+    .select("id")
+    .single();
+  if (!insertError && inserted) {
+    return { id: inserted.id as string, isNew: true };
+  }
+
+  // 23505 = unique_violation: lost a race against a concurrent insert for
+  // the same (project_id, channel, external_participant_id) -- the winner
+  // already created the row we were trying to create; find and use it
+  // rather than surfacing an error for what is, from the caller's
+  // perspective, a completely normal outcome.
+  if (insertError?.code === "23505") {
+    const { data: raceWinner, error: raceSelectError } = await supabase
+      .from("conversations")
+      .select("id")
+      .match(matchFilter)
+      .maybeSingle();
+    if (raceSelectError) {
+      return { error: `Не удалось найти диалог: ${raceSelectError.message}` };
+    }
+    if (raceWinner) {
+      return { id: raceWinner.id as string, isNew: false };
+    }
+  }
+
+  return { error: `Не удалось найти или создать диалог: ${insertError?.message ?? "unknown error"}` };
+}
+
 async function resolveConversationId(
   supabase: SupabaseClient,
-  userId: string,
-  conversationId: string | undefined,
+  input: Pick<ChatRequestInput, "projectId" | "ownerUserId" | "conversationId" | "externalParticipant">,
   firstMessage: string
 ): Promise<{ id: string; isNew: boolean } | { error: string }> {
-  if (conversationId) {
+  if (input.externalParticipant) {
+    return resolveExternalConversation(supabase, input.projectId, input.externalParticipant);
+  }
+
+  if (input.conversationId) {
     const { data, error } = await supabase
       .from("conversations")
       .select("id")
-      .eq("id", conversationId)
-      .eq("user_id", userId)
+      .eq("id", input.conversationId)
+      .eq("project_id", input.projectId)
+      .eq("user_id", input.ownerUserId)
       .maybeSingle();
     if (error) return { error: `Не удалось найти диалог: ${error.message}` };
     if (!data) return { error: "Диалог не найден." };
-    return { id: conversationId, isNew: false };
+    return { id: input.conversationId, isNew: false };
   }
 
   const { data, error } = await supabase
     .from("conversations")
-    .insert({ user_id: userId, title: deriveConversationTitle(firstMessage) })
+    .insert({ project_id: input.projectId, user_id: input.ownerUserId, title: deriveConversationTitle(firstMessage) })
     .select("id")
     .single();
   if (error || !data) {
@@ -125,12 +250,16 @@ function buildSystemPromptWithContext(contextText: string): string {
  * embedding call (retrieval) and the chat completion, as a side effect.
  *
  * Error handling: known, expected failure modes (conversation not found,
- * chat provider failure after retries) are yielded as `{ type: 'error' }`
- * events rather than thrown, so the caller (the API route) can forward
- * them to the client over the same SSE stream instead of needing a
- * separate error channel. Unexpected failures (e.g. a DB write erroring)
- * are allowed to throw -- the route handler's own try/catch around
- * iterating this generator is the backstop for those.
+ * chat provider failure after retries, OR a completion that streams zero
+ * deltas and then rejects `usage`/`text` afterward -- e.g. a real
+ * AI_NoOutputGeneratedError, see the try/catch around the streaming block
+ * below) are yielded as `{ type: 'error' }` events rather than thrown, so
+ * the caller (the API route, or lib/gateway/answer.ts) can forward them
+ * appropriately instead of needing a separate error channel. Unexpected
+ * failures (e.g. a DB write erroring) are allowed to throw -- the caller's
+ * own try/catch around iterating this generator is the backstop for those
+ * (lib/gateway/answer.ts's drain loop has one specifically as
+ * defense-in-depth against this contract ever being violated again).
  */
 export async function* handleChatRequest(
   input: ChatRequestInput,
@@ -144,8 +273,7 @@ export async function* handleChatRequest(
 
   const conversation = await resolveConversationId(
     deps.supabase,
-    input.userId,
-    input.conversationId,
+    { projectId: input.projectId, ownerUserId: input.ownerUserId, conversationId: input.conversationId, externalParticipant: input.externalParticipant },
     trimmedMessage
   );
   if ("error" in conversation) {
@@ -173,23 +301,23 @@ export async function* handleChatRequest(
   // which (per lib/ai/types.ts's EmbeddingsProvider contract) always
   // rejects with an already-normalized AIProviderError, never a raw vendor
   // error -- so its retryable/userMessage are just as trustworthy as a
-  // chat-completion failure's and deserve the same graceful SSE `error`
-  // event instead of falling through to the route handler's generic
-  // catch-all (which always hardcodes retryable: false regardless of
-  // whether the underlying failure -- e.g. a 429 from the embeddings
-  // provider -- was actually retryable).
+  // chat-completion failure's and deserve the same graceful `error`
+  // event instead of falling through to the caller's generic catch-all
+  // (which always hardcodes retryable: false regardless of whether the
+  // underlying failure -- e.g. a 429 from the embeddings provider -- was
+  // actually retryable).
   //
   // A non-AIProviderError here (e.g. the plain Error that
   // lib/retrieval/search.ts throws when the match_document_chunks RPC call
   // itself fails) is a genuinely unexpected failure, not a
   // classified/retryable AI-provider condition -- left to propagate and be
-  // caught by the route handler's own catch-all, per this module's
-  // "Error handling" doc comment above.
+  // caught by the caller's own catch-all, per this module's "Error
+  // handling" doc comment above.
   let retrieval;
   try {
     retrieval = await runRetrieval(
       trimmedMessage,
-      input.userId,
+      input.projectId,
       { supabase: deps.supabase, embeddingsProvider: deps.embeddingsProvider },
       deps.retrievalOptions
     );
@@ -207,9 +335,11 @@ export async function* handleChatRequest(
   // object (unlike ChatProvider, whose usage is exact/provider-reported --
   // see lib/ai/stream-utils.ts), so this is an *estimate*
   // (lib/tokens.ts's chars/4 heuristic) logged for rough cost tracking,
-  // not a billing-accurate figure.
+  // not a billing-accurate figure. user_id stays the project OWNER for
+  // both ownership shapes -- see the module header.
   const { error: embeddingUsageError } = await deps.supabase.from("usage_events").insert({
-    user_id: input.userId,
+    project_id: input.projectId,
+    user_id: input.ownerUserId,
     event_type: "embedding_request",
     provider: deps.embeddingsProvider.providerName,
     model: deps.embeddingsProvider.modelName,
@@ -231,19 +361,37 @@ export async function* handleChatRequest(
 
   const stream = deps.chatProvider.streamChat({ systemPrompt, messages });
 
+  // NOTE (bug found live, see git history): `stream.usage` used to be
+  // awaited OUTSIDE this try, after the delta loop. That's an easy trap --
+  // a completion that streams zero deltas (e.g. wrapAiSdkStream's
+  // "empty-but-successful stream" branch, lib/ai/stream-utils.ts) exits the
+  // `for await` loop normally, without throwing, so nothing in the old
+  // try/catch ever fired; the underlying AI SDK's `usage`/`text` promises
+  // can *still* reject on their own afterward (reproduced live: a real
+  // AI_NoOutputGeneratedError from Gemini after wrapAiSdkStream's retry
+  // budget was exhausted against a 429) -- and that rejection, awaited with
+  // no try/catch around it, escaped this generator as a raw, unnormalized
+  // exception instead of a graceful `error` event. `stream.usage` is now
+  // awaited INSIDE the same try, so a failure at that point gets the exact
+  // same normalize-and-yield treatment as a failure during streaming
+  // itself (same catch body, deliberately -- normalizeProviderError() is
+  // idempotent on an already-normalized AIProviderError, and unconditional
+  // normalization here, not gated on `instanceof AIProviderError` the way
+  // the retrieval catch above is, matches this block's pre-existing
+  // delta-loop catch, which never gated on that either).
   let fullText = "";
+  let usage: TokenUsage;
   try {
     for await (const delta of stream.textStream) {
       fullText += delta;
       yield { type: "delta", text: delta };
     }
+    usage = await stream.usage;
   } catch (rawErr) {
     const err = normalizeProviderError(rawErr, deps.chatProvider.providerName);
     yield { type: "error", message: err.userMessage, retryable: err.retryable };
     return; // no assistant message / usage_events row on failure -- see module comment
   }
-
-  const usage = await stream.usage;
 
   const { error: insertAssistantMessageError } = await deps.supabase.from("messages").insert({
     conversation_id: conversation.id,
@@ -258,7 +406,8 @@ export async function* handleChatRequest(
   }
 
   const { error: chatUsageError } = await deps.supabase.from("usage_events").insert({
-    user_id: input.userId,
+    project_id: input.projectId,
+    user_id: input.ownerUserId,
     event_type: "chat_request",
     provider: deps.chatProvider.providerName,
     model: deps.chatProvider.modelName,

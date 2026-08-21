@@ -1,36 +1,38 @@
 // lib/ui/ai-provider.ts
 //
-// Display-only lookup of the signed-in user's active AI provider, for the
-// "работает на: ..." footer badge (CLAUDE.md: "ненавязчиво показать, какой
-// AI-провайдер сейчас активен ... это часть продающей истории"). Per-user
-// now (bring-your-own-key), not a single process-global `AI_PROVIDER` env
-// var: this thin wrapper just calls lib/ai/index.ts's
-// `getActiveProviderLabel(userId, supabase)`, which already returns
-// `null` (never throws) when the user hasn't configured/selected a
-// provider yet -- that's rendered as "не настроен" here, same fallback
-// text as before this refactor, just driven by a real per-user DB read
-// instead of an unset env var.
-//
-// Only ever called from Server Components (app/(app)/layout.tsx, which
-// already has both `user.id` and a request-scoped Supabase client on
-// hand) -- never imported into a "use client" module; `getActiveProviderLabel`
-// itself does a real Supabase query, so this can't be called at module
-// scope or cached across requests/users the way the old env-var read
-// could.
+// STAGE-BOUNDARY NOTE (projects architecture pivot): `active_ai_provider`
+// moved off the per-user `user_settings` table onto per-PROJECT
+// `projects.active_ai_provider` (see lib/ai/index.ts's
+// `getActiveProviderLabel(projectId, supabase)`). The sidebar footer that
+// calls this helper (app/(app)/layout.tsx -> Sidebar.tsx) has no project in
+// scope yet -- the app shell is still the pre-Stage-C flat layout, before
+// nextjs-frontend restructures routing around
+// `/projects/[projectId]/**` (see CLAUDE.md's Stage C). Rather than guess
+// at "the" project for a multi-project account, this badge is downgraded,
+// for this stage only, to "does this account have ANY AI-provider
+// credential connected at all" -- a real per-PROJECT "работает на: X"
+// badge belongs on the `/projects/[projectId]/**` shell nextjs-frontend
+// builds next. Flagged explicitly in this task's report, not silently
+// changed.
 
 import "server-only";
 import type { SupabaseClient } from "@supabase/supabase-js";
-import { getActiveProviderLabel } from "@/lib/ai";
+import { hasAIProviderCredential, type AIProviderCredentialType } from "@/lib/ai";
 
 export interface ActiveAIProviderInfo {
   label: string;
 }
 
-/** Never throws -- a user with no active provider configured (or not yet signed in to one) renders as "не настроен", not a crashed page. */
+const ALL_CREDENTIAL_PROVIDERS: AIProviderCredentialType[] = ["openai", "anthropic", "gemini", "voyage"];
+
+/** Never throws -- an account with no AI-provider credential connected yet renders as "не настроен", not a crashed page. See this file's header for why this no longer reports a specific per-project active provider. */
 export async function getActiveAIProviderInfo(
   userId: string,
   supabase: SupabaseClient
 ): Promise<ActiveAIProviderInfo> {
-  const label = await getActiveProviderLabel(userId, supabase);
-  return { label: label ?? "не настроен" };
+  const configuredFlags = await Promise.all(
+    ALL_CREDENTIAL_PROVIDERS.map((p) => hasAIProviderCredential(supabase, userId, p))
+  );
+  const hasAny = configuredFlags.some(Boolean);
+  return { label: hasAny ? "ключ подключён" : "не настроен" };
 }

@@ -26,10 +26,10 @@
 // protocol-relative variant) simply falls back to "/", it is never echoed
 // into the Location header.
 //
-// First-ever Google sign-in: a brand-new auth.users row has no
-// `user_settings`/`ai_provider_credentials` rows yet. Nothing here (or on
-// any page this can redirect to -- "/", "/sources", "/profile") assumes
-// those exist; see lib/ai/credentials.ts's "lazy row" design and
+// First-ever Google sign-in: a brand-new auth.users row has no `projects`/
+// `ai_provider_credentials` rows yet. Nothing here (or on any page this can
+// redirect to -- "/", "/sources", "/profile") assumes those exist; see
+// lib/ai/credentials.ts's project-scoped active_ai_provider design and
 // app/(app)/layout.tsx's getActiveAIProviderInfo() call, both already built
 // to treat "no active provider yet" as a normal, expected state rather
 // than an error.

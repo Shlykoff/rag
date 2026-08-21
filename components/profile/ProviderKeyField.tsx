@@ -14,17 +14,18 @@
 // `configured` (a boolean) is the only thing this component ever receives
 // about an already-stored key; the input always starts empty.
 //
-// A save can also auto-activate a provider server-side (see
-// app/api/profile/ai-providers/route.ts POST's `activeProvider` in its
-// response -- set when this was the key that completed a provider AND the
-// user had no active provider yet). `onActiveProviderChange` propagates
-// that up to ProfileForm so "Активный провайдер" reflects it immediately,
-// without a full GET refetch.
+// PROJECTS PIVOT DAMAGE CONTROL (see app/api/profile/ai-providers/route.ts's
+// own PROJECTS PIVOT NOTE): this used to also propagate an
+// `activeProvider` field the save response carried (auto-activation --
+// "which provider is active" was a per-user setting). That field is gone
+// from the response now (active_ai_provider moved to a per-project
+// selection this account-level route no longer manages) -- this component
+// only ever touches `configured` (yes/no) again.
 
 import { useState, type FormEvent } from "react";
 import { postJson, deleteJson, retryAfterSuffix } from "@/components/sources/request-helpers";
 import { redirectToLogin } from "@/lib/ui/client-redirect";
-import type { AIProviderCredentialType, ActiveAIProvider } from "./types";
+import type { AIProviderCredentialType } from "./types";
 
 export interface ProviderKeyFieldProps {
   provider: AIProviderCredentialType;
@@ -32,8 +33,6 @@ export interface ProviderKeyFieldProps {
   configured: boolean;
   placeholder?: string;
   onConfiguredChange: (provider: AIProviderCredentialType, configured: boolean) => void;
-  /** Called whenever a save response carries a non-null `activeProvider` -- see this file's header. Optional only so tests/stories that don't care about the active-provider section can omit it. */
-  onActiveProviderChange?: (provider: ActiveAIProvider) => void;
 }
 
 export function ProviderKeyField({
@@ -42,7 +41,6 @@ export function ProviderKeyField({
   configured,
   placeholder,
   onConfiguredChange,
-  onActiveProviderChange,
 }: ProviderKeyFieldProps) {
   const [editing, setEditing] = useState(!configured);
   const [value, setValue] = useState("");
@@ -59,10 +57,7 @@ export function ProviderKeyField({
       return;
     }
     setSaving(true);
-    const result = await postJson<{ status: string; activeProvider: ActiveAIProvider | null }>(
-      "/api/profile/ai-providers",
-      { provider, apiKey: value.trim() }
-    );
+    const result = await postJson<{ status: string }>("/api/profile/ai-providers", { provider, apiKey: value.trim() });
     setSaving(false);
     if (!result.ok) {
       if (result.kind === "unauthorized") {
@@ -75,9 +70,6 @@ export function ProviderKeyField({
     setValue("");
     setEditing(false);
     onConfiguredChange(provider, true);
-    if (result.data.activeProvider !== null) {
-      onActiveProviderChange?.(result.data.activeProvider);
-    }
   }
 
   async function handleDelete() {

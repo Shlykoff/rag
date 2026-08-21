@@ -1,16 +1,18 @@
 // lib/rate-limit/source-ingest-rate-limiter.ts
 //
-// Per-user request-rate limiting for the source-ingestion endpoints
+// Per-PROJECT request-rate limiting (projects architecture pivot --
+// documents are project-scoped now, see the documents migration) for the
+// source-ingestion endpoints
 // (app/api/sources/upload|notion|url|google-drive|[documentId]/refresh).
 // CLAUDE.md rule 4 ("проверка лимита запросов и стоимости -- на сервере,
 // до вызова AI-провайдера, не только в UI") applies here exactly as much
 // as it does to /api/chat: every one of those routes ends up calling
 // ingestDocumentWithDefaultProviders() (a real embeddings-provider call)
-// for every submission -- nothing previously stopped a user from hammering
-// e.g. POST /api/sources/url with tiny pages in a tight loop, each one a
-// real, billed embeddings call, unbounded by request rate (only by
-// per-document chunk count, which does nothing to limit how often a small
-// document can be submitted).
+// for every submission -- nothing previously stopped a caller from
+// hammering e.g. POST /api/sources/url with tiny pages in a tight loop,
+// each one a real, billed embeddings call, unbounded by request rate (only
+// by per-document chunk count, which does nothing to limit how often a
+// small document can be submitted).
 //
 // Deliberately NOT backed by `usage_events` (unlike
 // lib/rate-limit/rate-limiter.ts's chat limiter): `usage_events.event_type`
@@ -48,7 +50,7 @@
 import "server-only";
 
 export interface SourceIngestRateLimitConfig {
-  /** Max /api/sources/* requests allowed within windowMs, per user. */
+  /** Max /api/sources/* requests allowed within windowMs, per project. */
   maxRequests: number;
   windowMs: number;
 }
@@ -69,7 +71,7 @@ export const DEFAULT_SOURCE_INGEST_RATE_LIMIT: SourceIngestRateLimitConfig = {
 
 export interface SourceIngestRateLimitResult {
   allowed: boolean;
-  /** How many requests this user has made in the current window, INCLUDING this one when allowed. */
+  /** How many requests this project has made in the current window, INCLUDING this one when allowed. */
   currentCount: number;
   limit: number;
   /** Milliseconds until the oldest request in the window ages out -- a reasonable "try again in" hint. Only meaningful when allowed === false. */
@@ -84,36 +86,38 @@ export function __resetSourceIngestRateLimitForTests(): void {
 }
 
 /**
- * Checks AND records one request attempt for `userId`, atomically. Unlike
- * the chat limiter's two-step "DB count, then in-memory reservation"
- * design (needed there because the DB row for a chat request is only
- * written seconds later, after the full response streams), there is no
- * `await` anywhere in this function at all -- the count IS the state, kept
- * entirely in memory, updated synchronously. Node's single-threaded event
- * loop means no other call for the same user can interleave inside a fully
- * synchronous function, so this can't be raced by a parallel burst the way
- * a naive "check, then separately record" split could be.
+ * Checks AND records one request attempt for `projectId`, atomically.
+ * Unlike the chat limiter's two-step "DB count, then in-memory
+ * reservation" design (needed there because the DB row for a chat request
+ * is only written seconds later, after the full response streams), there
+ * is no `await` anywhere in this function at all -- the count IS the
+ * state, kept entirely in memory, updated synchronously. Node's
+ * single-threaded event loop means no other call for the same project can
+ * interleave inside a fully synchronous function, so this can't be raced
+ * by a parallel burst the way a naive "check, then separately record"
+ * split could be.
  *
- * Call this once, immediately after authenticating the caller and BEFORE
- * any adapter/AI-provider work starts, in every app/api/sources/* route
- * (see lib/sources/http-error.ts's `sourceIngestRateLimitedResponse` for
- * the matching HTTP response helper).
+ * Call this once, immediately after authenticating the caller and
+ * verifying project ownership, BEFORE any adapter/AI-provider work starts,
+ * in every app/api/sources/* route (see lib/sources/http-error.ts's
+ * `sourceIngestRateLimitedResponse` for the matching HTTP response
+ * helper).
  */
 export function checkSourceIngestRateLimit(
-  userId: string,
+  projectId: string,
   config: SourceIngestRateLimitConfig = DEFAULT_SOURCE_INGEST_RATE_LIMIT
 ): SourceIngestRateLimitResult {
   const now = Date.now();
   const cutoff = now - config.windowMs;
-  const existing = requestTimestamps.get(userId) ?? [];
+  const existing = requestTimestamps.get(projectId) ?? [];
   const fresh = existing.filter((ts) => ts > cutoff);
 
   if (fresh.length >= config.maxRequests) {
     // Still write back the purged (but not incremented) list -- keeps the
-    // map from accumulating stale entries for a user who keeps getting
+    // map from accumulating stale entries for a project that keeps getting
     // rejected without ever succeeding.
-    if (fresh.length > 0) requestTimestamps.set(userId, fresh);
-    else requestTimestamps.delete(userId);
+    if (fresh.length > 0) requestTimestamps.set(projectId, fresh);
+    else requestTimestamps.delete(projectId);
     const oldest = fresh[0];
     return {
       allowed: false,
@@ -124,6 +128,6 @@ export function checkSourceIngestRateLimit(
   }
 
   fresh.push(now);
-  requestTimestamps.set(userId, fresh);
+  requestTimestamps.set(projectId, fresh);
   return { allowed: true, currentCount: fresh.length, limit: config.maxRequests, retryAfterMs: 0 };
 }

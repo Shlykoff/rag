@@ -9,11 +9,16 @@
 //
 // SECURITY: match_document_chunks is security definer and EXECUTE is
 // granted to service_role only (see the RPC migration's comment) -- it
-// trusts p_user_id completely and does not re-derive it from RLS. This
-// module is called ONLY from server code with a p_user_id that came from
-// lib/supabase/server-client.ts's getAuthenticatedUser() -- see
-// app/api/chat/route.ts. It must never accept a userId parameter sourced
-// from the request body/query string.
+// trusts p_project_id completely and does not re-derive it from RLS. This
+// module is called ONLY from server code with a projectId that has already
+// been independently verified to belong to the caller: the web test-chat
+// path verifies via the RLS-scoped session client
+// (lib/supabase/server-client.ts's verifyProjectOwnership(), see
+// app/api/chat/route.ts); the gateway/channels path (lib/gateway/answer.ts)
+// verifies via the channel_integrations row that received the inbound
+// webhook. It must never accept a projectId parameter sourced directly from
+// a request body/query string or from anything in an inbound channel
+// payload.
 
 import "server-only";
 import type { SupabaseClient } from "@supabase/supabase-js";
@@ -142,12 +147,13 @@ export interface RunRetrievalDeps {
 
 /**
  * End-to-end retrieval: embed the question, call match_document_chunks,
- * assemble a token-budgeted context. `userId` MUST come from a validated
- * server-side session -- see the module-level security comment.
+ * assemble a token-budgeted context. `projectId` MUST come from a
+ * validated/independently-verified source -- see the module-level security
+ * comment.
  */
 export async function runRetrieval(
   question: string,
-  userId: string,
+  projectId: string,
   deps: RunRetrievalDeps,
   options: RetrievalOptions = {}
 ): Promise<RetrievalResult> {
@@ -159,7 +165,7 @@ export async function runRetrieval(
   const { data, error } = await deps.supabase.rpc("match_document_chunks", {
     query_embedding: queryEmbedding,
     match_count: matchCount,
-    p_user_id: userId,
+    p_project_id: projectId,
   });
 
   if (error) {

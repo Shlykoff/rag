@@ -7,11 +7,19 @@
 // grants (service_role SELECT+INSERT, no UPDATE/DELETE -- see the
 // migration), including the append-only-log-as-counter design actually
 // producing correct counts via COUNT(*) over a time window.
+//
+// PROJECTS PIVOT: checkChatRateLimit is project-scoped now (`usage_events.
+// project_id`, "layer 1" -- the aggregate budget shared by a project's
+// owner test chat and every external channel session of that project, see
+// lib/gateway/answer.ts) -- every usage_events row inserted below carries a
+// real `project_id` from lib/testing/integration-helpers.ts's
+// createTestProject().
 
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { checkChatRateLimit } from "../rate-limiter";
 import {
+  createTestProject,
   createTestUser,
   deleteTestUser,
   hasIntegrationEnv,
@@ -21,11 +29,13 @@ import {
 describe.skipIf(!hasIntegrationEnv())("checkChatRateLimit (integration, real Supabase)", () => {
   let supabase: SupabaseClient;
   let userId: string;
+  let projectId: string;
 
   beforeAll(async () => {
     supabase = makeIntegrationSupabaseClient();
     const user = await createTestUser(supabase, "ratelimit");
     userId = user.id;
+    projectId = (await createTestProject(supabase, userId)).id;
   });
 
   afterAll(async () => {
@@ -35,9 +45,11 @@ describe.skipIf(!hasIntegrationEnv())("checkChatRateLimit (integration, real Sup
   async function insertEvent(overrides: {
     eventType?: "chat_request" | "embedding_request";
     ageMs?: number;
+    projectId?: string;
   } = {}): Promise<void> {
     const createdAt = new Date(Date.now() - (overrides.ageMs ?? 0)).toISOString();
     const { error } = await supabase.from("usage_events").insert({
+      project_id: overrides.projectId ?? projectId,
       user_id: userId,
       event_type: overrides.eventType ?? "chat_request",
       provider: "integration-fake",
@@ -62,35 +74,35 @@ describe.skipIf(!hasIntegrationEnv())("checkChatRateLimit (integration, real Sup
     // 1 chat_request event that's outside the 60s window -- must NOT count.
     await insertEvent({ ageMs: 120_000 });
 
-    const result = await checkChatRateLimit(supabase, userId, { maxRequests: 3, windowMs: 60_000 });
+    const result = await checkChatRateLimit(supabase, projectId, { maxRequests: 3, windowMs: 60_000 });
     expect(result.currentCount).toBe(3);
     expect(result.allowed).toBe(false); // exactly at the limit
   });
 
   it("allows the request when raising maxRequests above the current count", async () => {
-    const result = await checkChatRateLimit(supabase, userId, { maxRequests: 4, windowMs: 60_000 });
+    const result = await checkChatRateLimit(supabase, projectId, { maxRequests: 4, windowMs: 60_000 });
     expect(result.currentCount).toBe(3);
     expect(result.allowed).toBe(true);
   });
 
-  it("does not leak other users' events into the count (scoped by user_id)", async () => {
-    const otherUser = await createTestUser(supabase, "ratelimit-other");
-    try {
-      const { error } = await supabase.from("usage_events").insert({
-        user_id: otherUser.id,
-        event_type: "chat_request",
-        provider: "integration-fake",
-        model: "integration-fake-model",
-        prompt_tokens: 1,
-        completion_tokens: 1,
-        total_tokens: 2,
-      });
-      if (error) throw new Error(error.message);
+  it("does not leak another project's events into the count (scoped by project_id, even under the SAME owner)", async () => {
+    // Same owner as `projectId` above, but a SECOND, independent project --
+    // this is the case that would NOT be caught by only testing two
+    // different owners: isolation here is project-level, not account-level.
+    const otherProject = await createTestProject(supabase, userId, "Other project");
+    const { error } = await supabase.from("usage_events").insert({
+      project_id: otherProject.id,
+      user_id: userId,
+      event_type: "chat_request",
+      provider: "integration-fake",
+      model: "integration-fake-model",
+      prompt_tokens: 1,
+      completion_tokens: 1,
+      total_tokens: 2,
+    });
+    if (error) throw new Error(error.message);
 
-      const result = await checkChatRateLimit(supabase, otherUser.id, { maxRequests: 10, windowMs: 60_000 });
-      expect(result.currentCount).toBe(1); // only otherUser's own event, not userId's 3
-    } finally {
-      await deleteTestUser(supabase, otherUser.id);
-    }
+    const result = await checkChatRateLimit(supabase, otherProject.id, { maxRequests: 10, windowMs: 60_000 });
+    expect(result.currentCount).toBe(1); // only otherProject's own event, not projectId's 3
   });
 });

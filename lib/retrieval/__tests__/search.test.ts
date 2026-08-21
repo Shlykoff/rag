@@ -34,17 +34,17 @@ function matchedChunk(overrides: Partial<MatchedChunk> = {}): MatchedChunk {
 }
 
 describe("runRetrieval", () => {
-  it("embeds the question and calls match_document_chunks with the server-validated user id", async () => {
+  it("embeds the question and calls match_document_chunks with the given project id", async () => {
     const embeddingsProvider = fakeEmbeddings([0.1, 0.2, 0.3]);
     const { supabase, rpc } = fakeSupabase({ data: [matchedChunk()], error: null });
 
-    const result = await runRetrieval("What is X?", "user-123", { supabase, embeddingsProvider });
+    const result = await runRetrieval("What is X?", "project-123", { supabase, embeddingsProvider });
 
     expect(embeddingsProvider.embed).toHaveBeenCalledWith(["What is X?"]);
     expect(rpc).toHaveBeenCalledWith("match_document_chunks", {
       query_embedding: [0.1, 0.2, 0.3],
       match_count: 6, // default
-      p_user_id: "user-123", // MUST be exactly the userId this function received, never client-supplied
+      p_project_id: "project-123", // MUST be exactly the projectId this function received, never client-supplied
     });
     expect(result.sources).toHaveLength(1);
     expect(result.candidateCount).toBe(1);
@@ -53,7 +53,7 @@ describe("runRetrieval", () => {
   it("passes a custom matchCount through to the RPC", async () => {
     const embeddingsProvider = fakeEmbeddings([1, 2, 3]);
     const { supabase, rpc } = fakeSupabase({ data: [], error: null });
-    await runRetrieval("q", "user-1", { supabase, embeddingsProvider }, { matchCount: 3 });
+    await runRetrieval("q", "project-1", { supabase, embeddingsProvider }, { matchCount: 3 });
     expect(rpc).toHaveBeenCalledWith(
       "match_document_chunks",
       expect.objectContaining({ match_count: 3 })
@@ -63,7 +63,7 @@ describe("runRetrieval", () => {
   it("returns an empty context (not an error) when there are no matches", async () => {
     const embeddingsProvider = fakeEmbeddings([1, 2, 3]);
     const { supabase } = fakeSupabase({ data: [], error: null });
-    const result = await runRetrieval("q", "user-1", { supabase, embeddingsProvider });
+    const result = await runRetrieval("q", "project-1", { supabase, embeddingsProvider });
     expect(result.contextText).toBe("");
     expect(result.sources).toEqual([]);
     expect(result.candidateCount).toBe(0);
@@ -72,14 +72,14 @@ describe("runRetrieval", () => {
   it("treats a null `data` from the RPC the same as an empty result set", async () => {
     const embeddingsProvider = fakeEmbeddings([1, 2, 3]);
     const { supabase } = fakeSupabase({ data: null, error: null });
-    const result = await runRetrieval("q", "user-1", { supabase, embeddingsProvider });
+    const result = await runRetrieval("q", "project-1", { supabase, embeddingsProvider });
     expect(result.candidateCount).toBe(0);
   });
 
   it("throws if the RPC returns an error", async () => {
     const embeddingsProvider = fakeEmbeddings([1, 2, 3]);
     const { supabase } = fakeSupabase({ data: null, error: { message: "permission denied" } });
-    await expect(runRetrieval("q", "user-1", { supabase, embeddingsProvider })).rejects.toThrow(
+    await expect(runRetrieval("q", "project-1", { supabase, embeddingsProvider })).rejects.toThrow(
       /permission denied/
     );
   });
@@ -96,7 +96,7 @@ describe("runRetrieval", () => {
     });
     const result = await runRetrieval(
       "q",
-      "user-1",
+      "project-1",
       { supabase, embeddingsProvider },
       { maxContextTokens: 150 }
     );
