@@ -85,14 +85,38 @@ function ssrfError(message: string, userMessage: string, cause?: unknown): Sourc
  * function IS the SSRF check, not a preamble to it (see module header,
  * point 3): it resolves every address for `hostname`, rejects the
  * connection outright the instant any of them is in a blocked range, and
- * otherwise hands back one validated address for Node's HTTP client to
- * dial. `{ all: true }` matters -- checking only the first address a
- * resolver happens to return would miss a private address served
+ * otherwise hands back the validated address(es) for Node's HTTP client to
+ * dial. `{ all: true }` (the fixed `dns.lookup` options passed below, not
+ * to be confused with the caller-supplied `options.all` this function must
+ * also respect -- see next paragraph) matters -- checking only the first
+ * address a resolver happens to return would miss a private address served
  * alongside/after a public-looking one.
+ *
+ * CALLBACK SHAPE, and why this is the one part of this function that is
+ * genuinely fiddly (this bit is a real, previously-shipped bug, not a
+ * hypothetical): Node's own `net.js` calls this function with DIFFERENT
+ * expectations for the callback depending on `options.all`, and gets to
+ * choose that unilaterally per-call -- this function does not control it.
+ * Since Node 20/22, `net.getDefaultAutoSelectFamily()` defaults to `true`
+ * (Happy Eyeballs), and under that mode `net.js` invokes a custom `lookup`
+ * hook with `options.all === true` and requires the MODERN array form:
+ * `callback(null, [{ address, family }, ...])`. Replying in the legacy
+ * triple-arg form (`callback(null, address, family)`) in that case is not
+ * merely "less complete" -- Node's internals throw
+ * `ERR_INVALID_IP_ADDRESS: Invalid IP address: undefined` while trying to
+ * destructure a string as if it were an array, which surfaces to
+ * safeFetch()'s caller as a misleading `kind: "upstream_error"`, for EVERY
+ * hostname (this never affects a literal-IP URL, which skips this function
+ * entirely -- see validateUrl()'s comment -- which is exactly why this had
+ * shipped unnoticed: every test that connected over a real socket happened
+ * to use a literal IP). See
+ * lib/sources/net/__tests__/safe-fetch-hostname-lookup.test.ts for the
+ * regression test that exercises this real end-to-end (real hostname, real
+ * socket, real Node 22 autoSelectFamily default -- not a mocked lookup).
  */
 function guardedLookup(
   hostname: string,
-  _options: dns.LookupOptions,
+  options: dns.LookupOptions,
   callback: (err: NodeJS.ErrnoException | null, address: string | LookupAddress[], family?: number) => void
 ): void {
   // Defensive: `hostname` here is normally a plain domain name (Node never
@@ -103,15 +127,29 @@ function guardedLookup(
   // comment for why a bracketed literal breaks dns.lookup with ENOTFOUND
   // rather than being correctly classified).
   const target = stripIpv6Brackets(hostname);
+  // Always resolve with `{ all: true }` regardless of what the CALLER asked
+  // for (see doc comment above) -- the SSRF check itself needs every
+  // resolved address, every time, to be able to reject a hostname the
+  // instant ANY of its records is private/link-local. What varies below is
+  // only the SHAPE of the reply to `callback`, driven by the caller's own
+  // `options.all`, never which addresses got checked.
   dns.lookup(target, { all: true }, (err, addresses: LookupAddress[]) => {
+    // Node's callback type requires `address` even on the error path (it's
+    // ignored by net.js whenever `err` is non-null, but `callback`'s TS
+    // signature above -- copied from Node's own -- doesn't make it
+    // optional); "" is the same placeholder the original implementation
+    // used here.
     if (err) {
-      callback(err, "", 4);
+      callback(err, "");
       return;
     }
     if (addresses.length === 0) {
-      callback(Object.assign(new Error(`no DNS records found for "${hostname}"`), { code: "ENOTFOUND" }), "", 4);
+      callback(Object.assign(new Error(`no DNS records found for "${hostname}"`), { code: "ENOTFOUND" }), "");
       return;
     }
+    // Reject outright if ANY resolved address is blocked (scans the FULL
+    // list -- not just the address that will end up being dialed) -- see
+    // this function's doc comment and module header point 2.
     const blocked = addresses.find((a) => isBlockedAddress(a.address));
     if (blocked) {
       callback(
@@ -121,11 +159,23 @@ function guardedLookup(
           ),
           { code: "EBLOCKEDADDRESS" }
         ),
-        "",
-        4
+        ""
       );
       return;
     }
+    if (options.all) {
+      // Modern array form (see doc comment). Every entry here already
+      // passed the SSRF check above -- Node's own Happy-Eyeballs dialer
+      // races/tries these exactly as it would for an unguarded lookup, it
+      // just never gets to see an address this module hasn't validated.
+      callback(
+        null,
+        addresses.map((a) => ({ address: a.address, family: a.family }))
+      );
+      return;
+    }
+    // Legacy triple-arg form, for callers that didn't ask for `{ all:
+    // true }` (e.g. autoSelectFamily disabled, or an older Node).
     const chosen = addresses[0];
     callback(null, chosen.address, chosen.family);
   });
