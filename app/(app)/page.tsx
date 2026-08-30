@@ -1,23 +1,19 @@
-import { getAuthenticatedUser, getRouteHandlerSupabaseClient } from "@/lib/supabase/server-client";
-import { ChatView } from "@/components/chat/ChatView";
+import { redirect } from "next/navigation";
 
+// app/(app)/page.tsx
+//
+// Projects architecture pivot: the bare app root used to BE the "start a
+// new chat" screen (ChatView with no conversationId) -- that assumed one
+// flat document set/chat per account, which no longer holds true (see
+// CLAUDE.md's "Context"). /projects (list/create/rename/delete projects)
+// is the natural landing page now: an account's chat lives under
+// /projects/[projectId]/chat, scoped to whichever project the user opens.
+// This route is kept (rather than deleted) purely so "/" -- which
+// proxy.ts's already-authenticated-visiting-/login redirect and
+// app/login/LoginForm.tsx's post-sign-in navigation both still target --
+// lands somewhere real instead of a 404.
 export const dynamic = "force-dynamic";
 
-export default async function NewChatPage() {
-  const supabase = await getRouteHandlerSupabaseClient();
-  const user = await getAuthenticatedUser(supabase);
-  // app/(app)/layout.tsx already redirects unauthenticated visitors before
-  // this ever renders; the null-check here is just to satisfy the type
-  // checker without re-implementing that redirect.
-  if (!user) return null;
-
-  const { count, error } = await supabase
-    .from("documents")
-    .select("id", { count: "exact", head: true })
-    .eq("processing_status", "ready");
-  if (error) {
-    console.error("app/(app)/page.tsx: failed to check for ready documents:", error.message);
-  }
-
-  return <ChatView initialMessages={[]} hasDocuments={(count ?? 0) > 0} />;
+export default function RootPage() {
+  redirect("/projects");
 }

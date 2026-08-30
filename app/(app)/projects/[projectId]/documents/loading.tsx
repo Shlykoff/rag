@@ -1,4 +1,4 @@
-export default function SourcesLoading() {
+export default function DocumentsLoading() {
   return (
     <div className="sources-page" aria-busy="true" aria-label="Загрузка документов">
       <div className="skeleton" style={{ height: "1.4rem", width: "14rem", marginBottom: "0.6rem" }} />

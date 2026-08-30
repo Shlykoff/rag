@@ -243,11 +243,66 @@ function buildSystemPromptWithContext(contextText: string): string {
   return `${RAG_SYSTEM_PROMPT}\n\nКонтекст:\n${contextBlock}`;
 }
 
+// Code-level backstop for the "never hallucinate, only answer from
+// documents" promise (CLAUDE.md) -- qa-reviewer reproduced live that the
+// system prompt's own instruction (rule 4: say "У меня нет информации об
+// этом." when the context doesn't contain the answer) is occasionally NOT
+// followed by the underlying LLM on an empty-context turn: one phrasing of
+// a question against a project with zero relevant documents got a
+// confidently fabricated answer, while a reworded resubmission of the same
+// question correctly produced the canned "no information" reply. This is
+// the model not following instructions, not a logic bug in this pipeline
+// -- but since it directly undermines the core anti-hallucination promise,
+// this module now enforces it in CODE for the clearest case (no
+// meaningfully relevant chunk was retrieved at all) rather than relying
+// purely on prompt compliance: when retrieval finds nothing (or nothing
+// above a low relevance bar), the LLM is never called at all, and this
+// exact canned reply -- matching the system prompt's own rule 4 wording,
+// so the two paths are indistinguishable to the end user -- is returned
+// directly.
+//
+// MIN_RELEVANT_SIMILARITY is a deliberately conservative (low) heuristic
+// cutoff, not a precisely-tuned relevance classifier: match_document_chunks'
+// `similarity` is `1 - cosine_distance` (roughly [-1, 1], 1 = identical),
+// and unrelated text pairs from real embedding models often still land
+// well above 0 (embedding spaces aren't perfectly discriminative at the
+// extremes) -- see README "Chunking + retrieval quality" for this
+// project's own live-measured similarity numbers for genuinely relevant
+// vs. irrelevant chunks (0.68-0.71 vs. 0.39-0.46 for the correct vs. wrong
+// document on the SAME question, both of which are real, on-topic
+// documents). Set too high, this guard would risk short-circuiting
+// genuinely relevant-but-imperfect matches (a false "I don't know" is
+// arguably worse for the demo than an occasional missed catch of a truly
+// irrelevant query, since the system prompt's own instruction-following
+// still exists as a second line of defense for borderline cases) -- so
+// this is tuned to only catch the clear-cut case: no sources at all, or a
+// top match so weak it's essentially noise.
+const MIN_RELEVANT_SIMILARITY = 0.15;
+
+// Exact wording of the system prompt's own rule 4 canned reply (see
+// lib/retrieval/system-prompt.ts) -- kept identical so a user can never
+// tell whether an answer came from this code-level short-circuit or from
+// the model correctly following the same instruction on its own.
+const NO_RELEVANT_CONTEXT_REPLY = "У меня нет информации об этом.";
+
+/** True if the top (most-similar) retrieved chunk clears the relevance bar -- sources are already sorted most-similar-first (see lib/retrieval/search.ts's assembleContext), so checking only the first entry is sufficient to know whether ANY of them do. */
+function hasRelevantContext(sources: ContextSource[]): boolean {
+  const topSimilarity = sources[0]?.similarity;
+  return topSimilarity !== undefined && topSimilarity >= MIN_RELEVANT_SIMILARITY;
+}
+
 /**
  * Runs one full chat turn and yields a sequence of events describing its
  * progress -- see ChatStreamEvent. Persists the user message, the
  * assistant message (with sources), and usage_events rows for both the
  * embedding call (retrieval) and the chat completion, as a side effect.
+ *
+ * Anti-hallucination short-circuit: if retrieval finds no chunk clearing
+ * MIN_RELEVANT_SIMILARITY (including the "zero chunks at all" case), the
+ * chat provider is NEVER called -- this yields the canned "no information"
+ * reply directly (see hasRelevantContext()'s own comment for why this
+ * exists as a code-level guard on top of the system prompt's own
+ * instruction to do the same thing).
  *
  * Error handling: known, expected failure modes (conversation not found,
  * chat provider failure after retries, OR a completion that streams zero
@@ -352,6 +407,35 @@ export async function* handleChatRequest(
     // answer. Logged server-side for operators to notice, not surfaced to
     // the client.
     console.error(`handleChatRequest: failed to log embedding_request usage: ${embeddingUsageError.message}`);
+  }
+
+  // Code-level anti-hallucination short-circuit -- see MIN_RELEVANT_SIMILARITY's
+  // own comment above for the full reasoning. No sources are attached (there
+  // is nothing relevant to cite) and the LLM is never called at all: no
+  // chat-completion cost, no chance for the model to ignore its own
+  // instructions on this turn.
+  if (!hasRelevantContext(retrieval.sources)) {
+    yield { type: "sources", sources: [] };
+    yield { type: "delta", text: NO_RELEVANT_CONTEXT_REPLY };
+
+    const { error: insertNoContextMessageError } = await deps.supabase.from("messages").insert({
+      conversation_id: conversation.id,
+      role: "assistant",
+      content: NO_RELEVANT_CONTEXT_REPLY,
+      sources: [],
+    });
+    if (insertNoContextMessageError) {
+      throw new Error(
+        `handleChatRequest: failed to persist assistant message: ${insertNoContextMessageError.message}`
+      );
+    }
+
+    // No chat_request usage_events row -- no chat-completion call was ever
+    // made, so there is no real usage to log (unlike the embedding_request
+    // row above, which reflects a real embeddings call that did happen).
+    const zeroUsage: TokenUsage = { promptTokens: 0, completionTokens: 0, totalTokens: 0 };
+    yield { type: "done", usage: zeroUsage };
+    return;
   }
 
   yield { type: "sources", sources: retrieval.sources };

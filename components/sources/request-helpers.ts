@@ -11,14 +11,17 @@
 // to branch on `result.kind`, not re-derive status-code handling itself.
 //
 // Also reused (not reimplemented) by components/profile/* for
-// app/api/profile/ai-providers/route.ts -- that route follows the exact
-// same 401/429/{error,message} shapes (see its own header comment), just
-// over a different resource. `deleteJson`/`putJson` below exist because
-// that route is the first caller that needs a DELETE with a JSON body
-// (`{ provider }`, unlike `del()`'s no-body DELETE used for
-// `/api/sources/{documentId}`) and a PUT at all -- both still funnel
-// through the same `normalizeResponse()` so the unhappy-path handling
-// doesn't fork.
+// app/api/profile/ai-providers/route.ts and by components/projects/* for
+// app/api/projects/** (projects architecture pivot) -- both follow the
+// exact same 401/429/{error,message} shapes (see those routes' own header
+// comments), just over different resources. `deleteJson`/`putJson` exist
+// because app/api/profile/ai-providers/route.ts was the first caller that
+// needed a DELETE with a JSON body (`{ provider }`, unlike `del()`'s
+// no-body DELETE used for `/api/sources/{documentId}`) and a PUT at all;
+// `patchJson` exists because app/api/projects/[projectId]/route.ts's
+// rename endpoint is the first caller that needs a PATCH. All of them
+// still funnel through the same `normalizeResponse()` so the unhappy-path
+// handling doesn't fork per HTTP method.
 
 export interface SourceRequestSuccess<T> {
   ok: true;
@@ -133,6 +136,20 @@ export async function putJson<T>(url: string, body: unknown): Promise<SourceRequ
   try {
     const response = await fetch(url, {
       method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    return await normalizeResponse<T>(response);
+  } catch {
+    return { ok: false, kind: "error", message: "Не удалось подключиться к серверу." };
+  }
+}
+
+/** PATCH with a JSON body -- see app/api/projects/[projectId]/route.ts's PATCH contract (`{ name }`, rename). */
+export async function patchJson<T>(url: string, body: unknown): Promise<SourceRequestResult<T>> {
+  try {
+    const response = await fetch(url, {
+      method: "PATCH",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
     });

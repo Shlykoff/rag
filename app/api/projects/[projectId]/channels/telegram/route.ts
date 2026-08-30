@@ -23,6 +23,33 @@
 // app/api/profile/ai-providers/route.ts already takes for provider API
 // keys (see that route's own header comment).
 //
+// WEBHOOK STATUS (`webhookStatus`, qa-reviewer follow-up fix): the
+// credential row is saved BEFORE setWebhook is even attempted (see the
+// NOTE below), so row-existence alone can't be trusted as "the bot is
+// live" -- reproduced live by qa-reviewer: submit an invalid token, the
+// POST correctly reports the 400 below, but a plain row-existence GET
+// would still say "connected" even though Telegram never registered
+// anything. Fixed WITHOUT a schema change: rather than caching a
+// "did setWebhook ever succeed" boolean (which can itself go stale --
+// revoked token, webhook cleared via BotFather, overwritten by something
+// outside this app -- so a cached flag could ALSO lie later), GET calls
+// Telegram's own `getWebhookInfo` live and compares the URL Telegram
+// currently has on file against this integration's own expected path
+// (`/api/channels/telegram/{integrationId}` -- independent of whatever
+// base URL was used to register it, so a later base-URL rotation doesn't
+// require re-deriving anything stored). This is genuinely more correct
+// than a stored flag would be, not just schema-change-averse: it reflects
+// Telegram's CURRENT state at read time, not a snapshot from whenever
+// setWebhook last happened to succeed. See
+// lib/channels/telegram/client.ts's getTelegramWebhookInfo() for the raw
+// call. `webhookStatus` is only present when `connected: true`, with two
+// values: "confirmed" (Telegram has this exact integration's URL
+// registered right now) or "unconfirmed" (no webhook registered, a
+// mismatched one, or the live check itself failed -- e.g. a revoked
+// token -- treated the same as "can't confirm it's working" rather than a
+// hard 500, since the underlying saved-row state is still valid either
+// way).
+//
 // WEBHOOK BASE URL: unlike scripts/telegram-set-webhook.ts (a CLI flag,
 // --url), there is no global "this deployment's public base URL" env var
 // in this project (see README "`.env.example`": "No global Telegram env
@@ -59,14 +86,21 @@
 //      why this mirrors the script's own accepted save-then-register
 //      ordering instead of attempting a rollback with no established
 //      precedent in this codebase.
-//   -> 200 { integrationId, displayLabel, enabled, webhookUrl, status: "connected" }
-//      -- never `botToken`/`webhookSecret`.
+//   -> 200 { integrationId, displayLabel, enabled, webhookUrl, webhookStatus: "confirmed", status: "connected" }
+//      -- never `botToken`/`webhookSecret`. `webhookStatus` is always
+//      "confirmed" here specifically (not "unconfirmed") because reaching
+//      this 200 already means the setWebhook call above succeeded without
+//      throwing -- see the WEBHOOK STATUS note above for the general case.
 //
 //   GET /api/projects/{projectId}/channels/telegram
 //   -> 401 { error: "unauthorized" }
 //   -> 404 { error: "not_found" }
-//   -> 200 { connected: false } | { connected: true, enabled: boolean, displayLabel: string | null }
-//      -- never `.credentials`.
+//   -> 200 { connected: false }
+//   -> 200 { connected: true, enabled: boolean, displayLabel: string | null,
+//            webhookStatus: "confirmed" | "unconfirmed" }
+//      -- never `.credentials`. See the WEBHOOK STATUS note above for what
+//      these two values mean and how they're computed (a live call to
+//      Telegram's getWebhookInfo, not a cached DB flag).
 //
 //   DELETE /api/projects/{projectId}/channels/telegram
 //   -> 401 { error: "unauthorized" }
@@ -98,7 +132,7 @@ import {
   saveTelegramIntegration,
   deleteTelegramIntegration,
 } from "@/lib/channels/telegram/integration-store";
-import { setTelegramWebhook } from "@/lib/channels/telegram/client";
+import { setTelegramWebhook, getTelegramWebhookInfo } from "@/lib/channels/telegram/client";
 import { checkAICredentialsRateLimit, type AICredentialsRateLimitResult } from "@/lib/rate-limit/ai-credentials-rate-limiter";
 
 export const dynamic = "force-dynamic";
@@ -141,6 +175,27 @@ function rateLimitedResponse(rateLimit: Pick<AICredentialsRateLimitResult, "retr
   );
 }
 
+type WebhookStatus = "confirmed" | "unconfirmed";
+
+/**
+ * Live check against Telegram's own getWebhookInfo -- see this file's
+ * WEBHOOK STATUS header comment for why this isn't a cached DB flag.
+ * Deliberately never throws: a failed check (bad/revoked token, Telegram
+ * unreachable, ...) degrades to "unconfirmed" rather than turning GET's
+ * whole response into a 500 -- the saved integration row is still valid
+ * information even when this enrichment can't be obtained.
+ */
+async function resolveWebhookStatus(botToken: string, integrationId: string): Promise<WebhookStatus> {
+  const expectedSuffix = `/api/channels/telegram/${integrationId}`;
+  try {
+    const { url } = await getTelegramWebhookInfo(botToken);
+    return url.length > 0 && url.endsWith(expectedSuffix) ? "confirmed" : "unconfirmed";
+  } catch (err) {
+    console.warn(`resolveWebhookStatus: could not confirm webhook status for integration ${integrationId}:`, err);
+    return "unconfirmed";
+  }
+}
+
 export async function GET(
   _request: Request,
   { params }: { params: Promise<{ projectId: string }> }
@@ -158,10 +213,11 @@ export async function GET(
   try {
     const integration = await getTelegramIntegrationByProject(supabase, projectId);
     if (!integration) return Response.json({ connected: false }, { status: 200 });
+    const webhookStatus = await resolveWebhookStatus(integration.credentials.botToken, integration.id);
     // .credentials is intentionally never included below -- write-only
     // from the client's perspective, see this file's own header comment.
     return Response.json(
-      { connected: true, enabled: integration.enabled, displayLabel: integration.displayLabel },
+      { connected: true, enabled: integration.enabled, displayLabel: integration.displayLabel, webhookStatus },
       { status: 200 }
     );
   } catch (err) {
@@ -261,7 +317,17 @@ export async function POST(
   }
 
   return Response.json(
-    { integrationId, displayLabel, enabled: existing?.enabled ?? true, webhookUrl, status: "connected" },
+    {
+      integrationId,
+      displayLabel,
+      enabled: existing?.enabled ?? true,
+      webhookUrl,
+      // Always "confirmed" on this success path -- reaching here already
+      // means the setWebhook call above resolved without throwing, see the
+      // WEBHOOK STATUS header note.
+      webhookStatus: "confirmed" as const,
+      status: "connected",
+    },
     { status: 200 }
   );
 }

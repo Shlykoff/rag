@@ -18,7 +18,6 @@
   --radius-sm: 6px;
   --radius-md: 10px;
   --radius-lg: 16px;
-  --sidebar-width: 280px;
 }
 
 @media (prefers-color-scheme: dark) {
@@ -336,150 +335,6 @@ select {
   flex: 1;
   height: 1px;
   background: var(--border);
-}
-
-/* ---- App shell (app/(app)/layout.tsx + components/layout/Sidebar.tsx) ---- */
-
-.app-shell {
-  display: flex;
-  min-height: 100vh;
-}
-
-.sidebar-toggle {
-  display: none;
-}
-
-.sidebar-backdrop {
-  display: none;
-}
-
-.sidebar {
-  width: var(--sidebar-width);
-  flex-shrink: 0;
-  background: var(--surface);
-  border-right: 1px solid var(--border);
-  display: flex;
-  flex-direction: column;
-  min-height: 100vh;
-  position: sticky;
-  top: 0;
-}
-
-.sidebar-header {
-  padding: 1.1rem 1rem 0.5rem;
-}
-
-.sidebar-brand {
-  font-weight: 700;
-  font-size: 1.05rem;
-  text-decoration: none;
-}
-
-.sidebar-actions {
-  display: flex;
-  flex-direction: column;
-  gap: 0.5rem;
-  padding: 0.75rem 1rem;
-}
-
-.sidebar-actions .btn-active {
-  background: var(--surface-muted);
-  border-color: var(--accent);
-}
-
-.sidebar-history {
-  flex: 1;
-  overflow-y: auto;
-  padding-bottom: 0.5rem;
-}
-
-.sidebar-section-title {
-  font-size: 0.72rem;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-  color: var(--foreground-muted);
-  padding: 0.5rem 1rem 0.35rem;
-}
-
-.sidebar-conversation-link {
-  display: block;
-  padding: 0.55rem 1rem;
-  font-size: 0.86rem;
-  text-decoration: none;
-  color: var(--foreground);
-  border-left: 3px solid transparent;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.sidebar-conversation-link:hover {
-  background: var(--surface-muted);
-}
-
-.sidebar-conversation-link-active {
-  border-left-color: var(--accent);
-  background: var(--surface-muted);
-  font-weight: 600;
-}
-
-.sidebar-footer {
-  border-top: 1px solid var(--border);
-  padding: 0.85rem 1rem;
-  display: flex;
-  flex-direction: column;
-  gap: 0.5rem;
-}
-
-.sidebar-footer-row {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 0.5rem;
-}
-
-.app-main {
-  flex: 1;
-  min-width: 0;
-  display: flex;
-  flex-direction: column;
-  min-height: 100vh;
-}
-
-@media (max-width: 860px) {
-  .sidebar-toggle {
-    display: inline-flex;
-    position: fixed;
-    top: 0.75rem;
-    left: 0.75rem;
-    z-index: 40;
-  }
-
-  .sidebar {
-    position: fixed;
-    inset: 0 auto 0 0;
-    z-index: 50;
-    transform: translateX(-100%);
-    transition: transform 0.2s ease;
-    box-shadow: 0 0 0 transparent;
-  }
-
-  .sidebar-open {
-    transform: translateX(0);
-    box-shadow: 0 0 24px rgba(0, 0, 0, 0.25);
-  }
-
-  .sidebar-backdrop {
-    display: block;
-    position: fixed;
-    inset: 0;
-    background: rgba(0, 0, 0, 0.4);
-    z-index: 45;
-  }
-
-  .app-main {
-    padding-top: 3rem;
-  }
 }
 
 /* ---- Chat view (components/chat/ChatView.tsx) ---- */
@@ -869,7 +724,7 @@ select {
   flex-shrink: 0;
 }
 
-/* ---- Modal (components/chat/NoProviderModal.tsx) ---- */
+/* ---- Modal (components/chat/NoProviderModal.tsx, components/projects/DeleteProjectModal.tsx) ---- */
 
 .modal-backdrop {
   position: fixed;
@@ -885,4 +740,383 @@ select {
 .modal {
   max-width: 26rem;
   width: 100%;
+}
+
+/* ---- Top bar (app/(app)/layout.tsx, components/layout/TopBar.tsx) ----
+   Projects architecture pivot: the old full-height conversation sidebar
+   (components/layout/Sidebar.tsx) is gone -- conversation history is now
+   scoped inside a single project's chat section (.chat-history-panel
+   below), not global. This top bar is the account-level shell: brand,
+   "Мои проекты"/"Профиль" nav, signed-in user, sign out. */
+
+.app-shell-flat {
+  display: flex;
+  flex-direction: column;
+  min-height: 100vh;
+}
+
+.topbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+  padding: 0.85rem 1.25rem;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface);
+}
+
+.topbar-brand {
+  font-weight: 700;
+  font-size: 1.05rem;
+  text-decoration: none;
+  white-space: nowrap;
+}
+
+.topbar-nav {
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+  flex-wrap: wrap;
+}
+
+.topbar-nav-link {
+  padding: 0.4rem 0.7rem;
+  border-radius: var(--radius-md);
+  font-size: 0.86rem;
+  font-weight: 500;
+  text-decoration: none;
+  color: var(--foreground-muted);
+}
+
+.topbar-nav-link:hover {
+  background: var(--surface-muted);
+  color: var(--foreground);
+}
+
+.topbar-nav-link-active {
+  background: var(--surface-muted);
+  color: var(--accent);
+}
+
+.topbar-user {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  flex-wrap: wrap;
+  font-size: 0.82rem;
+}
+
+.app-main {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+/* ---- Projects list (app/(app)/projects/**, components/projects/*) ---- */
+
+.projects-page {
+  max-width: 58rem;
+  margin: 0 auto;
+  padding: 1.75rem 1.25rem 3rem;
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 1.5rem;
+}
+
+.projects-page-header h1 {
+  font-size: 1.35rem;
+}
+
+.project-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(17.5rem, 1fr));
+  gap: 0.9rem;
+}
+
+.project-card {
+  display: flex;
+  flex-direction: column;
+  gap: 0.65rem;
+}
+
+.project-card-title-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+
+.project-card-title {
+  font-size: 1.02rem;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+  text-decoration: none;
+  color: var(--foreground);
+}
+
+.project-card-title:hover {
+  text-decoration: underline;
+}
+
+.project-card-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+}
+
+.project-card-meta a.badge {
+  text-decoration: none;
+}
+
+.project-card-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-top: auto;
+  padding-top: 0.2rem;
+}
+
+.project-card-rename-form {
+  display: flex;
+  gap: 0.4rem;
+}
+
+.project-card-rename-form .input {
+  flex: 1;
+}
+
+@media (max-width: 640px) {
+  .project-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* ---- Project shell (app/(app)/projects/[projectId]/layout.tsx,
+   components/projects/ProjectSubNav.tsx) ---- */
+
+.project-shell {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+}
+
+.project-header {
+  padding: 1.1rem 1.25rem 0;
+  max-width: 64rem;
+  margin: 0 auto;
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.project-header-back {
+  font-size: 0.8rem;
+  color: var(--foreground-muted);
+  text-decoration: none;
+  align-self: flex-start;
+}
+
+.project-header-back:hover {
+  text-decoration: underline;
+}
+
+.project-header-title-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.6rem;
+  flex-wrap: wrap;
+}
+
+.project-header-title {
+  font-size: 1.25rem;
+  overflow-wrap: anywhere;
+}
+
+.project-subnav {
+  display: flex;
+  gap: 0.25rem;
+  padding: 0.75rem 1.25rem;
+  max-width: 64rem;
+  margin: 0 auto;
+  width: 100%;
+  border-bottom: 1px solid var(--border);
+  overflow-x: auto;
+}
+
+.project-subnav-link {
+  padding: 0.5rem 0.85rem;
+  border-radius: var(--radius-md);
+  font-size: 0.86rem;
+  font-weight: 500;
+  color: var(--foreground-muted);
+  text-decoration: none;
+  white-space: nowrap;
+}
+
+.project-subnav-link:hover {
+  background: var(--surface-muted);
+  color: var(--foreground);
+}
+
+.project-subnav-link-active {
+  background: var(--surface-muted);
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.project-content {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+/* ---- Per-project chat shell (components/chat/ChatHistoryPanel.tsx) ----
+   Nested one level deeper than the old global sidebar used to be --
+   history is scoped to ONE project's own test-chat conversations now. */
+
+.chat-shell {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+}
+
+.chat-history-panel {
+  width: 15.5rem;
+  flex-shrink: 0;
+  border-right: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+  overflow-y: auto;
+  padding: 0.9rem 0.75rem;
+}
+
+.chat-history-panel h2 {
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--foreground-muted);
+  padding: 0 0.25rem;
+}
+
+.chat-history-link {
+  display: block;
+  padding: 0.4rem 0.4rem;
+  font-size: 0.85rem;
+  text-decoration: none;
+  color: var(--foreground);
+  border-left: 3px solid transparent;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  border-radius: var(--radius-sm);
+}
+
+.chat-history-link:hover {
+  background: var(--surface-muted);
+}
+
+.chat-history-link-active {
+  border-left-color: var(--accent);
+  background: var(--surface-muted);
+  font-weight: 600;
+}
+
+.chat-main {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+@media (max-width: 860px) {
+  .chat-shell {
+    flex-direction: column;
+  }
+
+  .chat-history-panel {
+    width: 100%;
+    max-height: 11rem;
+    border-right: none;
+    border-bottom: 1px solid var(--border);
+  }
+}
+
+/* ---- Model picker (components/projects/ModelPicker.tsx) ---- */
+
+.model-option {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.65rem;
+  padding: 0.75rem 0.9rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+}
+
+.model-option-active {
+  border-color: var(--accent);
+  background: var(--surface-muted);
+}
+
+.model-option-unavailable {
+  opacity: 0.65;
+}
+
+.model-option-main {
+  flex: 1;
+  min-width: 0;
+}
+
+/* ---- Channels page (components/projects/TelegramChannelPanel.tsx,
+   app/(app)/projects/[projectId]/channels/**) ---- */
+
+.channel-session-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+}
+
+.channel-session-card {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  text-decoration: none;
+  color: inherit;
+}
+
+.channel-session-card:hover {
+  background: var(--surface-muted);
+}
+
+.channel-session-meta {
+  display: flex;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+  align-items: center;
+}
+
+.channel-session-preview {
+  color: var(--foreground-muted);
+  font-size: 0.85rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.transcript-page {
+  max-width: 46rem;
+  margin: 0 auto;
+  padding: 1.75rem 1.25rem 3rem;
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
 }

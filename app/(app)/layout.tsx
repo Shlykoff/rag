@@ -1,21 +1,20 @@
 import { redirect } from "next/navigation";
 import { getAuthenticatedUser, getRouteHandlerSupabaseClient } from "@/lib/supabase/server-client";
-import { getActiveAIProviderInfo } from "@/lib/ui/ai-provider";
-import { Sidebar, type ConversationSummary } from "@/components/layout/Sidebar";
+import { TopBar } from "@/components/layout/TopBar";
 
 export const dynamic = "force-dynamic";
 
-interface ConversationRow {
-  id: string;
-  title: string | null;
-  updated_at: string;
-}
-
-// Protects every page under app/(app)/** (chat, chat/[id], sources) --
-// belt-and-suspenders alongside proxy.ts's redirect: this also
-// guarantees a validated user id is available to fetch conversations
-// (RLS-scoped, so this query already only ever returns the caller's own
-// rows -- see CLAUDE.md's RLS section).
+// Protects every page under app/(app)/** (projects list, a project's
+// chat/documents/model/channels, profile) -- belt-and-suspenders alongside
+// proxy.ts's redirect. Projects architecture pivot: this used to also
+// fetch the caller's full conversation list + an account-level "работает
+// на: X" badge for a single global sidebar (components/layout/Sidebar.tsx,
+// now removed) -- both of those are per-PROJECT concepts now (conversation
+// history: components/chat/ChatHistoryPanel.tsx, scoped inside one
+// project's chat section; active-provider badge:
+// app/(app)/projects/[projectId]/layout.tsx's header), so this shell no
+// longer has (or needs) either. It's just the auth gate + the thin
+// account-level top bar (Мои проекты / Профиль / signed-in user).
 export default async function AppLayout({ children }: { children: React.ReactNode }) {
   const supabase = await getRouteHandlerSupabaseClient();
   const user = await getAuthenticatedUser(supabase);
@@ -23,26 +22,9 @@ export default async function AppLayout({ children }: { children: React.ReactNod
     redirect("/login");
   }
 
-  const { data, error } = await supabase
-    .from("conversations")
-    .select("id, title, updated_at")
-    .order("updated_at", { ascending: false })
-    .limit(100);
-
-  if (error) {
-    console.error("app/(app)/layout.tsx: failed to load conversations:", error.message);
-  }
-
-  const conversations: ConversationSummary[] = ((data ?? []) as ConversationRow[]).map((row) => ({
-    id: row.id,
-    title: row.title,
-  }));
-
-  const aiProvider = await getActiveAIProviderInfo(user.id, supabase);
-
   return (
-    <div className="app-shell">
-      <Sidebar conversations={conversations} userEmail={user.email} aiProviderLabel={aiProvider.label} />
+    <div className="app-shell-flat">
+      <TopBar userEmail={user.email} />
       <main className="app-main">{children}</main>
     </div>
   );

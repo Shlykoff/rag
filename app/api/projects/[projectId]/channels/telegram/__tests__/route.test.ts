@@ -21,6 +21,7 @@ const mockGetTelegramIntegrationByProject = vi.fn();
 const mockSaveTelegramIntegration = vi.fn();
 const mockDeleteTelegramIntegration = vi.fn();
 const mockSetTelegramWebhook = vi.fn();
+const mockGetTelegramWebhookInfo = vi.fn();
 const mockCheckAICredentialsRateLimit = vi.fn();
 
 vi.mock("@/lib/supabase/server-client", () => ({
@@ -41,6 +42,7 @@ vi.mock("@/lib/channels/telegram/integration-store", () => ({
 
 vi.mock("@/lib/channels/telegram/client", () => ({
   setTelegramWebhook: (...args: unknown[]) => mockSetTelegramWebhook(...args),
+  getTelegramWebhookInfo: (...args: unknown[]) => mockGetTelegramWebhookInfo(...args),
 }));
 
 vi.mock("@/lib/rate-limit/ai-credentials-rate-limiter", () => ({
@@ -111,7 +113,7 @@ describe("GET /api/projects/{projectId}/channels/telegram", () => {
     expect(await response.json()).toEqual({ connected: false });
   });
 
-  it("returns 200 { connected: true, enabled, displayLabel } WITHOUT the decrypted credentials, when one exists", async () => {
+  it("returns 200 { connected: true, enabled, displayLabel, webhookStatus: 'confirmed' } WITHOUT the decrypted credentials, when Telegram's own getWebhookInfo confirms this integration's URL is registered", async () => {
     mockGetRouteHandlerSupabaseClient.mockResolvedValue({});
     mockGetAuthenticatedUser.mockResolvedValue({ id: "user-1", email: "a@b.com" });
     mockVerifyProjectOwnership.mockResolvedValue(true);
@@ -124,12 +126,78 @@ describe("GET /api/projects/{projectId}/channels/telegram", () => {
       enabled: true,
       displayLabel: "Мой бот",
     });
+    mockGetTelegramWebhookInfo.mockResolvedValue({ url: "https://example.com/api/channels/telegram/integration-1" });
 
     const response = await GET(makeRequest("GET"), makeParams("project-1"));
 
     expect(response.status).toBe(200);
     const payload = await expectNoSecretLeak(response);
-    expect(payload).toEqual({ connected: true, enabled: true, displayLabel: "Мой бот" });
+    expect(payload).toEqual({ connected: true, enabled: true, displayLabel: "Мой бот", webhookStatus: "confirmed" });
+    expect(mockGetTelegramWebhookInfo).toHaveBeenCalledWith(SECRET_BOT_TOKEN);
+  });
+
+  it("returns webhookStatus: 'unconfirmed' when Telegram has no webhook registered at all (e.g. a prior setWebhook never actually succeeded)", async () => {
+    mockGetRouteHandlerSupabaseClient.mockResolvedValue({});
+    mockGetAuthenticatedUser.mockResolvedValue({ id: "user-1", email: "a@b.com" });
+    mockVerifyProjectOwnership.mockResolvedValue(true);
+    mockGetServiceRoleClient.mockReturnValue({});
+    mockGetTelegramIntegrationByProject.mockResolvedValue({
+      id: "integration-1",
+      projectId: "project-1",
+      channel: "telegram",
+      credentials: { botToken: SECRET_BOT_TOKEN, webhookSecret: EXISTING_WEBHOOK_SECRET },
+      enabled: true,
+      displayLabel: null,
+    });
+    mockGetTelegramWebhookInfo.mockResolvedValue({ url: "" });
+
+    const response = await GET(makeRequest("GET"), makeParams("project-1"));
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ connected: true, enabled: true, displayLabel: null, webhookStatus: "unconfirmed" });
+  });
+
+  it("returns webhookStatus: 'unconfirmed' when Telegram has a DIFFERENT integration's URL registered (a stale/mismatched webhook)", async () => {
+    mockGetRouteHandlerSupabaseClient.mockResolvedValue({});
+    mockGetAuthenticatedUser.mockResolvedValue({ id: "user-1", email: "a@b.com" });
+    mockVerifyProjectOwnership.mockResolvedValue(true);
+    mockGetServiceRoleClient.mockReturnValue({});
+    mockGetTelegramIntegrationByProject.mockResolvedValue({
+      id: "integration-1",
+      projectId: "project-1",
+      channel: "telegram",
+      credentials: { botToken: SECRET_BOT_TOKEN, webhookSecret: EXISTING_WEBHOOK_SECRET },
+      enabled: true,
+      displayLabel: null,
+    });
+    mockGetTelegramWebhookInfo.mockResolvedValue({ url: "https://example.com/api/channels/telegram/some-other-integration" });
+
+    const response = await GET(makeRequest("GET"), makeParams("project-1"));
+
+    expect((await response.json()).webhookStatus).toBe("unconfirmed");
+  });
+
+  it("returns webhookStatus: 'unconfirmed' (not a 500) when the live Telegram check itself throws (e.g. a revoked token)", async () => {
+    mockGetRouteHandlerSupabaseClient.mockResolvedValue({});
+    mockGetAuthenticatedUser.mockResolvedValue({ id: "user-1", email: "a@b.com" });
+    mockVerifyProjectOwnership.mockResolvedValue(true);
+    mockGetServiceRoleClient.mockReturnValue({});
+    mockGetTelegramIntegrationByProject.mockResolvedValue({
+      id: "integration-1",
+      projectId: "project-1",
+      channel: "telegram",
+      credentials: { botToken: SECRET_BOT_TOKEN, webhookSecret: EXISTING_WEBHOOK_SECRET },
+      enabled: true,
+      displayLabel: null,
+    });
+    mockGetTelegramWebhookInfo.mockRejectedValue(new Error("Telegram API getWebhookInfo failed (401): Unauthorized"));
+    const consoleWarnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    const response = await GET(makeRequest("GET"), makeParams("project-1"));
+
+    expect(response.status).toBe(200);
+    expect((await response.json()).webhookStatus).toBe("unconfirmed");
+    consoleWarnSpy.mockRestore();
   });
 
   it("returns 500 when the integration lookup throws", async () => {
@@ -258,6 +326,7 @@ describe("POST /api/projects/{projectId}/channels/telegram", () => {
       displayLabel: "Мой бот",
       enabled: true,
       webhookUrl: "https://example.com/api/channels/telegram/integration-new",
+      webhookStatus: "confirmed",
       status: "connected",
     });
 
@@ -274,6 +343,10 @@ describe("POST /api/projects/{projectId}/channels/telegram", () => {
       "https://example.com/api/channels/telegram/integration-new",
       credentialsArg.webhookSecret
     );
+    // POST's webhookStatus: "confirmed" comes from setWebhook resolving
+    // without throwing -- it does NOT make a separate live check the way
+    // GET does.
+    expect(mockGetTelegramWebhookInfo).not.toHaveBeenCalled();
   });
 
   it("reuses the EXISTING webhook secret and displayLabel when rotating an already-connected integration's token", async () => {

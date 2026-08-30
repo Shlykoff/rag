@@ -27,6 +27,7 @@ import {
   createTestProject,
   createTestUser,
   deleteTestUser,
+  deterministicVector,
   hasIntegrationEnv,
   makeIntegrationSupabaseClient,
 } from "../../testing/integration-helpers";
@@ -76,12 +77,28 @@ function fakeChatProvider({ chunks, waitFor }: FakeChatProviderOptions) {
   };
 }
 
+// Real dimensionality (1024, matching document_chunks.embedding
+// vector(1024)) and a FIXED, deterministic vector (see
+// lib/testing/integration-helpers.ts's deterministicVector) -- every
+// beforeEach below inserts a real document_chunks row with this EXACT SAME
+// vector, so cosine similarity between the query embedding and that stored
+// chunk is always 1.0 (identical vectors), comfortably clearing
+// lib/chat/handle-chat-request.ts's anti-hallucination
+// MIN_RELEVANT_SIMILARITY guard. Without this, every test project in this
+// file (freshly created per test, with zero real documents) would return
+// zero matches from the real match_document_chunks RPC and trip that guard
+// for every single test -- these tests are about gateway-level
+// concurrency/rate-limiting/error-handling, not retrieval quality, so
+// making retrieval reliably succeed is what keeps them testing what
+// they're actually about.
+const RELEVANT_CHUNK_SEED = 0;
+
 function fakeEmbeddingsProvider() {
   return {
     providerName: "fake-embed",
     modelName: "fake-embed-model",
-    dimensions: 3,
-    embed: async (texts: string[]) => texts.map(() => [0.1, 0.2, 0.3]),
+    dimensions: 1024,
+    embed: async (texts: string[]) => texts.map(() => deterministicVector(RELEVANT_CHUNK_SEED)),
   };
 }
 
@@ -111,6 +128,27 @@ describe.skipIf(!hasIntegrationEnv())("answerExternalMessage (integration, real 
     __resetConversationLocksForTests();
     // Fresh project per test -- see module header for why.
     projectId = (await createTestProject(supabase, userId)).id;
+
+    // A real, relevant document + chunk so retrieval finds SOMETHING for
+    // every test's query embedding to match against -- see
+    // fakeEmbeddingsProvider()'s own comment for why this is required now
+    // that lib/chat/handle-chat-request.ts short-circuits (skips the LLM
+    // entirely) when nothing relevant is retrieved.
+    const { data: doc, error: docError } = await supabase
+      .from("documents")
+      .insert({ project_id: projectId, title: "Gateway test doc", source_type: "manual_upload", processing_status: "ready" })
+      .select("id")
+      .single();
+    if (docError) throw new Error(`beforeEach: failed to insert test document: ${docError.message}`);
+    const { error: chunkError } = await supabase.from("document_chunks").insert({
+      document_id: doc.id,
+      chunk_index: 0,
+      content: "Relevant content for gateway integration tests.",
+      embedding: deterministicVector(RELEVANT_CHUNK_SEED),
+      embedding_provider: "fake-embed",
+      embedding_model: "fake-embed-model",
+    });
+    if (chunkError) throw new Error(`beforeEach: failed to insert test chunk: ${chunkError.message}`);
   });
 
   it("happy path: answers, persists an external-shaped conversation + both messages, and returns { kind: 'ok', text }", async () => {

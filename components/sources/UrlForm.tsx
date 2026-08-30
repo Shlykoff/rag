@@ -12,7 +12,7 @@ interface ImportResult {
   status: string;
 }
 
-export function UrlForm() {
+export function UrlForm({ projectId }: { projectId: string }) {
   const router = useRouter();
   const [url, setUrl] = useState("");
   const [pending, setPending] = useState(false);
@@ -45,7 +45,7 @@ export function UrlForm() {
     }
 
     setPending(true);
-    const result = await postJson<ImportResult>("/api/sources/url", { url: trimmed });
+    const result = await postJson<ImportResult>("/api/sources/url", { projectId, url: trimmed });
     setPending(false);
 
     if (!result.ok) {
@@ -84,7 +84,7 @@ export function UrlForm() {
           заблокированы из соображений безопасности.
         </p>
       </div>
-      {noProviderMessage ? <NoProviderNotice message={noProviderMessage} /> : null}
+      {noProviderMessage ? <NoProviderNotice projectId={projectId} message={noProviderMessage} /> : null}
       {error ? (
         <div className="alert alert-danger" role="alert">
           {error}

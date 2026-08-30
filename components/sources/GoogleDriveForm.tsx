@@ -11,7 +11,7 @@ interface SyncResult {
   skipped: unknown[];
 }
 
-export function GoogleDriveForm({ initialConnected }: { initialConnected: boolean }) {
+export function GoogleDriveForm({ projectId, initialConnected }: { projectId: string; initialConnected: boolean }) {
   const router = useRouter();
   const [connected, setConnected] = useState(initialConnected);
 
@@ -72,7 +72,7 @@ export function GoogleDriveForm({ initialConnected }: { initialConnected: boolea
       return;
     }
     setSyncing(true);
-    const result = await postJson<SyncResult>("/api/sources/google-drive", { folderId: folderId.trim() });
+    const result = await postJson<SyncResult>("/api/sources/google-drive", { projectId, folderId: folderId.trim() });
     setSyncing(false);
     if (!result.ok) {
       if (result.kind === "unauthorized") {
@@ -153,7 +153,7 @@ export function GoogleDriveForm({ initialConnected }: { initialConnected: boolea
                 добавленные файлы, а не создаст дубли.
               </p>
             </div>
-            {syncNoProviderMessage ? <NoProviderNotice message={syncNoProviderMessage} /> : null}
+            {syncNoProviderMessage ? <NoProviderNotice projectId={projectId} message={syncNoProviderMessage} /> : null}
             {syncError ? (
               <div className="alert alert-danger" role="alert">
                 {syncError}

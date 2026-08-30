@@ -144,3 +144,51 @@ export function formatDateTime(iso: string): string {
 export function formatSimilarity(similarity: number): string {
   return `${Math.round(similarity * 100)}%`;
 }
+
+/**
+ * Display label for an external channel (conversations.channel /
+ * channel_integrations.channel), used by the
+ * /projects/[projectId]/channels read-only session list and its transcript
+ * view. Free text on `conversations.channel` (see that migration's column
+ * comment -- deliberately not an enum there so a future lib/channels/
+ * adapter never needs a migration for this table), so this falls back to a
+ * capitalized echo of the raw value for anything not explicitly known
+ * rather than rendering nothing.
+ */
+export function channelLabel(channel: string): string {
+  switch (channel) {
+    case "telegram":
+      return "Telegram";
+    default:
+      return channel.length > 0 ? channel[0].toUpperCase() + channel.slice(1) : channel;
+  }
+}
+
+/**
+ * TelegramChannelPanel.tsx's defensive fallback for a `connected: true`
+ * status response that's somehow missing `webhookStatus` (GET always sets
+ * it today -- see app/api/projects/[projectId]/channels/telegram/route.ts's
+ * own contract -- this only guards a future response shape ever omitting
+ * it). Deliberately "unconfirmed", the MORE VISIBLE/cautious state, not
+ * "confirmed" -- a missing field must never be silently treated as "the
+ * bot is verified live" when that was never actually checked.
+ */
+export function resolveTelegramWebhookStatus(raw: "confirmed" | "unconfirmed" | undefined): "confirmed" | "unconfirmed" {
+  return raw ?? "unconfirmed";
+}
+
+/**
+ * Whether a typed confirmation string exactly matches the expected name
+ * (trimmed on both sides, case-sensitive) -- used by
+ * components/projects/DeleteProjectModal.tsx to gate the actual DELETE
+ * call behind the user typing the project's exact name, given how
+ * destructive that action is (wipes documents, chunks, Storage objects,
+ * channel integrations, and chat history, not just the project row -- see
+ * app/api/projects/[projectId]/route.ts's DELETE contract). Case-sensitive
+ * and untrimmed-on-the-expected-side on purpose: the project name is
+ * whatever the owner actually named it, typos in retyping it should not be
+ * silently forgiven for a destructive action like this one.
+ */
+export function matchesConfirmationText(input: string, expectedName: string): boolean {
+  return input.trim() === expectedName.trim() && expectedName.trim().length > 0;
+}

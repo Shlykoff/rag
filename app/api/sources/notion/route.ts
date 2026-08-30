@@ -34,11 +34,15 @@ import { importNotionDocument } from "@/lib/sources/notion";
 import { upsertDocumentFromSource } from "@/lib/sources/pipeline";
 import { sourceErrorResponse, sourceIngestRateLimitedResponse } from "@/lib/sources/http-error";
 import { checkSourceIngestRateLimit } from "@/lib/rate-limit/source-ingest-rate-limiter";
+import { uuidShapeSchema } from "@/lib/validation/uuid";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
-const BodySchema = z.object({ projectId: z.string().uuid(), pageUrl: z.string().min(1).max(2048) });
+// `uuidShapeSchema`, not `z.string().uuid()` -- see lib/validation/uuid.ts's
+// header: Zod's built-in validator is RFC-4122-version-strict and rejects
+// the seeded demo project's sentinel id, a real Postgres `uuid` value.
+const BodySchema = z.object({ projectId: uuidShapeSchema, pageUrl: z.string().min(1).max(2048) });
 
 export async function POST(request: Request): Promise<Response> {
   const authClient = await getRouteHandlerSupabaseClient();

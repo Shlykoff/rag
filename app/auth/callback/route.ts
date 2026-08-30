@@ -28,11 +28,10 @@
 //
 // First-ever Google sign-in: a brand-new auth.users row has no `projects`/
 // `ai_provider_credentials` rows yet. Nothing here (or on any page this can
-// redirect to -- "/", "/sources", "/profile") assumes those exist; see
-// lib/ai/credentials.ts's project-scoped active_ai_provider design and
-// app/(app)/layout.tsx's getActiveAIProviderInfo() call, both already built
-// to treat "no active provider yet" as a normal, expected state rather
-// than an error.
+// redirect to -- "/", "/projects", "/profile") assumes those exist; "/"
+// itself just redirects straight to "/projects" (see app/(app)/page.tsx),
+// whose own empty state already treats "zero projects yet" as a normal,
+// expected state rather than an error.
 
 import "server-only";
 import { NextResponse } from "next/server";
@@ -41,7 +40,7 @@ import { getRouteHandlerSupabaseClient } from "@/lib/supabase/server-client";
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
-const ALLOWED_REDIRECT_PATHS = new Set<string>(["/", "/sources", "/profile"]);
+const ALLOWED_REDIRECT_PATHS = new Set<string>(["/", "/projects", "/profile"]);
 
 /** Never returns anything but one of ALLOWED_REDIRECT_PATHS's exact values -- see the module comment above. */
 function resolveRedirectTarget(nextParam: string | null): string {

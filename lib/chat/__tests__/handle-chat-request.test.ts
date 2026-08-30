@@ -283,7 +283,12 @@ describe("handleChatRequest", () => {
         { role: "user", content: "Earlier question" },
         { role: "assistant", content: "Earlier answer" },
       ],
-      matches: [],
+      // A relevant match -- NOT `[]` -- so this test actually exercises the
+      // chat-provider-calling path it's named for, rather than incidentally
+      // triggering the anti-hallucination short-circuit (see
+      // hasRelevantContext() in handle-chat-request.ts), which never calls
+      // the chat provider at all.
+      matches: [matchedChunk()],
     });
     const chatProvider = fakeChatProvider(["ok"]);
     await collect(
@@ -330,7 +335,10 @@ describe("handleChatRequest", () => {
   });
 
   it("yields an error event (not a thrown exception) when the chat provider fails mid-stream, without persisting an assistant message", async () => {
-    const { supabase, inserted } = makeFakeSupabase({ createdConversationId: "conv-new", matches: [] });
+    // A relevant match -- NOT `[]` -- so the anti-hallucination short-circuit
+    // never triggers here; this test is specifically about the chat
+    // provider actually being called and then failing.
+    const { supabase, inserted } = makeFakeSupabase({ createdConversationId: "conv-new", matches: [matchedChunk()] });
     const events = await collect(
       handleChatRequest(baseInput, {
         supabase,
@@ -364,7 +372,10 @@ describe("handleChatRequest", () => {
   // failure case above) no assistant message/usage_events row is persisted
   // for the failed turn.
   it("yields a graceful error event (not an uncaught exception) when the stream completes with ZERO deltas but its usage promise rejects afterward (e.g. a real AI_NoOutputGeneratedError)", async () => {
-    const { supabase, inserted } = makeFakeSupabase({ createdConversationId: "conv-new", matches: [] });
+    // A relevant match -- NOT `[]` -- so this exercises the actual chat
+    // provider (and its bug) rather than incidentally short-circuiting via
+    // the anti-hallucination guard before ever reaching it.
+    const { supabase, inserted } = makeFakeSupabase({ createdConversationId: "conv-new", matches: [matchedChunk()] });
     // Realistic shape: NoOutputGeneratedError extends AISDKError, which
     // carries whatever caused it (e.g. the underlying 429) as `.cause` --
     // see node_modules/ai/src/error/no-output-generated-error.ts.
@@ -461,6 +472,103 @@ describe("handleChatRequest", () => {
     expect(inserted.find((i) => i.table === "messages" && i.row.role === "user")).toBeTruthy();
   });
 
+  // Regression coverage for the live-reproduced hallucination bug (qa-reviewer:
+  // one phrasing of a question against a project with zero relevant
+  // documents got a confidently fabricated answer, while a reworded
+  // resubmission correctly said "У меня нет информации об этом.") -- see
+  // MIN_RELEVANT_SIMILARITY's own comment in handle-chat-request.ts for the
+  // full reasoning behind enforcing this in code rather than relying purely
+  // on the system prompt.
+  describe("anti-hallucination short-circuit (no relevant context)", () => {
+    it("yields the canned 'no information' reply directly and never calls the chat provider when retrieval returns ZERO chunks", async () => {
+      const { supabase, inserted, rpcCalls } = makeFakeSupabase({ createdConversationId: "conv-new", matches: [] });
+      const chatProvider = fakeChatProvider(["should never be reached"]);
+
+      const events = await collect(
+        handleChatRequest(baseInput, { supabase, chatProvider, embeddingsProvider: fakeEmbeddings() })
+      );
+
+      expect(chatProvider.streamChat).not.toHaveBeenCalled();
+      expect(events).toEqual([
+        { type: "conversation", conversationId: "conv-new" },
+        { type: "sources", sources: [] },
+        { type: "delta", text: "У меня нет информации об этом." },
+        { type: "done", usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 } },
+      ]);
+
+      const assistantRow = inserted.find((i) => i.table === "messages" && i.row.role === "assistant");
+      expect(assistantRow?.row.content).toBe("У меня нет информации об этом.");
+      expect(assistantRow?.row.sources).toEqual([]);
+
+      // No chat_request usage_events row -- no chat-completion call ever happened.
+      expect(inserted.find((i) => i.table === "usage_events" && i.row.event_type === "chat_request")).toBeUndefined();
+      // The embedding_request row IS still logged -- a real embeddings call
+      // did happen, to search in the first place.
+      expect(inserted.find((i) => i.table === "usage_events" && i.row.event_type === "embedding_request")).toBeTruthy();
+      // Retrieval genuinely ran the RPC -- it's what determined there was
+      // nothing relevant, not a heuristic that skipped calling it.
+      expect(rpcCalls).toHaveLength(1);
+    });
+
+    it("also short-circuits when retrieval returns chunks but ALL of them fall below the relevance threshold", async () => {
+      const { supabase, inserted } = makeFakeSupabase({
+        createdConversationId: "conv-new",
+        matches: [matchedChunk({ similarity: 0.05 }), matchedChunk({ chunk_id: "chunk-2", similarity: 0.02 })],
+      });
+      const chatProvider = fakeChatProvider(["should never be reached"]);
+
+      const events = await collect(
+        handleChatRequest(baseInput, { supabase, chatProvider, embeddingsProvider: fakeEmbeddings() })
+      );
+
+      expect(chatProvider.streamChat).not.toHaveBeenCalled();
+      expect(events.find((e) => e.type === "sources")).toEqual({ type: "sources", sources: [] });
+      expect(events.find((e) => e.type === "delta")).toEqual({ type: "delta", text: "У меня нет информации об этом." });
+      const assistantRow = inserted.find((i) => i.table === "messages" && i.row.role === "assistant");
+      expect(assistantRow?.row.content).toBe("У меня нет информации об этом.");
+    });
+
+    it("does NOT short-circuit when the top match clears the relevance threshold, even if a lower-ranked one doesn't", async () => {
+      const { supabase } = makeFakeSupabase({
+        createdConversationId: "conv-new",
+        // Sorted most-similar-first, exactly as the real RPC returns them --
+        // only the TOP entry needs to clear the bar.
+        matches: [matchedChunk({ similarity: 0.5 }), matchedChunk({ chunk_id: "chunk-2", similarity: 0.01 })],
+      });
+      const chatProvider = fakeChatProvider(["a real grounded answer"]);
+
+      const events = await collect(
+        handleChatRequest(baseInput, { supabase, chatProvider, embeddingsProvider: fakeEmbeddings() })
+      );
+
+      expect(chatProvider.streamChat).toHaveBeenCalled();
+      expect(events.find((e) => e.type === "delta")).toEqual({ type: "delta", text: "a real grounded answer" });
+      // Both retrieved chunks are still attached as sources -- this guard
+      // only decides WHETHER to call the LLM at all, it doesn't filter
+      // individual below-threshold chunks out of an otherwise-relevant
+      // context.
+      expect(events.find((e) => e.type === "sources")).toMatchObject({
+        type: "sources",
+        sources: [expect.objectContaining({ chunkId: "chunk-1" }), expect.objectContaining({ chunkId: "chunk-2" })],
+      });
+    });
+
+    it("treats a similarity exactly AT the threshold as relevant (inclusive boundary)", async () => {
+      const { supabase } = makeFakeSupabase({
+        createdConversationId: "conv-new",
+        matches: [matchedChunk({ similarity: 0.15 })],
+      });
+      const chatProvider = fakeChatProvider(["boundary answer"]);
+
+      const events = await collect(
+        handleChatRequest(baseInput, { supabase, chatProvider, embeddingsProvider: fakeEmbeddings() })
+      );
+
+      expect(chatProvider.streamChat).toHaveBeenCalled();
+      expect(events.find((e) => e.type === "delta")).toEqual({ type: "delta", text: "boundary answer" });
+    });
+  });
+
   describe("external channel participant path", () => {
     const externalInput: ChatRequestInput = {
       projectId: "project-1",
@@ -473,7 +581,10 @@ describe("handleChatRequest", () => {
       const { supabase, inserted } = makeFakeSupabase({
         externalConversationSequence: [null], // select finds nothing
         createdExternalConversationId: "external-conv-1",
-        matches: [],
+        // A relevant match -- NOT `[]` -- so the anti-hallucination
+        // short-circuit doesn't fire before the conversation-creation
+        // behavior this test is actually about ever gets exercised.
+        matches: [matchedChunk()],
       });
       const events = await collect(
         handleChatRequest(externalInput, {
@@ -495,7 +606,7 @@ describe("handleChatRequest", () => {
     it("reuses the existing conversation (select-hit, no insert) for a repeat message from the same participant", async () => {
       const { supabase, inserted } = makeFakeSupabase({
         externalConversationSequence: [{ id: "external-conv-1" }], // select finds the existing row
-        matches: [],
+        matches: [matchedChunk()],
       });
       const events = await collect(
         handleChatRequest(externalInput, {
@@ -516,7 +627,7 @@ describe("handleChatRequest", () => {
         // won the race). Second select: finds the winner's row.
         externalConversationSequence: [null, { id: "race-winner-conv" }],
         externalInsertError: { message: "duplicate key value violates unique constraint", code: "23505" },
-        matches: [],
+        matches: [matchedChunk()],
       });
       const events = await collect(
         handleChatRequest(externalInput, {
@@ -554,7 +665,11 @@ describe("handleChatRequest", () => {
     it("usage_events.user_id is the project OWNER, not any external participant identifier, for the external path too", async () => {
       const { supabase, inserted } = makeFakeSupabase({
         externalConversationSequence: [{ id: "external-conv-1" }],
-        matches: [],
+        // A relevant match -- NOT `[]` -- this test specifically asserts a
+        // `chat_request` usage_events row exists, which the
+        // anti-hallucination short-circuit deliberately never inserts (no
+        // chat-completion call happens on that path).
+        matches: [matchedChunk()],
       });
       await collect(
         handleChatRequest(externalInput, {
@@ -570,7 +685,7 @@ describe("handleChatRequest", () => {
     it("an externalParticipant input takes priority over (ignores) any stray conversationId", async () => {
       const { supabase, inserted } = makeFakeSupabase({
         externalConversationSequence: [{ id: "external-conv-1" }],
-        matches: [],
+        matches: [matchedChunk()],
       });
       await collect(
         handleChatRequest(

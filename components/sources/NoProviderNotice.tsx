@@ -19,15 +19,26 @@
 // be interrupting -- an inline banner with the same "go configure it, retrying
 // won't help" message fits the form better without stealing focus from the
 // rest of the "Добавить источник" card (e.g. the other tabs).
+//
+// PROJECTS PIVOT: links to THIS project's /projects/{projectId}/model
+// picker rather than straight to /profile -- see
+// components/chat/NoProviderModal.tsx's identical comment for why (the same
+// 422 { error: "no_credentials" } can mean either "this project hasn't
+// picked a provider yet" or "its picked provider's credential was deleted",
+// and /model is the right first stop for both).
 
 import Link from "next/link";
 
-export function NoProviderNotice({ message }: { message: string }) {
+export function NoProviderNotice({ projectId, message }: { projectId: string; message: string }) {
   return (
     <div className="alert alert-danger" role="alert">
       <p style={{ margin: 0 }}>{message}</p>
-      <Link href="/profile" className="btn btn-primary btn-sm" style={{ marginTop: "0.6rem", display: "inline-block" }}>
-        Перейти в профиль
+      <Link
+        href={`/projects/${projectId}/model`}
+        className="btn btn-primary btn-sm"
+        style={{ marginTop: "0.6rem", display: "inline-block" }}
+      >
+        Выбрать модель проекта
       </Link>
     </div>
   );

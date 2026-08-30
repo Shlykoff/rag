@@ -13,11 +13,11 @@ export interface DocumentRow {
   created_at: string;
 }
 
-export function DocumentList({ documents }: { documents: DocumentRow[] }) {
+export function DocumentList({ projectId, documents }: { projectId: string; documents: DocumentRow[] }) {
   if (documents.length === 0) {
     return (
       <div className="card empty-state">
-        <p>Пока нет ни одного документа.</p>
+        <p>В этом проекте пока нет ни одного документа.</p>
         <p className="field-hint">
           Загрузите файл или подключите один из внешних источников выше, чтобы ассистент мог отвечать
           на вопросы по вашим данным.
@@ -31,6 +31,7 @@ export function DocumentList({ documents }: { documents: DocumentRow[] }) {
       {documents.map((doc) => (
         <li key={doc.id}>
           <DocumentCard
+            projectId={projectId}
             documentId={doc.id}
             title={doc.title}
             sourceType={doc.source_type}

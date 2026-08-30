@@ -27,7 +27,7 @@ interface UploadResult {
   status: string;
 }
 
-export function UploadForm() {
+export function UploadForm({ projectId }: { projectId: string }) {
   const router = useRouter();
   const inputRef = useRef<HTMLInputElement | null>(null);
   const [pending, setPending] = useState(false);
@@ -62,6 +62,7 @@ export function UploadForm() {
     setPending(true);
     const formData = new FormData();
     formData.append("file", file);
+    formData.append("projectId", projectId);
     const result = await postFormData<UploadResult>("/api/sources/upload", formData);
     setPending(false);
 
@@ -96,7 +97,7 @@ export function UploadForm() {
           required
         />
       </div>
-      {noProviderMessage ? <NoProviderNotice message={noProviderMessage} /> : null}
+      {noProviderMessage ? <NoProviderNotice projectId={projectId} message={noProviderMessage} /> : null}
       {error ? (
         <div className="alert alert-danger" role="alert">
           {error}

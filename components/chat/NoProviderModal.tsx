@@ -6,12 +6,24 @@
 // (see ChatView.tsx's sendMessage -- distinct from the generic 500/other
 // error handling, which keeps the existing retry-banner treatment).
 // Deliberately minimal per explicit product decision: no onboarding
-// wizard, just a short explanation and a link to /profile.
+// wizard, just a short explanation and a link onward.
+//
+// PROJECTS PIVOT: links to this PROJECT's own /projects/{projectId}/model
+// picker, not directly to the account-level /profile -- lib/ai/index.ts's
+// getAIProviders() throws this exact 422 both when the project has no
+// active_ai_provider chosen yet at all (the common case for a fresh
+// project -- the actionable next step is picking one on /model) and when a
+// specific credential the project points at was since deleted (the
+// actionable step there is /profile) -- the model page itself is where a
+// "nothing configured account-wide yet" state is explained and pointed at
+// /profile (see ModelPicker.tsx), so linking there first is correct for
+// both cases rather than guessing which one happened from this generic
+// message alone.
 
 import { useEffect, useRef } from "react";
 import Link from "next/link";
 
-export function NoProviderModal({ onDismiss }: { onDismiss: () => void }) {
+export function NoProviderModal({ projectId, onDismiss }: { projectId: string; onDismiss: () => void }) {
   const closeButtonRef = useRef<HTMLButtonElement>(null);
 
   useEffect(() => {
@@ -36,16 +48,16 @@ export function NoProviderModal({ onDismiss }: { onDismiss: () => void }) {
           Добавьте AI-провайдера
         </h2>
         <p className="field-hint" style={{ marginTop: "0.5rem" }}>
-          У вашего аккаунта пока не настроен ни один AI-провайдер, поэтому ассистенту нечем отвечать.
-          Добавьте свой API-ключ (OpenAI, Anthropic + Voyage или Gemini) в профиле и выберите его
-          активным.
+          У этого проекта пока не выбрана активная AI-модель (или подключённый ключ провайдера был
+          удалён), поэтому ассистенту нечем отвечать. Выберите провайдера на странице модели проекта —
+          если ещё ни один не подключён к аккаунту, оттуда можно перейти в профиль и добавить ключ.
         </p>
         <div style={{ display: "flex", gap: "0.6rem", justifyContent: "flex-end", marginTop: "1.25rem" }}>
           <button ref={closeButtonRef} type="button" className="btn btn-ghost" onClick={onDismiss}>
             Позже
           </button>
-          <Link href="/profile" className="btn btn-primary">
-            Перейти в профиль
+          <Link href={`/projects/${projectId}/model`} className="btn btn-primary">
+            Выбрать модель
           </Link>
         </div>
       </div>

@@ -76,7 +76,7 @@ async function requireCredential(
 }
 
 interface ProviderRegistryEntry {
-  /** Human-readable label for the "работает на: ..." UI badge (lib/ui/ai-provider.ts, via getActiveProviderLabel() below) -- kept next to the construction logic so a new provider's label can't be added in one place and forgotten in the other. */
+  /** Human-readable label for the "работает на: ..." UI badge (app/(app)/projects/[projectId]/layout.tsx, via getActiveProviderLabel()/getProviderLabel() below) -- kept next to the construction logic so a new provider's label can't be added in one place and forgotten in the other. */
   label: string;
   /** `ownerUserId` is the project owner whose account-level credentials are used to build this provider pair -- see requireCredential()'s comment. */
   build: (ownerUserId: string, supabase: SupabaseClient) => Promise<AIProviderPair>;
@@ -149,7 +149,7 @@ const PROVIDER_REGISTRY = {
 
 export type SupportedAIProvider = keyof typeof PROVIDER_REGISTRY;
 
-/** Every valid active-provider value, derived from the registry -- lib/ui/ai-provider.ts's display badge and app/api/profile/ai-providers/route.ts's request validation both read this (and each entry's `label`) instead of keeping a separate copy of the provider list. Deliberately the same three values as lib/ai/credentials.ts's ActiveAIProvider type (excludes 'voyage', which is a real, independently-storable credential but never an activatable provider on its own). */
+/** Every valid active-provider value, derived from the registry -- app/(app)/projects/[projectId]/layout.tsx's "работает на: ..." badge and app/api/profile/ai-providers/route.ts's request validation both read this (and each entry's `label`) instead of keeping a separate copy of the provider list. Deliberately the same three values as lib/ai/credentials.ts's ActiveAIProvider type (excludes 'voyage', which is a real, independently-storable credential but never an activatable provider on its own). */
 export const SUPPORTED_AI_PROVIDERS = Object.keys(PROVIDER_REGISTRY) as SupportedAIProvider[];
 
 export function getProviderLabel(provider: string): string | undefined {

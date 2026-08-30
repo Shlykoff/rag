@@ -16,11 +16,12 @@ const TABS: { id: SourceTab; label: string }[] = [
 ];
 
 export interface AddSourceFormProps {
+  projectId: string;
   hasNotionCredential: boolean;
   hasGoogleDriveCredential: boolean;
 }
 
-export function AddSourceForm({ hasNotionCredential, hasGoogleDriveCredential }: AddSourceFormProps) {
+export function AddSourceForm({ projectId, hasNotionCredential, hasGoogleDriveCredential }: AddSourceFormProps) {
   const [activeTab, setActiveTab] = useState<SourceTab>("upload");
 
   return (
@@ -52,10 +53,12 @@ export function AddSourceForm({ hasNotionCredential, hasGoogleDriveCredential }:
         aria-labelledby={`tab-${activeTab}`}
         className="source-tab-panel"
       >
-        {activeTab === "upload" ? <UploadForm /> : null}
-        {activeTab === "notion" ? <NotionForm initialConnected={hasNotionCredential} /> : null}
-        {activeTab === "url" ? <UrlForm /> : null}
-        {activeTab === "google_drive" ? <GoogleDriveForm initialConnected={hasGoogleDriveCredential} /> : null}
+        {activeTab === "upload" ? <UploadForm projectId={projectId} /> : null}
+        {activeTab === "notion" ? <NotionForm projectId={projectId} initialConnected={hasNotionCredential} /> : null}
+        {activeTab === "url" ? <UrlForm projectId={projectId} /> : null}
+        {activeTab === "google_drive" ? (
+          <GoogleDriveForm projectId={projectId} initialConnected={hasGoogleDriveCredential} />
+        ) : null}
       </div>
     </section>
   );

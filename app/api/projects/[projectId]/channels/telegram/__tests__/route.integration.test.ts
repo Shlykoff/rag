@@ -1,14 +1,15 @@
 // app/api/projects/[projectId]/channels/telegram/__tests__/route.integration.test.ts
 //
 // Runs against a REAL local Supabase. Only lib/channels/telegram/client.ts's
-// setTelegramWebhook (the one genuine outbound network call to Telegram's
-// own API) is mocked -- everything else, including the AES-256-GCM
-// encrypt/decrypt round trip through real Postgres bytea columns
-// (lib/channels/telegram/integration-store.ts, NOT mocked) and real
-// Postgres RLS for cross-user ownership (verifyProjectOwnership NOT
-// mocked, only auth resolution is -- same pattern as the sibling
+// setTelegramWebhook and getTelegramWebhookInfo (the two genuine outbound
+// network calls to Telegram's own API) are mocked -- everything else,
+// including the AES-256-GCM encrypt/decrypt round trip through real
+// Postgres bytea columns (lib/channels/telegram/integration-store.ts, NOT
+// mocked) and real Postgres RLS for cross-user ownership
+// (verifyProjectOwnership NOT mocked, only auth resolution is -- same
+// pattern as the sibling
 // ../../__tests__/route.integration.test.ts / .../model/__tests__/route.integration.test.ts),
-// is real. This is what proves two things the mocked unit test
+// is real. This is what proves three things the mocked unit test
 // (../route.test.ts) can only assert "should work" for:
 //   1. A second real user genuinely cannot read/connect/disconnect
 //      another owner's Telegram integration (real RLS-backed 404).
@@ -16,6 +17,12 @@
 //      point in the connect/status/disconnect lifecycle -- checked against
 //      the actual decrypted value read back from real Postgres, not a
 //      value this test merely assumes was stored.
+//   3. qa-reviewer's exact live repro (submit an invalid token, then
+//      reload the status screen -- GET) no longer reports "connected" with
+//      no further caveat: a real GET reads `webhookStatus` off a mocked
+//      getTelegramWebhookInfo the same way it would read Telegram's own
+//      live state, and correctly reports "unconfirmed" for a row saved
+//      after a failed setWebhook.
 
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import type { SupabaseClient } from "@supabase/supabase-js";
@@ -42,8 +49,10 @@ vi.mock("@/lib/supabase/server-client", async () => {
 });
 
 const mockSetTelegramWebhook = vi.fn();
+const mockGetTelegramWebhookInfo = vi.fn();
 vi.mock("@/lib/channels/telegram/client", () => ({
   setTelegramWebhook: (...args: unknown[]) => mockSetTelegramWebhook(...args),
+  getTelegramWebhookInfo: (...args: unknown[]) => mockGetTelegramWebhookInfo(...args),
 }));
 
 // NOT mocked: lib/supabase/service-client.ts, lib/channels/telegram/
@@ -90,6 +99,7 @@ describe.skipIf(!hasIntegrationEnv() || !process.env.CREDENTIALS_ENCRYPTION_KEY)
     afterEach(() => {
       currentUser = null;
       mockSetTelegramWebhook.mockReset();
+      mockGetTelegramWebhookInfo.mockReset();
     });
 
     it("a real second user gets 404 (not 403) on GET/POST/DELETE for a project they don't own, and no integration is created", async () => {
@@ -135,6 +145,7 @@ describe.skipIf(!hasIntegrationEnv() || !process.env.CREDENTIALS_ENCRYPTION_KEY)
         displayLabel: "Мой тестовый бот",
         enabled: true,
         webhookUrl: `https://example.com/api/channels/telegram/${postBody.integrationId}`,
+        webhookStatus: "confirmed",
         status: "connected",
       });
 
@@ -152,11 +163,21 @@ describe.skipIf(!hasIntegrationEnv() || !process.env.CREDENTIALS_ENCRYPTION_KEY)
       const stored = await getTelegramIntegrationByProject(serviceClient, project.id);
       expect(stored?.credentials.botToken).toBe(realBotToken);
 
+      // GET's webhookStatus comes from a live getTelegramWebhookInfo call --
+      // mocked here (a real call would hit Telegram's actual API), told to
+      // report exactly the URL this integration's own POST just "registered".
+      mockGetTelegramWebhookInfo.mockResolvedValue({ url: `https://example.com/api/channels/telegram/${postBody.integrationId}` });
+
       const getResponse = await GET(makeRequest("GET"), makeParams(project.id));
       expect(getResponse.status).toBe(200);
       const getText = await getResponse.clone().text();
       expect(getText).not.toContain(realBotToken);
-      expect(await getResponse.json()).toEqual({ connected: true, enabled: true, displayLabel: "Мой тестовый бот" });
+      expect(await getResponse.json()).toEqual({
+        connected: true,
+        enabled: true,
+        displayLabel: "Мой тестовый бот",
+        webhookStatus: "confirmed",
+      });
 
       const deleteResponse = await DELETE(makeRequest("DELETE"), makeParams(project.id));
       expect(deleteResponse.status).toBe(200);
@@ -190,6 +211,21 @@ describe.skipIf(!hasIntegrationEnv() || !process.env.CREDENTIALS_ENCRYPTION_KEY)
       // a corrected re-POST is expected to succeed without a separate step.
       const stored = await getTelegramIntegrationByProject(serviceClient, project.id);
       expect(stored?.credentials.botToken).toBe(badToken);
+
+      // qa-reviewer's exact regression repro: reloading the status screen
+      // (GET) after a failed setWebhook must NOT falsely report the bot as
+      // live -- Telegram genuinely has no webhook registered for a token it
+      // just rejected, so the live check reports that honestly instead of
+      // a bare row-existence "connected".
+      mockGetTelegramWebhookInfo.mockResolvedValue({ url: "" });
+      const getResponse = await GET(makeRequest("GET"), makeParams(project.id));
+      expect(getResponse.status).toBe(200);
+      expect(await getResponse.json()).toEqual({
+        connected: true,
+        enabled: true,
+        displayLabel: null,
+        webhookStatus: "unconfirmed",
+      });
     });
   }
 );

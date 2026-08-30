@@ -46,11 +46,15 @@ import { sourceErrorResponse, sourceIngestRateLimitedResponse } from "@/lib/sour
 import { safeErrorForLog } from "@/lib/sources/errors";
 import { AIProviderError } from "@/lib/ai/errors";
 import { checkSourceIngestRateLimit } from "@/lib/rate-limit/source-ingest-rate-limiter";
+import { uuidShapeSchema } from "@/lib/validation/uuid";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
-const BodySchema = z.object({ projectId: z.string().uuid(), folderId: z.string().min(1).max(200) });
+// `uuidShapeSchema`, not `z.string().uuid()` -- see lib/validation/uuid.ts's
+// header: Zod's built-in validator is RFC-4122-version-strict and rejects
+// the seeded demo project's sentinel id, a real Postgres `uuid` value.
+const BodySchema = z.object({ projectId: uuidShapeSchema, folderId: z.string().min(1).max(200) });
 
 export async function POST(request: Request): Promise<Response> {
   const authClient = await getRouteHandlerSupabaseClient();

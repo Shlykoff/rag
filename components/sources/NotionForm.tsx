@@ -12,7 +12,7 @@ interface ImportResult {
   status: string;
 }
 
-export function NotionForm({ initialConnected }: { initialConnected: boolean }) {
+export function NotionForm({ projectId, initialConnected }: { projectId: string; initialConnected: boolean }) {
   const router = useRouter();
   const [connected, setConnected] = useState(initialConnected);
 
@@ -65,7 +65,7 @@ export function NotionForm({ initialConnected }: { initialConnected: boolean }) 
       return;
     }
     setImporting(true);
-    const result = await postJson<ImportResult>("/api/sources/notion", { pageUrl: pageUrl.trim() });
+    const result = await postJson<ImportResult>("/api/sources/notion", { projectId, pageUrl: pageUrl.trim() });
     setImporting(false);
     if (!result.ok) {
       if (result.kind === "unauthorized") {
@@ -142,7 +142,7 @@ export function NotionForm({ initialConnected }: { initialConnected: boolean }) 
                 required
               />
             </div>
-            {importNoProviderMessage ? <NoProviderNotice message={importNoProviderMessage} /> : null}
+            {importNoProviderMessage ? <NoProviderNotice projectId={projectId} message={importNoProviderMessage} /> : null}
             {importError ? (
               <div className="alert alert-danger" role="alert">
                 {importError}

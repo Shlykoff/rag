@@ -14,6 +14,8 @@ import type { ChatStreamEvent } from "@/lib/chat/handle-chat-request";
 import { redirectToLogin } from "@/lib/ui/client-redirect";
 
 export interface ChatViewProps {
+  /** The project this chat is scoped to -- threaded into every /api/chat call and every onward "add a provider"/"add a document" link. */
+  projectId: string;
   conversationId?: string;
   initialMessages: ChatMessageVM[];
   hasDocuments: boolean;
@@ -30,7 +32,7 @@ function makeId(): string {
     : `id-${Date.now()}-${Math.random().toString(16).slice(2)}`;
 }
 
-export function ChatView({ conversationId: initialConversationId, initialMessages, hasDocuments }: ChatViewProps) {
+export function ChatView({ projectId, conversationId: initialConversationId, initialMessages, hasDocuments }: ChatViewProps) {
   const router = useRouter();
   const [messages, setMessages] = useState<ChatMessageVM[]>(initialMessages);
   const [input, setInput] = useState("");
@@ -86,7 +88,7 @@ export function ChatView({ conversationId: initialConversationId, initialMessage
       const response = await fetch("/api/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ conversationId: conversationIdRef.current, message: trimmed }),
+        body: JSON.stringify({ projectId, conversationId: conversationIdRef.current, message: trimmed }),
         signal: controller.signal,
       });
 
@@ -191,13 +193,14 @@ export function ChatView({ conversationId: initialConversationId, initialMessage
     } finally {
       setIsStreaming(false);
       // New-chat -> now-persisted-conversation navigation: only once, only
-      // when this view started with no conversationId (app/(app)/page.tsx)
-      // and the server actually created/confirmed one via the
-      // `conversation` SSE event (see handleChatRequest -- it's always
-      // yielded first, before any possible error).
+      // when this view started with no conversationId
+      // (projects/[projectId]/chat/page.tsx) and the server actually
+      // created/confirmed one via the `conversation` SSE event (see
+      // handleChatRequest -- it's always yielded first, before any possible
+      // error).
       if (isNewChatRef.current && receivedConversationId) {
         isNewChatRef.current = false;
-        router.replace(`/chat/${receivedConversationId}`);
+        router.replace(`/projects/${projectId}/chat/${receivedConversationId}`);
         router.refresh();
       }
     }
@@ -222,8 +225,8 @@ export function ChatView({ conversationId: initialConversationId, initialMessage
               <p>Ассистент отвечает только на основе того, что реально загружено, и указывает источники под ответом.</p>
             ) : (
               <>
-                <p>У вас пока нет ни одного документа — ассистент не сможет найти в чём искать ответ.</p>
-                <a href="/sources" className="btn btn-primary">
+                <p>В этом проекте пока нет ни одного документа — ассистент не сможет найти в чём искать ответ.</p>
+                <a href={`/projects/${projectId}/documents`} className="btn btn-primary">
                   Добавить первый документ
                 </a>
               </>
@@ -267,7 +270,9 @@ export function ChatView({ conversationId: initialConversationId, initialMessage
         </button>
       </form>
 
-      {showNoProviderModal ? <NoProviderModal onDismiss={() => setShowNoProviderModal(false)} /> : null}
+      {showNoProviderModal ? (
+        <NoProviderModal projectId={projectId} onDismiss={() => setShowNoProviderModal(false)} />
+      ) : null}
     </div>
   );
 }

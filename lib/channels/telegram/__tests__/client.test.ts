@@ -1,5 +1,5 @@
 import { describe, expect, it, vi, afterEach } from "vitest";
-import { splitTelegramMessage, sendTelegramMessage, setTelegramWebhook } from "../client";
+import { splitTelegramMessage, sendTelegramMessage, setTelegramWebhook, getTelegramWebhookInfo } from "../client";
 
 describe("splitTelegramMessage", () => {
   it("returns the text unchanged (as a single-element array) when under the limit", () => {
@@ -105,5 +105,41 @@ describe("sendTelegramMessage / setTelegramWebhook (fetch-level contract)", () =
       secret_token: "shh-secret",
       allowed_updates: ["message"],
     });
+  });
+
+  it("getTelegramWebhookInfo returns the registered url from Telegram's response", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        new Response(
+          JSON.stringify({ ok: true, result: { url: "https://example.com/api/channels/telegram/abc", pending_update_count: 0 } }),
+          { status: 200 }
+        )
+      )
+    );
+
+    const info = await getTelegramWebhookInfo("test-token");
+    expect(info).toEqual({ url: "https://example.com/api/channels/telegram/abc" });
+  });
+
+  it("getTelegramWebhookInfo returns an empty url when no webhook is registered", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => new Response(JSON.stringify({ ok: true, result: { url: "", pending_update_count: 0 } }), { status: 200 }))
+    );
+
+    const info = await getTelegramWebhookInfo("test-token");
+    expect(info).toEqual({ url: "" });
+  });
+
+  it("getTelegramWebhookInfo throws (token redacted) when Telegram rejects the token", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => new Response(JSON.stringify({ ok: false, description: "Unauthorized" }), { status: 401 }))
+    );
+
+    const err = await getTelegramWebhookInfo("secret-token-value").catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(Error);
+    expect((err as Error).message).not.toContain("secret-token-value");
   });
 });

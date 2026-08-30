@@ -1,4 +1,4 @@
-export default function AppLoading() {
+export default function ChatLoading() {
   return (
     <div className="chat-view">
       <div className="chat-messages" aria-busy="true" aria-label="Загрузка диалога">

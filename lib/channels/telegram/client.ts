@@ -2,15 +2,22 @@
 //
 // Raw `fetch` wrapper over the Telegram Bot API (https://api.telegram.org/bot<token>/...)
 // -- no SDK dependency, per the task's explicit preference for this
-// module. Two calls only: sendMessage (outbound replies) and setWebhook
-// (used by scripts/telegram-set-webhook.ts, the bootstrap script -- not
-// called at request time). This file has no error-swallowing of its own:
-// every function here either resolves or throws a plain Error describing
-// the failure; it's the CALLER's job to decide whether that's fatal
-// (scripts/telegram-set-webhook.ts, run interactively) or something to
-// catch-log-and-continue (lib/channels/telegram/adapter.ts's webhook path,
-// which must never let an outbound failure propagate into a non-200
-// response -- see that file's own try/catch around every call here).
+// module. Three calls: sendMessage (outbound replies), setWebhook (used by
+// scripts/telegram-set-webhook.ts and
+// app/api/projects/[projectId]/channels/telegram/route.ts's POST -- not
+// called on every request), and getWebhookInfo (used by that same route's
+// GET, to report Telegram's OWN live view of whether a webhook is actually
+// registered -- see that route's header comment for why this exists: a
+// saved credential row alone doesn't prove Telegram ever accepted the
+// webhook, or that it's still registered later). This file has no
+// error-swallowing of its own: every function here either resolves or
+// throws a plain Error describing the failure; it's the CALLER's job to
+// decide whether that's fatal (scripts/telegram-set-webhook.ts, run
+// interactively) or something to catch-log-and-continue
+// (lib/channels/telegram/adapter.ts's webhook path, which must never let
+// an outbound failure propagate into a non-200 response -- see that file's
+// own try/catch around every call here; the channels route's GET handler
+// takes the same catch-and-degrade approach for getWebhookInfo).
 
 import "server-only";
 
@@ -42,7 +49,7 @@ async function callTelegramApi(botToken: string, method: string, body: Record<st
   } catch (err) {
     throw new Error(`Telegram API ${method} network error: ${err instanceof Error ? err.message : String(err)} (${redactToken(url, botToken)})`);
   }
-  const payload = (await response.json().catch(() => null)) as { ok?: boolean; description?: string } | null;
+  const payload = (await response.json().catch(() => null)) as { ok?: boolean; description?: string; result?: unknown } | null;
   if (!response.ok || !payload?.ok) {
     throw new Error(
       `Telegram API ${method} failed (${response.status}): ${payload?.description ?? "unknown error"} (${redactToken(url, botToken)})`
@@ -111,4 +118,21 @@ export async function setTelegramWebhook(botToken: string, webhookUrl: string, s
     secret_token: secretToken,
     allowed_updates: ["message"],
   });
+}
+
+/**
+ * Returns Telegram's OWN current record of this bot's registered webhook
+ * URL ("" if none is set at all) -- the authoritative source of truth for
+ * "is a webhook actually live", as opposed to inferring it from whether
+ * this app once successfully called setWebhook in the past (which can go
+ * stale: the token can be revoked, the webhook can be cleared via
+ * BotFather, or overwritten by something outside this app entirely).
+ * Used by app/api/projects/[projectId]/channels/telegram/route.ts's GET
+ * handler -- see that route's header comment for why status is checked
+ * live here instead of cached in a DB column.
+ */
+export async function getTelegramWebhookInfo(botToken: string): Promise<{ url: string }> {
+  const payload = (await callTelegramApi(botToken, "getWebhookInfo", {})) as { result?: { url?: unknown } };
+  const url = payload.result?.url;
+  return { url: typeof url === "string" ? url : "" };
 }

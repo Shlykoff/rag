@@ -65,6 +65,7 @@ import { getServiceRoleClient } from "@/lib/supabase/service-client";
 import { getAuthenticatedUser, getRouteHandlerSupabaseClient, verifyProjectOwnership } from "@/lib/supabase/server-client";
 import { reserveChatRateLimitSlot } from "@/lib/rate-limit/rate-limiter";
 import { handleChatRequest, type ChatStreamEvent } from "@/lib/chat/handle-chat-request";
+import { uuidShapeSchema } from "@/lib/validation/uuid";
 
 // Streaming responses must not be pre-rendered/cached and need the Node.js
 // runtime (the AI SDK provider packages and the Supabase client both
@@ -72,9 +73,15 @@ import { handleChatRequest, type ChatStreamEvent } from "@/lib/chat/handle-chat-
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
+// `uuidShapeSchema`, not `z.string().uuid()` -- see lib/validation/uuid.ts's
+// header for why: Zod's built-in validator is RFC-4122-version-strict and
+// rejected the seeded demo project's sentinel id
+// (00000000-0000-0000-0000-000000000002), a real Postgres `uuid` value,
+// with a bare 400 on every chat request from the demo account (reproduced
+// live).
 const ChatRequestBodySchema = z.object({
-  projectId: z.string().uuid(),
-  conversationId: z.string().uuid().optional(),
+  projectId: uuidShapeSchema,
+  conversationId: uuidShapeSchema.optional(),
   // Cap independent of (and tighter than) the context token budget in
   // lib/retrieval/search.ts -- this bounds the cost of a single turn's own
   // question, regardless of how much retrieved context gets attached to it.
@@ -203,16 +210,36 @@ export async function POST(request: Request): Promise<Response> {
   const encoder = new TextEncoder();
   const stream = new ReadableStream<Uint8Array>({
     async start(controller) {
+      // If the client disconnects mid-stream (navigates away, closes the
+      // tab, aborts the fetch), the platform can tear down/close this
+      // controller out from under us -- observed live as an uncaught
+      // `TypeError: Invalid state: Controller is already closed`
+      // (ERR_INVALID_STATE) from a later `controller.enqueue`/`.close()`
+      // call, since neither the `for await` loop nor `handleChatRequest`
+      // itself has any way to know the reader on the other end is gone.
+      // This is benign (there's no client left to receive anything) --
+      // `safeEnqueue`/the `close()` try/catch below just stop trying once
+      // that happens, instead of letting it escape `start()` as an
+      // unhandled rejection.
+      let closed = false;
+      const safeEnqueue = (chunk: Uint8Array) => {
+        if (closed) return;
+        try {
+          controller.enqueue(chunk);
+        } catch {
+          closed = true;
+        }
+      };
       try {
         for await (const event of events) {
-          controller.enqueue(encoder.encode(formatSSE(event)));
+          safeEnqueue(encoder.encode(formatSSE(event)));
         }
       } catch (err) {
         // Unexpected failure (e.g. a DB write erroring) that
         // handleChatRequest didn't already turn into an `error` event --
         // see that module's comment on which failures throw vs yield.
         console.error("app/api/chat/route.ts: unhandled error while streaming chat response:", err);
-        controller.enqueue(
+        safeEnqueue(
           encoder.encode(
             formatSSE({
               type: "error",
@@ -223,7 +250,14 @@ export async function POST(request: Request): Promise<Response> {
         );
       } finally {
         releaseRateLimitSlot();
-        controller.close();
+        if (!closed) {
+          try {
+            controller.close();
+          } catch {
+            // Same disconnect race as above, just caught at close() time
+            // instead of at an earlier enqueue() -- nothing to do either way.
+          }
+        }
       }
     },
   });

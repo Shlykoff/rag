@@ -9,6 +9,8 @@ import { redirectToLogin } from "@/lib/ui/client-redirect";
 import { NoProviderNotice } from "./NoProviderNotice";
 
 export interface DocumentCardProps {
+  /** Only needed to build the /projects/{projectId}/model link inside NoProviderNotice on a 422 refresh failure -- the refresh/delete requests themselves don't need it (ownership is derived from the document row server-side). */
+  projectId: string;
   documentId: string;
   title: string;
   sourceType: DocumentSourceType;
@@ -38,6 +40,7 @@ function statusBadgeClass(status: ProcessingStatus): string {
 }
 
 export function DocumentCard({
+  projectId,
   documentId,
   title,
   sourceType,
@@ -157,7 +160,7 @@ export function DocumentCard({
         ) : null}
         {refreshNoProviderMessage ? (
           <div style={{ marginTop: "0.5rem" }}>
-            <NoProviderNotice message={refreshNoProviderMessage} />
+            <NoProviderNotice projectId={projectId} message={refreshNoProviderMessage} />
           </div>
         ) : null}
         {refreshError ? (
