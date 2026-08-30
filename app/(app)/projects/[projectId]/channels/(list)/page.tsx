@@ -34,6 +34,12 @@ function truncate(text: string, max: number): string {
 // lib/gateway/answer.ts). A direct Server Component Supabase query (RLS
 // already allows it), not a new API route -- same "Server Components MAY
 // query Supabase directly" convention as every other page in this stage.
+//
+// Lives under the `(list)` route group purely so its sibling loading.tsx
+// doesn't also wrap ../[conversationId]/page.tsx's own notFound() call --
+// see app/(app)/projects/not-found.tsx's header comment (bug 3) and
+// ../../chat/layout.tsx's identical rationale. This file's URL is
+// unaffected ("/channels"), route groups add no path segment.
 export default async function ProjectChannelsPage({ params }: { params: Promise<{ projectId: string }> }) {
   const { projectId } = await params;
   const supabase = await getRouteHandlerSupabaseClient();

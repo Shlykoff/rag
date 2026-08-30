@@ -5,6 +5,16 @@ import type { ChatMessageVM, ContextSource } from "@/components/chat/types";
 
 export const dynamic = "force-dynamic";
 
+// DELIBERATELY NO loading.tsx anywhere above this page (this segment, its
+// ../layout.tsx, or ../../[projectId]/) -- a `loading.tsx` ancestor's
+// Suspense boundary can flush a 200 status before this page's own
+// notFound() below ever runs, making a real 404 impossible regardless of
+// where not-found.tsx lives. This is exactly why chat/'s own loading.tsx
+// moved into the sibling `(list)` route group instead of living directly
+// in chat/ (see ../layout.tsx's header comment) and why
+// ../../[projectId]/loading.tsx was deleted entirely (see
+// app/(app)/projects/not-found.tsx's header comment, bug 3, for the full
+// story) -- both verified live, not by inspection.
 interface MessageRow {
   id: string;
   role: "user" | "assistant";
@@ -66,7 +76,7 @@ export default async function ProjectExistingChatPage({
     sources: row.sources ?? [],
   }));
 
-  // Same "any ready document" check as .../chat/page.tsx -- kept in sync
+  // Same "any ready document" check as .../chat/(list)/page.tsx -- kept in sync
   // rather than hardcoded, even though this prop only affects the empty
   // state rendered at messages.length === 0, which an existing thread with
   // messages already loaded practically never hits.

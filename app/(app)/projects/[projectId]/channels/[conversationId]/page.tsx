@@ -7,6 +7,14 @@ import type { ChatMessageVM, ContextSource } from "@/components/chat/types";
 
 export const dynamic = "force-dynamic";
 
+// DELIBERATELY NO loading.tsx anywhere above this page (this segment or
+// ../../[projectId]/) -- same reasoning as
+// ../../chat/[conversationId]/page.tsx's identical comment: an ancestor
+// `loading.tsx`'s Suspense boundary can flush a 200 status before this
+// page's own notFound() below ever runs. channels/'s own loading.tsx moved
+// into the sibling `(list)` route group (see ../(list)/page.tsx) for
+// exactly this reason -- see app/(app)/projects/not-found.tsx's header
+// comment (bug 3) for the full story, verified live.
 interface ConversationRow {
   id: string;
   channel: string;

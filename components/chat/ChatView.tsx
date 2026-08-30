@@ -194,7 +194,7 @@ export function ChatView({ projectId, conversationId: initialConversationId, ini
       setIsStreaming(false);
       // New-chat -> now-persisted-conversation navigation: only once, only
       // when this view started with no conversationId
-      // (projects/[projectId]/chat/page.tsx) and the server actually
+      // (projects/[projectId]/chat/(list)/page.tsx) and the server actually
       // created/confirmed one via the `conversation` SSE event (see
       // handleChatRequest -- it's always yielded first, before any possible
       // error).
