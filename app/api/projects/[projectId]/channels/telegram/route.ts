@@ -133,7 +133,10 @@ import {
   deleteTelegramIntegration,
 } from "@/lib/channels/telegram/integration-store";
 import { setTelegramWebhook, getTelegramWebhookInfo } from "@/lib/channels/telegram/client";
-import { checkAICredentialsRateLimit, type AICredentialsRateLimitResult } from "@/lib/rate-limit/ai-credentials-rate-limiter";
+import { checkAICredentialsRateLimit } from "@/lib/rate-limit/ai-credentials-rate-limiter";
+import { isUuidShape } from "@/lib/validation/uuid";
+import { parseJsonBody } from "@/lib/http/parse-json-body";
+import { rateLimitedResponse } from "@/lib/http/rate-limited-response";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -153,25 +156,30 @@ const PostBodySchema = z.object({
 // Reuses lib/rate-limit/ai-credentials-rate-limiter.ts's generic
 // per-identity sliding window rather than adding a fourth, near-identical
 // limiter module for this task's small, explicitly-scoped surface ("no new
-// lib/ modules"). Namespaced with a "telegram:" prefix (not the bare user
-// id) so this route's own write-request budget lives in its own map entry,
-// independent of that same user's POST/DELETE /api/profile/ai-providers
-// calls -- that module's own header explicitly warns against two unrelated
-// write actions silently sharing one counter, and a distinct map KEY (not
-// a whole distinct module) is enough to satisfy that here without adding
-// new files.
-function rateLimitKey(userId: string): string {
-  return `telegram:${userId}`;
+// lib/ modules"). Namespaced with a "telegram:" prefix so this route's own
+// write-request budget lives in its own map entry, independent of that
+// same user's POST/DELETE /api/profile/ai-providers calls -- that module's
+// own header explicitly warns against two unrelated write actions silently
+// sharing one counter, and a distinct map KEY (not a whole distinct
+// module) is enough to satisfy that here without adding new files.
+//
+// Keyed by PROJECT id, not the account-wide user id: every other limiter
+// re-keyed by the projects architecture pivot protects a project-scoped
+// resource (source ingestion, chat) by keying on projectId, since a single
+// account can own several projects and one project's Telegram-connect
+// churn must not eat into a completely different project's own budget.
+// This limiter used to be the one straggler still keyed by `userId` alone
+// (account-wide) even though it protects exactly this same kind of
+// project-scoped resource (one project's channel_integrations row) --
+// fixed to match the pattern.
+function rateLimitKey(projectId: string): string {
+  return `telegram:${projectId}`;
 }
 
-function rateLimitedResponse(rateLimit: Pick<AICredentialsRateLimitResult, "retryAfterMs">): Response {
-  return Response.json(
-    {
-      error: "rate_limited",
-      message: "Слишком много запросов к настройкам Telegram-интеграции. Попробуйте через несколько секунд.",
-      retryAfterMs: rateLimit.retryAfterMs,
-    },
-    { status: 429, headers: { "Retry-After": String(Math.ceil(rateLimit.retryAfterMs / 1000)) } }
+function telegramRateLimitedResponse(rateLimit: { retryAfterMs: number }): Response {
+  return rateLimitedResponse(
+    "Слишком много запросов к настройкам Telegram-интеграции. Попробуйте через несколько секунд.",
+    rateLimit.retryAfterMs
   );
 }
 
@@ -201,6 +209,13 @@ export async function GET(
   { params }: { params: Promise<{ projectId: string }> }
 ): Promise<Response> {
   const { projectId } = await params;
+  // Shape-check BEFORE ever touching the DB -- see
+  // app/api/projects/[projectId]/route.ts's identical guard for why (a raw
+  // Postgres "invalid input syntax for type uuid" 500 instead of this
+  // route's own documented 404).
+  if (!isUuidShape(projectId)) {
+    return Response.json({ error: "not_found" }, { status: 404 });
+  }
 
   const authClient = await getRouteHandlerSupabaseClient();
   const user = await getAuthenticatedUser(authClient);
@@ -234,6 +249,13 @@ export async function POST(
   { params }: { params: Promise<{ projectId: string }> }
 ): Promise<Response> {
   const { projectId } = await params;
+  // Shape-check BEFORE ever touching the DB -- see
+  // app/api/projects/[projectId]/route.ts's identical guard for why (a raw
+  // Postgres "invalid input syntax for type uuid" 500 instead of this
+  // route's own documented 404).
+  if (!isUuidShape(projectId)) {
+    return Response.json({ error: "not_found" }, { status: 404 });
+  }
 
   const authClient = await getRouteHandlerSupabaseClient();
   const user = await getAuthenticatedUser(authClient);
@@ -242,19 +264,11 @@ export async function POST(
   const owned = await verifyProjectOwnership(authClient, projectId);
   if (!owned) return Response.json({ error: "not_found" }, { status: 404 });
 
-  const rateLimit = checkAICredentialsRateLimit(rateLimitKey(user.id));
-  if (!rateLimit.allowed) return rateLimitedResponse(rateLimit);
+  const rateLimit = checkAICredentialsRateLimit(rateLimitKey(projectId));
+  if (!rateLimit.allowed) return telegramRateLimitedResponse(rateLimit);
 
-  let rawBody: unknown;
-  try {
-    rawBody = await request.json();
-  } catch {
-    return Response.json({ error: "invalid_request", details: "Body must be valid JSON." }, { status: 400 });
-  }
-  const parsed = PostBodySchema.safeParse(rawBody);
-  if (!parsed.success) {
-    return Response.json({ error: "invalid_request", details: parsed.error.flatten() }, { status: 400 });
-  }
+  const parsed = await parseJsonBody(request, PostBodySchema);
+  if ("errorResponse" in parsed) return parsed.errorResponse;
   const webhookBaseUrl = parsed.data.webhookBaseUrl.replace(/\/+$/, "");
 
   const supabase = getServiceRoleClient();
@@ -337,6 +351,13 @@ export async function DELETE(
   { params }: { params: Promise<{ projectId: string }> }
 ): Promise<Response> {
   const { projectId } = await params;
+  // Shape-check BEFORE ever touching the DB -- see
+  // app/api/projects/[projectId]/route.ts's identical guard for why (a raw
+  // Postgres "invalid input syntax for type uuid" 500 instead of this
+  // route's own documented 404).
+  if (!isUuidShape(projectId)) {
+    return Response.json({ error: "not_found" }, { status: 404 });
+  }
 
   const authClient = await getRouteHandlerSupabaseClient();
   const user = await getAuthenticatedUser(authClient);
@@ -345,8 +366,8 @@ export async function DELETE(
   const owned = await verifyProjectOwnership(authClient, projectId);
   if (!owned) return Response.json({ error: "not_found" }, { status: 404 });
 
-  const rateLimit = checkAICredentialsRateLimit(rateLimitKey(user.id));
-  if (!rateLimit.allowed) return rateLimitedResponse(rateLimit);
+  const rateLimit = checkAICredentialsRateLimit(rateLimitKey(projectId));
+  if (!rateLimit.allowed) return telegramRateLimitedResponse(rateLimit);
 
   const supabase = getServiceRoleClient();
   try {

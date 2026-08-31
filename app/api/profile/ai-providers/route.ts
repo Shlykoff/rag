@@ -71,21 +71,14 @@ import "server-only";
 import { z } from "zod";
 import { getServiceRoleClient } from "@/lib/supabase/service-client";
 import { getAuthenticatedUser, getRouteHandlerSupabaseClient } from "@/lib/supabase/server-client";
-import {
-  saveAIProviderCredential,
-  hasAIProviderCredential,
-  deleteAIProviderCredential,
-  type AIProviderCredentialType,
-} from "@/lib/ai";
-import {
-  checkAICredentialsRateLimit,
-  type AICredentialsRateLimitResult,
-} from "@/lib/rate-limit/ai-credentials-rate-limiter";
+import { saveAIProviderCredential, deleteAIProviderCredential, getConfiguredProvidersMap } from "@/lib/ai";
+import { checkAICredentialsRateLimit } from "@/lib/rate-limit/ai-credentials-rate-limiter";
+import { parseJsonBody } from "@/lib/http/parse-json-body";
+import { rateLimitedResponse } from "@/lib/http/rate-limited-response";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
-const ALL_CREDENTIAL_PROVIDERS: AIProviderCredentialType[] = ["openai", "anthropic", "gemini", "voyage"];
 const ProviderTypeSchema = z.enum(["openai", "anthropic", "gemini", "voyage"]);
 
 const PostBodySchema = z.object({
@@ -97,29 +90,11 @@ const DeleteBodySchema = z.object({
   provider: ProviderTypeSchema,
 });
 
-function rateLimitedResponse(rateLimit: Pick<AICredentialsRateLimitResult, "retryAfterMs">): Response {
-  return Response.json(
-    {
-      error: "rate_limited",
-      message: "Слишком много запросов к настройкам AI-провайдера. Попробуйте через несколько секунд.",
-      retryAfterMs: rateLimit.retryAfterMs,
-    },
-    { status: 429, headers: { "Retry-After": String(Math.ceil(rateLimit.retryAfterMs / 1000)) } }
+function aiProvidersRateLimitedResponse(rateLimit: { retryAfterMs: number }): Response {
+  return rateLimitedResponse(
+    "Слишком много запросов к настройкам AI-провайдера. Попробуйте через несколько секунд.",
+    rateLimit.retryAfterMs
   );
-}
-
-async function parseJsonBody<T>(request: Request, schema: z.ZodType<T>): Promise<{ data: T } | { errorResponse: Response }> {
-  let rawBody: unknown;
-  try {
-    rawBody = await request.json();
-  } catch {
-    return { errorResponse: Response.json({ error: "invalid_request", details: "Body must be valid JSON." }, { status: 400 }) };
-  }
-  const parsed = schema.safeParse(rawBody);
-  if (!parsed.success) {
-    return { errorResponse: Response.json({ error: "invalid_request", details: parsed.error.flatten() }, { status: 400 }) };
-  }
-  return { data: parsed.data };
 }
 
 export async function GET(): Promise<Response> {
@@ -128,10 +103,7 @@ export async function GET(): Promise<Response> {
   if (!user) return Response.json({ error: "unauthorized" }, { status: 401 });
 
   const supabase = getServiceRoleClient();
-  const configuredFlags = await Promise.all(ALL_CREDENTIAL_PROVIDERS.map((p) => hasAIProviderCredential(supabase, user.id, p)));
-  const configured = Object.fromEntries(
-    ALL_CREDENTIAL_PROVIDERS.map((p, i) => [p, configuredFlags[i]])
-  ) as Record<AIProviderCredentialType, boolean>;
+  const configured = await getConfiguredProvidersMap(supabase, user.id);
 
   return Response.json({ configured }, { status: 200 });
 }
@@ -145,7 +117,7 @@ export async function POST(request: Request): Promise<Response> {
   // module-header contract and CLAUDE.md rule 4's "on the server, before
   // doing the work" principle.
   const rateLimit = checkAICredentialsRateLimit(user.id);
-  if (!rateLimit.allowed) return rateLimitedResponse(rateLimit);
+  if (!rateLimit.allowed) return aiProvidersRateLimitedResponse(rateLimit);
 
   const parsed = await parseJsonBody(request, PostBodySchema);
   if ("errorResponse" in parsed) return parsed.errorResponse;
@@ -161,7 +133,7 @@ export async function DELETE(request: Request): Promise<Response> {
   if (!user) return Response.json({ error: "unauthorized" }, { status: 401 });
 
   const rateLimit = checkAICredentialsRateLimit(user.id);
-  if (!rateLimit.allowed) return rateLimitedResponse(rateLimit);
+  if (!rateLimit.allowed) return aiProvidersRateLimitedResponse(rateLimit);
 
   const parsed = await parseJsonBody(request, DeleteBodySchema);
   if ("errorResponse" in parsed) return parsed.errorResponse;

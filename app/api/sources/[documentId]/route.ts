@@ -37,7 +37,9 @@
 
 import "server-only";
 import { getServiceRoleClient } from "@/lib/supabase/service-client";
-import { getAuthenticatedUser, getRouteHandlerSupabaseClient, verifyProjectOwnership } from "@/lib/supabase/server-client";
+import { getAuthenticatedUser, getRouteHandlerSupabaseClient } from "@/lib/supabase/server-client";
+import { loadOwnedDocument } from "../shared";
+import { isUuidShape } from "@/lib/validation/uuid";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -53,30 +55,26 @@ export async function DELETE(
   { params }: { params: Promise<{ documentId: string }> }
 ): Promise<Response> {
   const { documentId } = await params;
+  // Shape-check BEFORE ever touching the DB -- a syntactically-invalid uuid
+  // here used to reach `.eq("id", documentId)` and come back as an
+  // uncaught Postgres "invalid input syntax for type uuid" (a raw 500),
+  // instead of this route's own documented 404. See lib/validation/uuid.ts's
+  // header for why this is a shape check (matching what Postgres's `uuid`
+  // column type itself accepts), not the stricter `z.string().uuid()`.
+  if (!isUuidShape(documentId)) {
+    return Response.json({ error: "not_found" }, { status: 404 });
+  }
 
   const authClient = await getRouteHandlerSupabaseClient();
   const user = await getAuthenticatedUser(authClient);
   if (!user) return Response.json({ error: "unauthorized" }, { status: 401 });
 
   const supabase = getServiceRoleClient();
-  const { data: doc, error } = await supabase
-    .from("documents")
-    .select("id, project_id, storage_path")
-    .eq("id", documentId)
-    .maybeSingle<DocumentRow>();
-  if (error) {
-    console.error(`delete route: failed to load document ${documentId}:`, error);
-    return Response.json({ error: "internal_error", message: "Не удалось загрузить документ." }, { status: 500 });
+  const loaded = await loadOwnedDocument<DocumentRow>(supabase, authClient, documentId, "id, project_id, storage_path");
+  if (!loaded.ok) {
+    return Response.json(loaded.body, { status: loaded.status });
   }
-  if (!doc) {
-    // Same "identical response for missing vs. someone else's document" as
-    // refresh/route.ts -- see that file's comment for the reasoning.
-    return Response.json({ error: "not_found" }, { status: 404 });
-  }
-  const owned = await verifyProjectOwnership(authClient, doc.project_id);
-  if (!owned) {
-    return Response.json({ error: "not_found" }, { status: 404 });
-  }
+  const doc = loaded.doc;
 
   // Delete the `documents` row (and, via cascade, its document_chunks)
   // BEFORE touching Storage -- deliberately, not just "in whatever order

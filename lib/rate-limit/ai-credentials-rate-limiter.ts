@@ -26,6 +26,7 @@
 // a bucket with an unrelated action" argument.
 
 import "server-only";
+import { createSlidingWindowLimiter } from "./sliding-window";
 
 export interface AICredentialsRateLimitConfig {
   /** Max /api/profile/ai-providers write requests allowed within windowMs, per user. */
@@ -54,11 +55,24 @@ export interface AICredentialsRateLimitResult {
   retryAfterMs: number;
 }
 
-const requestTimestamps = new Map<string, number[]>();
+// Own private limiter instance (its own Map, independent of every other
+// module's) -- see lib/rate-limit/sliding-window.ts's header for why each
+// call site instantiates separately rather than sharing one. Also shared,
+// under its own "telegram:"-prefixed key namespace, by
+// app/api/projects/[projectId]/channels/telegram/route.ts's connect/
+// disconnect endpoints (see that route's own rateLimitKey() comment) --
+// this module doesn't interpret the key beyond using it as the Map key, so
+// a second caller with its own key prefix is exactly as isolated from this
+// module's own /api/profile/ai-providers callers as two different keys
+// always are.
+const limiter = createSlidingWindowLimiter({
+  windowMs: DEFAULT_AI_CREDENTIALS_RATE_LIMIT.windowMs,
+  maxEntries: DEFAULT_AI_CREDENTIALS_RATE_LIMIT.maxRequests,
+});
 
-/** Test-only escape hatch: requestTimestamps is module-level state that would otherwise leak between test cases run in the same process. Not meant to be reached for outside lib/rate-limit/__tests__. */
+/** Test-only escape hatch: the limiter's Map is module-level state that would otherwise leak between test cases run in the same process. Not meant to be reached for outside lib/rate-limit/__tests__. */
 export function __resetAICredentialsRateLimitForTests(): void {
-  requestTimestamps.clear();
+  limiter.reset();
 }
 
 /**
@@ -76,27 +90,6 @@ export function checkAICredentialsRateLimit(
   userId: string,
   config: AICredentialsRateLimitConfig = DEFAULT_AI_CREDENTIALS_RATE_LIMIT
 ): AICredentialsRateLimitResult {
-  const now = Date.now();
-  const cutoff = now - config.windowMs;
-  const existing = requestTimestamps.get(userId) ?? [];
-  const fresh = existing.filter((ts) => ts > cutoff);
-
-  if (fresh.length >= config.maxRequests) {
-    // Still write back the purged (but not incremented) list -- keeps the
-    // map from accumulating stale entries for a user who keeps getting
-    // rejected without ever succeeding.
-    if (fresh.length > 0) requestTimestamps.set(userId, fresh);
-    else requestTimestamps.delete(userId);
-    const oldest = fresh[0];
-    return {
-      allowed: false,
-      currentCount: fresh.length,
-      limit: config.maxRequests,
-      retryAfterMs: Math.max(0, oldest + config.windowMs - now),
-    };
-  }
-
-  fresh.push(now);
-  requestTimestamps.set(userId, fresh);
-  return { allowed: true, currentCount: fresh.length, limit: config.maxRequests, retryAfterMs: 0 };
+  const result = limiter.check(userId, { windowMs: config.windowMs, maxEntries: config.maxRequests });
+  return { allowed: result.allowed, currentCount: result.currentCount, limit: result.limit, retryAfterMs: result.retryAfterMs };
 }

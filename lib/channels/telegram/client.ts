@@ -80,7 +80,19 @@ export function splitTelegramMessage(text: string, maxLength: number = TELEGRAM_
           : window.lastIndexOf(" ") > 0
             ? window.lastIndexOf(" ")
             : -1;
-    if (cut <= 0) cut = maxLength; // no good boundary at all -- hard cut
+    if (cut <= 0) {
+      cut = maxLength; // no good boundary at all -- hard cut
+      // A hard cut can land in the middle of a UTF-16 surrogate pair (e.g.
+      // many emoji, which JS strings represent as two 16-bit code units) --
+      // `.slice(0, cut)` would silently split the pair, corrupting both
+      // resulting halves into lone unpaired surrogates. Back off one
+      // character so the cut lands strictly before the pair instead.
+      const before = remaining.charCodeAt(cut - 1);
+      const after = remaining.charCodeAt(cut);
+      const isHighSurrogate = before >= 0xd800 && before <= 0xdbff;
+      const isLowSurrogate = after >= 0xdc00 && after <= 0xdfff;
+      if (isHighSurrogate && isLowSurrogate) cut -= 1;
+    }
     const chunk = remaining.slice(0, cut).trimEnd();
     if (chunk.length > 0) parts.push(chunk);
     remaining = remaining.slice(cut).trimStart();

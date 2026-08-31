@@ -150,7 +150,18 @@ export async function answerExternalMessage(req: GatewayAnswerRequest): Promise<
       let chatProvider;
       let embeddingsProvider;
       try {
-        ({ chatProvider, embeddingsProvider } = await getAIProviders({ projectId: req.projectId, ownerUserId }, supabase));
+        // preFetchedProjectRow: this exact `{id, user_id}` row was already
+        // fetched via service_role a few lines up (to resolve ownerUserId
+        // in the first place) -- passing it through here skips
+        // getAIProviders()'s own otherwise-identical re-fetch of the same
+        // row, while it still runs the same in-memory ownership guard
+        // against it. See GetAIProvidersParams.preFetchedProjectRow's own
+        // doc comment for why this is safe here specifically (and why
+        // app/api/chat/route.ts's web path must NOT do the same).
+        ({ chatProvider, embeddingsProvider } = await getAIProviders(
+          { projectId: req.projectId, ownerUserId, preFetchedProjectRow: project },
+          supabase
+        ));
       } catch (err) {
         if (err instanceof AIProviderError && err.kind === "no_credentials") {
           // Expected per-project state ("this project hasn't picked a

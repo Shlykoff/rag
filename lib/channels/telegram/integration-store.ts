@@ -165,19 +165,6 @@ export async function getTelegramIntegrationById(
   return rowToRecord(data);
 }
 
-/** Connection-status check ("is Telegram connected for this project: yes/no") that never touches the ciphertext. */
-export async function hasTelegramIntegration(supabase: SupabaseClient, projectId: string): Promise<boolean> {
-  const { count, error } = await supabase
-    .from("channel_integrations")
-    .select("id", { count: "exact", head: true })
-    .eq("project_id", projectId)
-    .eq("channel", "telegram");
-  if (error) {
-    throw new Error(`hasTelegramIntegration: failed to check integration for project ${projectId}: ${error.message}`);
-  }
-  return (count ?? 0) > 0;
-}
-
 /** Deletes the stored Telegram integration for `projectId`, if any -- a no-op (not an error) if none was stored. Cascades to that integration's channel_processed_updates rows via the FK (on delete cascade, see that table's migration). */
 export async function deleteTelegramIntegration(supabase: SupabaseClient, projectId: string): Promise<void> {
   const { error } = await supabase

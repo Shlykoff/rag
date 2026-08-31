@@ -10,14 +10,20 @@
 // them to a single discriminated result so each form component only has
 // to branch on `result.kind`, not re-derive status-code handling itself.
 //
-// Also reused (not reimplemented) by components/profile/* for
+// Also reused (not reimplemented) by components/profile/* (ProfileForm.tsx,
+// ActiveProviderSection.tsx's sibling ProviderKeyField.tsx) for
 // app/api/profile/ai-providers/route.ts and by components/projects/* for
-// app/api/projects/** (projects architecture pivot) -- both follow the
-// exact same 401/429/{error,message} shapes (see those routes' own header
-// comments), just over different resources. `deleteJson`/`putJson` exist
-// because app/api/profile/ai-providers/route.ts was the first caller that
-// needed a DELETE with a JSON body (`{ provider }`, unlike `del()`'s
-// no-body DELETE used for `/api/sources/{documentId}`) and a PUT at all;
+// app/api/projects/** (projects architecture pivot, including
+// ModelPicker.tsx's GET/PUT and TelegramChannelPanel.tsx's GET/POST/DELETE)
+// -- all of them follow the exact same 401/429/{error,message} shapes (see
+// those routes' own header comments), just over different resources.
+// `getJson` exists because every GET-on-mount status fetch (model picker,
+// Telegram channel status, provider credentials) needs the same
+// unhappy-path handling as every write call already got here.
+// `deleteJson`/`putJson` exist because app/api/profile/ai-providers/route.ts
+// was the first caller that needed a DELETE with a JSON body (`{ provider
+// }`, unlike `del()`'s no-body DELETE used for `/api/sources/{documentId}`
+// and `/api/projects/{projectId}/channels/telegram`) and a PUT at all;
 // `patchJson` exists because app/api/projects/[projectId]/route.ts's
 // rename endpoint is the first caller that needs a PATCH. All of them
 // still funnel through the same `normalizeResponse()` so the unhappy-path
@@ -62,16 +68,26 @@ async function normalizeResponse<T>(response: Response): Promise<SourceRequestRe
   }
 
   if (response.status === 404) {
-    // Identical wire shape ({ error: "not_found" }) for "document doesn't
-    // exist" and "belongs to someone else" -- see [documentId]/route.ts and
-    // [documentId]/refresh/route.ts. Surfaced as its own kind (rather than
-    // folded into the generic "error" branch below) so callers that operate
-    // on a specific document -- delete, refresh -- can treat it as "already
-    // gone" (soft message + refresh the list) instead of a hard failure.
+    // Identical wire shape ({ error: "not_found" }) for "resource doesn't
+    // exist" and "belongs to someone else" across every route this module
+    // is used against (documents, projects, per-project model settings,
+    // per-project channel integrations -- see [documentId]/route.ts,
+    // [documentId]/refresh/route.ts, projects/[projectId]/route.ts).
+    // Surfaced as its own kind (rather than folded into the generic "error"
+    // branch below) so callers that operate on one specific resource --
+    // delete, refresh, rename -- can treat it as "already gone" (soft
+    // message + refresh the list, no scary error) instead of a hard
+    // failure. Deliberately resource-agnostic wording (not "документ") since
+    // this same branch now also serves project/model/channel callers, none
+    // of which currently display this exact string verbatim anyway (they
+    // all special-case `kind === "not_found"` before ever reading
+    // `.message` -- see DocumentCard.tsx/ProjectCard.tsx/
+    // DeleteProjectModal.tsx), but a caller that ever does show it directly
+    // should still get an accurate sentence.
     return {
       ok: false,
       kind: "not_found",
-      message: "Документ не найден — возможно, он уже был удалён или обновлён в другой вкладке.",
+      message: "Запись не найдена — возможно, её удалили или изменили в другой вкладке.",
     };
   }
 
@@ -117,6 +133,16 @@ function describeErrorBody(status: number, body: ErrorBody): string {
     return "Некорректные данные — проверьте введённое значение.";
   }
   return `Не удалось выполнить запрос (${body.error ?? status}).`;
+}
+
+/** Plain GET, same normalize-the-response treatment as every other helper here -- added for components/projects/ModelPicker.tsx's/TelegramChannelPanel.tsx's and components/profile/ProfileForm.tsx's status-fetch-on-mount calls, which used to hand-rolled their own fetch + status-code branching instead of reusing this module. */
+export async function getJson<T>(url: string): Promise<SourceRequestResult<T>> {
+  try {
+    const response = await fetch(url);
+    return await normalizeResponse<T>(response);
+  } catch {
+    return { ok: false, kind: "error", message: "Не удалось подключиться к серверу." };
+  }
 }
 
 export async function postJson<T>(url: string, body: unknown): Promise<SourceRequestResult<T>> {

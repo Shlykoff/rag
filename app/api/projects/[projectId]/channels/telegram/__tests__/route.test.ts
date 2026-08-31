@@ -55,7 +55,7 @@ const SECRET_BOT_TOKEN = "123456:AAExample-Secret-Bot-Token-Do-Not-Leak";
 const EXISTING_WEBHOOK_SECRET = "existing-webhook-secret-abc123";
 
 function makeRequest(method: string, body?: unknown): Request {
-  return new Request("http://localhost/api/projects/project-1/channels/telegram", {
+  return new Request("http://localhost/api/projects/11111111-1111-4111-8111-111111111111/channels/telegram", {
     method,
     headers: body !== undefined ? { "content-type": "application/json" } : undefined,
     body: body !== undefined ? JSON.stringify(body) : undefined,
@@ -76,6 +76,38 @@ async function expectNoSecretLeak(response: Response): Promise<unknown> {
   return response.json();
 }
 
+// Regression test: a syntactically-invalid projectId used to reach
+// `.eq("id", projectId)` (via verifyProjectOwnership/getTelegramIntegrationByProject)
+// against a real Postgres `uuid` column and surface as an uncaught
+// "invalid input syntax for type uuid" 500, instead of each route's own
+// documented 404. Covers all three methods since each has its own
+// `const { projectId } = await params` + guard.
+describe("uuid shape guard (GET/POST/DELETE)", () => {
+  afterEach(() => vi.clearAllMocks());
+
+  it("GET returns 404 (not 500) for a syntactically invalid projectId, without touching auth", async () => {
+    const response = await GET(makeRequest("GET"), makeParams("not-a-uuid"));
+    expect(response.status).toBe(404);
+    expect(await response.json()).toEqual({ error: "not_found" });
+    expect(mockGetRouteHandlerSupabaseClient).not.toHaveBeenCalled();
+  });
+
+  it("POST returns 404 (not 500) for a syntactically invalid projectId, without touching auth", async () => {
+    const response = await POST(
+      makeRequest("POST", { botToken: SECRET_BOT_TOKEN, webhookBaseUrl: "https://example.com" }),
+      makeParams("not-a-uuid")
+    );
+    expect(response.status).toBe(404);
+    expect(mockGetRouteHandlerSupabaseClient).not.toHaveBeenCalled();
+  });
+
+  it("DELETE returns 404 (not 500) for a syntactically invalid projectId, without touching auth", async () => {
+    const response = await DELETE(makeRequest("DELETE"), makeParams("not-a-uuid"));
+    expect(response.status).toBe(404);
+    expect(mockGetRouteHandlerSupabaseClient).not.toHaveBeenCalled();
+  });
+});
+
 describe("GET /api/projects/{projectId}/channels/telegram", () => {
   afterEach(() => vi.clearAllMocks());
 
@@ -83,7 +115,7 @@ describe("GET /api/projects/{projectId}/channels/telegram", () => {
     mockGetRouteHandlerSupabaseClient.mockResolvedValue({});
     mockGetAuthenticatedUser.mockResolvedValue(null);
 
-    const response = await GET(makeRequest("GET"), makeParams("project-1"));
+    const response = await GET(makeRequest("GET"), makeParams("11111111-1111-4111-8111-111111111111"));
 
     expect(response.status).toBe(401);
     expect(mockVerifyProjectOwnership).not.toHaveBeenCalled();
@@ -94,7 +126,7 @@ describe("GET /api/projects/{projectId}/channels/telegram", () => {
     mockGetAuthenticatedUser.mockResolvedValue({ id: "user-2", email: "b@b.com" });
     mockVerifyProjectOwnership.mockResolvedValue(false);
 
-    const response = await GET(makeRequest("GET"), makeParams("project-1"));
+    const response = await GET(makeRequest("GET"), makeParams("11111111-1111-4111-8111-111111111111"));
 
     expect(response.status).toBe(404);
     expect(mockGetTelegramIntegrationByProject).not.toHaveBeenCalled();
@@ -107,7 +139,7 @@ describe("GET /api/projects/{projectId}/channels/telegram", () => {
     mockGetServiceRoleClient.mockReturnValue({});
     mockGetTelegramIntegrationByProject.mockResolvedValue(null);
 
-    const response = await GET(makeRequest("GET"), makeParams("project-1"));
+    const response = await GET(makeRequest("GET"), makeParams("11111111-1111-4111-8111-111111111111"));
 
     expect(response.status).toBe(200);
     expect(await response.json()).toEqual({ connected: false });
@@ -120,7 +152,7 @@ describe("GET /api/projects/{projectId}/channels/telegram", () => {
     mockGetServiceRoleClient.mockReturnValue({});
     mockGetTelegramIntegrationByProject.mockResolvedValue({
       id: "integration-1",
-      projectId: "project-1",
+      projectId: "11111111-1111-4111-8111-111111111111",
       channel: "telegram",
       credentials: { botToken: SECRET_BOT_TOKEN, webhookSecret: EXISTING_WEBHOOK_SECRET },
       enabled: true,
@@ -128,7 +160,7 @@ describe("GET /api/projects/{projectId}/channels/telegram", () => {
     });
     mockGetTelegramWebhookInfo.mockResolvedValue({ url: "https://example.com/api/channels/telegram/integration-1" });
 
-    const response = await GET(makeRequest("GET"), makeParams("project-1"));
+    const response = await GET(makeRequest("GET"), makeParams("11111111-1111-4111-8111-111111111111"));
 
     expect(response.status).toBe(200);
     const payload = await expectNoSecretLeak(response);
@@ -143,7 +175,7 @@ describe("GET /api/projects/{projectId}/channels/telegram", () => {
     mockGetServiceRoleClient.mockReturnValue({});
     mockGetTelegramIntegrationByProject.mockResolvedValue({
       id: "integration-1",
-      projectId: "project-1",
+      projectId: "11111111-1111-4111-8111-111111111111",
       channel: "telegram",
       credentials: { botToken: SECRET_BOT_TOKEN, webhookSecret: EXISTING_WEBHOOK_SECRET },
       enabled: true,
@@ -151,7 +183,7 @@ describe("GET /api/projects/{projectId}/channels/telegram", () => {
     });
     mockGetTelegramWebhookInfo.mockResolvedValue({ url: "" });
 
-    const response = await GET(makeRequest("GET"), makeParams("project-1"));
+    const response = await GET(makeRequest("GET"), makeParams("11111111-1111-4111-8111-111111111111"));
 
     expect(response.status).toBe(200);
     expect(await response.json()).toEqual({ connected: true, enabled: true, displayLabel: null, webhookStatus: "unconfirmed" });
@@ -164,7 +196,7 @@ describe("GET /api/projects/{projectId}/channels/telegram", () => {
     mockGetServiceRoleClient.mockReturnValue({});
     mockGetTelegramIntegrationByProject.mockResolvedValue({
       id: "integration-1",
-      projectId: "project-1",
+      projectId: "11111111-1111-4111-8111-111111111111",
       channel: "telegram",
       credentials: { botToken: SECRET_BOT_TOKEN, webhookSecret: EXISTING_WEBHOOK_SECRET },
       enabled: true,
@@ -172,7 +204,7 @@ describe("GET /api/projects/{projectId}/channels/telegram", () => {
     });
     mockGetTelegramWebhookInfo.mockResolvedValue({ url: "https://example.com/api/channels/telegram/some-other-integration" });
 
-    const response = await GET(makeRequest("GET"), makeParams("project-1"));
+    const response = await GET(makeRequest("GET"), makeParams("11111111-1111-4111-8111-111111111111"));
 
     expect((await response.json()).webhookStatus).toBe("unconfirmed");
   });
@@ -184,7 +216,7 @@ describe("GET /api/projects/{projectId}/channels/telegram", () => {
     mockGetServiceRoleClient.mockReturnValue({});
     mockGetTelegramIntegrationByProject.mockResolvedValue({
       id: "integration-1",
-      projectId: "project-1",
+      projectId: "11111111-1111-4111-8111-111111111111",
       channel: "telegram",
       credentials: { botToken: SECRET_BOT_TOKEN, webhookSecret: EXISTING_WEBHOOK_SECRET },
       enabled: true,
@@ -193,7 +225,7 @@ describe("GET /api/projects/{projectId}/channels/telegram", () => {
     mockGetTelegramWebhookInfo.mockRejectedValue(new Error("Telegram API getWebhookInfo failed (401): Unauthorized"));
     const consoleWarnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
 
-    const response = await GET(makeRequest("GET"), makeParams("project-1"));
+    const response = await GET(makeRequest("GET"), makeParams("11111111-1111-4111-8111-111111111111"));
 
     expect(response.status).toBe(200);
     expect((await response.json()).webhookStatus).toBe("unconfirmed");
@@ -208,7 +240,7 @@ describe("GET /api/projects/{projectId}/channels/telegram", () => {
     mockGetTelegramIntegrationByProject.mockRejectedValue(new Error("db is down"));
     const consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
 
-    const response = await GET(makeRequest("GET"), makeParams("project-1"));
+    const response = await GET(makeRequest("GET"), makeParams("11111111-1111-4111-8111-111111111111"));
 
     expect(response.status).toBe(500);
     consoleErrorSpy.mockRestore();
@@ -224,7 +256,7 @@ describe("POST /api/projects/{projectId}/channels/telegram", () => {
 
     const response = await POST(
       makeRequest("POST", { botToken: SECRET_BOT_TOKEN, webhookBaseUrl: "https://example.com" }),
-      makeParams("project-1")
+      makeParams("11111111-1111-4111-8111-111111111111")
     );
 
     expect(response.status).toBe(401);
@@ -238,7 +270,7 @@ describe("POST /api/projects/{projectId}/channels/telegram", () => {
 
     const response = await POST(
       makeRequest("POST", { botToken: SECRET_BOT_TOKEN, webhookBaseUrl: "https://example.com" }),
-      makeParams("project-1")
+      makeParams("11111111-1111-4111-8111-111111111111")
     );
 
     expect(response.status).toBe(404);
@@ -254,15 +286,18 @@ describe("POST /api/projects/{projectId}/channels/telegram", () => {
 
     const response = await POST(
       makeRequest("POST", { botToken: SECRET_BOT_TOKEN, webhookBaseUrl: "https://example.com" }),
-      makeParams("project-1")
+      makeParams("11111111-1111-4111-8111-111111111111")
     );
 
     expect(response.status).toBe(429);
     expect(response.headers.get("Retry-After")).toBe("3");
     expect(mockSaveTelegramIntegration).not.toHaveBeenCalled();
     // Namespaced so this route's budget is independent of
-    // /api/profile/ai-providers's own use of the same underlying limiter.
-    expect(mockCheckAICredentialsRateLimit).toHaveBeenCalledWith("telegram:user-1");
+    // /api/profile/ai-providers's own use of the same underlying limiter,
+    // AND keyed by projectId (not the account-wide userId) so one
+    // project's Telegram-connect churn doesn't eat into a different
+    // project owned by the same user -- see rateLimitKey()'s own comment.
+    expect(mockCheckAICredentialsRateLimit).toHaveBeenCalledWith("telegram:11111111-1111-4111-8111-111111111111");
   });
 
   it("returns 400 for malformed JSON", async () => {
@@ -271,12 +306,12 @@ describe("POST /api/projects/{projectId}/channels/telegram", () => {
     mockVerifyProjectOwnership.mockResolvedValue(true);
     mockCheckAICredentialsRateLimit.mockReturnValue(ALLOWED_RATE_LIMIT);
 
-    const badRequest = new Request("http://localhost/api/projects/project-1/channels/telegram", {
+    const badRequest = new Request("http://localhost/api/projects/11111111-1111-4111-8111-111111111111/channels/telegram", {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: "{not json",
     });
-    const response = await POST(badRequest, makeParams("project-1"));
+    const response = await POST(badRequest, makeParams("11111111-1111-4111-8111-111111111111"));
     expect(response.status).toBe(400);
   });
 
@@ -286,7 +321,7 @@ describe("POST /api/projects/{projectId}/channels/telegram", () => {
     mockVerifyProjectOwnership.mockResolvedValue(true);
     mockCheckAICredentialsRateLimit.mockReturnValue(ALLOWED_RATE_LIMIT);
 
-    const response = await POST(makeRequest("POST", { webhookBaseUrl: "https://example.com" }), makeParams("project-1"));
+    const response = await POST(makeRequest("POST", { webhookBaseUrl: "https://example.com" }), makeParams("11111111-1111-4111-8111-111111111111"));
     expect(response.status).toBe(400);
   });
 
@@ -298,7 +333,7 @@ describe("POST /api/projects/{projectId}/channels/telegram", () => {
 
     const response = await POST(
       makeRequest("POST", { botToken: SECRET_BOT_TOKEN, webhookBaseUrl: "http://example.com" }),
-      makeParams("project-1")
+      makeParams("11111111-1111-4111-8111-111111111111")
     );
     expect(response.status).toBe(400);
     expect(mockSaveTelegramIntegration).not.toHaveBeenCalled();
@@ -316,7 +351,7 @@ describe("POST /api/projects/{projectId}/channels/telegram", () => {
 
     const response = await POST(
       makeRequest("POST", { botToken: SECRET_BOT_TOKEN, webhookBaseUrl: "https://example.com/", displayLabel: "Мой бот" }),
-      makeParams("project-1")
+      makeParams("11111111-1111-4111-8111-111111111111")
     );
 
     expect(response.status).toBe(200);
@@ -332,7 +367,7 @@ describe("POST /api/projects/{projectId}/channels/telegram", () => {
 
     expect(mockSaveTelegramIntegration).toHaveBeenCalledTimes(1);
     const [, projectIdArg, credentialsArg, displayLabelArg] = mockSaveTelegramIntegration.mock.calls[0];
-    expect(projectIdArg).toBe("project-1");
+    expect(projectIdArg).toBe("11111111-1111-4111-8111-111111111111");
     expect(credentialsArg.botToken).toBe(SECRET_BOT_TOKEN);
     expect(typeof credentialsArg.webhookSecret).toBe("string");
     expect(credentialsArg.webhookSecret.length).toBeGreaterThanOrEqual(32);
@@ -357,7 +392,7 @@ describe("POST /api/projects/{projectId}/channels/telegram", () => {
     mockGetServiceRoleClient.mockReturnValue({});
     mockGetTelegramIntegrationByProject.mockResolvedValue({
       id: "integration-1",
-      projectId: "project-1",
+      projectId: "11111111-1111-4111-8111-111111111111",
       channel: "telegram",
       credentials: { botToken: "old-token", webhookSecret: EXISTING_WEBHOOK_SECRET },
       enabled: true,
@@ -368,7 +403,7 @@ describe("POST /api/projects/{projectId}/channels/telegram", () => {
 
     const response = await POST(
       makeRequest("POST", { botToken: "new-rotated-token", webhookBaseUrl: "https://example.com" }),
-      makeParams("project-1")
+      makeParams("11111111-1111-4111-8111-111111111111")
     );
 
     expect(response.status).toBe(200);
@@ -396,7 +431,7 @@ describe("POST /api/projects/{projectId}/channels/telegram", () => {
 
     const response = await POST(
       makeRequest("POST", { botToken: "bad-token", webhookBaseUrl: "https://example.com" }),
-      makeParams("project-1")
+      makeParams("11111111-1111-4111-8111-111111111111")
     );
 
     expect(response.status).toBe(400);
@@ -419,7 +454,7 @@ describe("POST /api/projects/{projectId}/channels/telegram", () => {
 
     const response = await POST(
       makeRequest("POST", { botToken: SECRET_BOT_TOKEN, webhookBaseUrl: "https://example.com" }),
-      makeParams("project-1")
+      makeParams("11111111-1111-4111-8111-111111111111")
     );
 
     expect(response.status).toBe(500);
@@ -435,7 +470,7 @@ describe("DELETE /api/projects/{projectId}/channels/telegram", () => {
     mockGetRouteHandlerSupabaseClient.mockResolvedValue({});
     mockGetAuthenticatedUser.mockResolvedValue(null);
 
-    const response = await DELETE(makeRequest("DELETE"), makeParams("project-1"));
+    const response = await DELETE(makeRequest("DELETE"), makeParams("11111111-1111-4111-8111-111111111111"));
 
     expect(response.status).toBe(401);
     expect(mockDeleteTelegramIntegration).not.toHaveBeenCalled();
@@ -446,7 +481,7 @@ describe("DELETE /api/projects/{projectId}/channels/telegram", () => {
     mockGetAuthenticatedUser.mockResolvedValue({ id: "user-2", email: "b@b.com" });
     mockVerifyProjectOwnership.mockResolvedValue(false);
 
-    const response = await DELETE(makeRequest("DELETE"), makeParams("project-1"));
+    const response = await DELETE(makeRequest("DELETE"), makeParams("11111111-1111-4111-8111-111111111111"));
 
     expect(response.status).toBe(404);
     expect(mockDeleteTelegramIntegration).not.toHaveBeenCalled();
@@ -458,10 +493,33 @@ describe("DELETE /api/projects/{projectId}/channels/telegram", () => {
     mockVerifyProjectOwnership.mockResolvedValue(true);
     mockCheckAICredentialsRateLimit.mockReturnValue({ allowed: false, currentCount: 10, limit: 10, retryAfterMs: 1000 });
 
-    const response = await DELETE(makeRequest("DELETE"), makeParams("project-1"));
+    const response = await DELETE(makeRequest("DELETE"), makeParams("11111111-1111-4111-8111-111111111111"));
 
     expect(response.status).toBe(429);
     expect(mockDeleteTelegramIntegration).not.toHaveBeenCalled();
+    // Same project-scoped key as POST -- see rateLimitKey()'s own comment.
+    expect(mockCheckAICredentialsRateLimit).toHaveBeenCalledWith("telegram:11111111-1111-4111-8111-111111111111");
+  });
+
+  // Regression test for the re-keying fix: this limiter used to be keyed
+  // by the account-wide userId alone, so a single user's two DIFFERENT
+  // projects would silently share one Telegram-connect rate-limit budget
+  // -- exhausting one project's allowance would also block an unrelated
+  // project owned by the same user. Every other project-scoped limiter in
+  // this codebase already keys by projectId for exactly this reason.
+  it("keys the rate limiter by PROJECT id, not the account-wide user id -- two different projects owned by the same user get independent budgets", async () => {
+    mockGetRouteHandlerSupabaseClient.mockResolvedValue({});
+    mockGetAuthenticatedUser.mockResolvedValue({ id: "user-1", email: "a@b.com" });
+    mockVerifyProjectOwnership.mockResolvedValue(true);
+    mockCheckAICredentialsRateLimit.mockReturnValue(ALLOWED_RATE_LIMIT);
+    mockGetServiceRoleClient.mockReturnValue({});
+    mockDeleteTelegramIntegration.mockResolvedValue(undefined);
+
+    await DELETE(makeRequest("DELETE"), makeParams("11111111-1111-4111-8111-111111111111"));
+    expect(mockCheckAICredentialsRateLimit).toHaveBeenLastCalledWith("telegram:11111111-1111-4111-8111-111111111111");
+
+    await DELETE(makeRequest("DELETE"), makeParams("33333333-3333-4333-8333-333333333333"));
+    expect(mockCheckAICredentialsRateLimit).toHaveBeenLastCalledWith("telegram:33333333-3333-4333-8333-333333333333");
   });
 
   it("deletes the integration and returns 200 { status: 'deleted' }", async () => {
@@ -472,11 +530,11 @@ describe("DELETE /api/projects/{projectId}/channels/telegram", () => {
     mockGetServiceRoleClient.mockReturnValue({});
     mockDeleteTelegramIntegration.mockResolvedValue(undefined);
 
-    const response = await DELETE(makeRequest("DELETE"), makeParams("project-1"));
+    const response = await DELETE(makeRequest("DELETE"), makeParams("11111111-1111-4111-8111-111111111111"));
 
     expect(response.status).toBe(200);
     expect(await response.json()).toEqual({ status: "deleted" });
-    expect(mockDeleteTelegramIntegration).toHaveBeenCalledWith({}, "project-1");
+    expect(mockDeleteTelegramIntegration).toHaveBeenCalledWith({}, "11111111-1111-4111-8111-111111111111");
   });
 
   it("returns 500 when the delete itself fails", async () => {
@@ -488,7 +546,7 @@ describe("DELETE /api/projects/{projectId}/channels/telegram", () => {
     mockDeleteTelegramIntegration.mockRejectedValue(new Error("db is down"));
     const consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
 
-    const response = await DELETE(makeRequest("DELETE"), makeParams("project-1"));
+    const response = await DELETE(makeRequest("DELETE"), makeParams("11111111-1111-4111-8111-111111111111"));
 
     expect(response.status).toBe(500);
     consoleErrorSpy.mockRestore();

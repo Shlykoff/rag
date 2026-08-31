@@ -17,7 +17,7 @@ const mockVerifyProjectOwnership = vi.fn();
 const mockGetServiceRoleClient = vi.fn();
 const mockGetActiveProvider = vi.fn();
 const mockSetActiveProvider = vi.fn();
-const mockHasAIProviderCredential = vi.fn();
+const mockGetConfiguredProvidersMap = vi.fn();
 
 vi.mock("@/lib/supabase/server-client", () => ({
   getRouteHandlerSupabaseClient: () => mockGetRouteHandlerSupabaseClient(),
@@ -35,7 +35,7 @@ vi.mock("@/lib/ai", async (importOriginal) => {
     ...actual,
     getActiveProvider: (...args: unknown[]) => mockGetActiveProvider(...args),
     setActiveProvider: (...args: unknown[]) => mockSetActiveProvider(...args),
-    hasAIProviderCredential: (...args: unknown[]) => mockHasAIProviderCredential(...args),
+    getConfiguredProvidersMap: (...args: unknown[]) => mockGetConfiguredProvidersMap(...args),
   };
 });
 
@@ -43,7 +43,7 @@ import { GET, PUT } from "../route";
 import { MissingProviderCredentialsError } from "@/lib/ai";
 
 function makeRequest(method: string, body?: unknown): Request {
-  return new Request("http://localhost/api/projects/project-1/model", {
+  return new Request("http://localhost/api/projects/11111111-1111-4111-8111-111111111111/model", {
     method,
     headers: body !== undefined ? { "content-type": "application/json" } : undefined,
     body: body !== undefined ? JSON.stringify(body) : undefined,
@@ -54,6 +54,27 @@ function makeParams(projectId: string): { params: Promise<{ projectId: string }>
   return { params: Promise.resolve({ projectId }) };
 }
 
+// Regression test: a syntactically-invalid projectId used to reach
+// `.eq("id", projectId)` and surface as an uncaught Postgres "invalid
+// input syntax for type uuid" 500, instead of each route's own documented
+// 404. Covers both methods since each has its own guard.
+describe("uuid shape guard (GET/PUT)", () => {
+  afterEach(() => vi.clearAllMocks());
+
+  it("GET returns 404 (not 500) for a syntactically invalid projectId, without touching auth", async () => {
+    const response = await GET(makeRequest("GET"), makeParams("not-a-uuid"));
+    expect(response.status).toBe(404);
+    expect(await response.json()).toEqual({ error: "not_found" });
+    expect(mockGetRouteHandlerSupabaseClient).not.toHaveBeenCalled();
+  });
+
+  it("PUT returns 404 (not 500) for a syntactically invalid projectId, without touching auth", async () => {
+    const response = await PUT(makeRequest("PUT", { provider: "openai" }), makeParams("not-a-uuid"));
+    expect(response.status).toBe(404);
+    expect(mockGetRouteHandlerSupabaseClient).not.toHaveBeenCalled();
+  });
+});
+
 describe("GET /api/projects/{projectId}/model", () => {
   afterEach(() => vi.clearAllMocks());
 
@@ -61,7 +82,7 @@ describe("GET /api/projects/{projectId}/model", () => {
     mockGetRouteHandlerSupabaseClient.mockResolvedValue({});
     mockGetAuthenticatedUser.mockResolvedValue(null);
 
-    const response = await GET(makeRequest("GET"), makeParams("project-1"));
+    const response = await GET(makeRequest("GET"), makeParams("11111111-1111-4111-8111-111111111111"));
 
     expect(response.status).toBe(401);
     expect(mockVerifyProjectOwnership).not.toHaveBeenCalled();
@@ -72,7 +93,7 @@ describe("GET /api/projects/{projectId}/model", () => {
     mockGetAuthenticatedUser.mockResolvedValue({ id: "user-2", email: "b@b.com" });
     mockVerifyProjectOwnership.mockResolvedValue(false);
 
-    const response = await GET(makeRequest("GET"), makeParams("project-1"));
+    const response = await GET(makeRequest("GET"), makeParams("11111111-1111-4111-8111-111111111111"));
 
     expect(response.status).toBe(404);
     expect(await response.json()).toEqual({ error: "not_found" });
@@ -85,16 +106,16 @@ describe("GET /api/projects/{projectId}/model", () => {
     mockVerifyProjectOwnership.mockResolvedValue(true);
     mockGetServiceRoleClient.mockReturnValue({});
     mockGetActiveProvider.mockResolvedValue("gemini");
-    mockHasAIProviderCredential.mockImplementation(async (_s: unknown, _u: string, provider: string) => provider === "gemini");
+    mockGetConfiguredProvidersMap.mockResolvedValue({ openai: false, anthropic: false, gemini: true, voyage: false });
 
-    const response = await GET(makeRequest("GET"), makeParams("project-1"));
+    const response = await GET(makeRequest("GET"), makeParams("11111111-1111-4111-8111-111111111111"));
 
     expect(response.status).toBe(200);
     expect(await response.json()).toEqual({
       activeProvider: "gemini",
       configured: { openai: false, anthropic: false, gemini: true, voyage: false },
     });
-    expect(mockGetActiveProvider).toHaveBeenCalledWith({}, "project-1");
+    expect(mockGetActiveProvider).toHaveBeenCalledWith({}, "11111111-1111-4111-8111-111111111111");
   });
 
   it("returns 200 { activeProvider: null, ... } for a project that hasn't picked a model yet", async () => {
@@ -103,9 +124,9 @@ describe("GET /api/projects/{projectId}/model", () => {
     mockVerifyProjectOwnership.mockResolvedValue(true);
     mockGetServiceRoleClient.mockReturnValue({});
     mockGetActiveProvider.mockResolvedValue(null);
-    mockHasAIProviderCredential.mockResolvedValue(false);
+    mockGetConfiguredProvidersMap.mockResolvedValue({ openai: false, anthropic: false, gemini: false, voyage: false });
 
-    const response = await GET(makeRequest("GET"), makeParams("project-1"));
+    const response = await GET(makeRequest("GET"), makeParams("11111111-1111-4111-8111-111111111111"));
 
     expect(response.status).toBe(200);
     expect((await response.json()).activeProvider).toBeNull();
@@ -119,7 +140,7 @@ describe("GET /api/projects/{projectId}/model", () => {
     mockGetActiveProvider.mockRejectedValue(new Error("db is down"));
     const consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
 
-    const response = await GET(makeRequest("GET"), makeParams("project-1"));
+    const response = await GET(makeRequest("GET"), makeParams("11111111-1111-4111-8111-111111111111"));
 
     expect(response.status).toBe(500);
     consoleErrorSpy.mockRestore();
@@ -133,7 +154,7 @@ describe("PUT /api/projects/{projectId}/model", () => {
     mockGetRouteHandlerSupabaseClient.mockResolvedValue({});
     mockGetAuthenticatedUser.mockResolvedValue(null);
 
-    const response = await PUT(makeRequest("PUT", { provider: "openai" }), makeParams("project-1"));
+    const response = await PUT(makeRequest("PUT", { provider: "openai" }), makeParams("11111111-1111-4111-8111-111111111111"));
 
     expect(response.status).toBe(401);
     expect(mockVerifyProjectOwnership).not.toHaveBeenCalled();
@@ -144,7 +165,7 @@ describe("PUT /api/projects/{projectId}/model", () => {
     mockGetAuthenticatedUser.mockResolvedValue({ id: "user-2", email: "b@b.com" });
     mockVerifyProjectOwnership.mockResolvedValue(false);
 
-    const response = await PUT(makeRequest("PUT", { provider: "openai" }), makeParams("project-1"));
+    const response = await PUT(makeRequest("PUT", { provider: "openai" }), makeParams("11111111-1111-4111-8111-111111111111"));
 
     expect(response.status).toBe(404);
     expect(mockSetActiveProvider).not.toHaveBeenCalled();
@@ -155,7 +176,7 @@ describe("PUT /api/projects/{projectId}/model", () => {
     mockGetAuthenticatedUser.mockResolvedValue({ id: "user-1", email: "a@b.com" });
     mockVerifyProjectOwnership.mockResolvedValue(true);
 
-    const response = await PUT(makeRequest("PUT", { provider: "not-a-real-provider" }), makeParams("project-1"));
+    const response = await PUT(makeRequest("PUT", { provider: "not-a-real-provider" }), makeParams("11111111-1111-4111-8111-111111111111"));
 
     expect(response.status).toBe(400);
     expect(mockSetActiveProvider).not.toHaveBeenCalled();
@@ -166,7 +187,7 @@ describe("PUT /api/projects/{projectId}/model", () => {
     mockGetAuthenticatedUser.mockResolvedValue({ id: "user-1", email: "a@b.com" });
     mockVerifyProjectOwnership.mockResolvedValue(true);
 
-    const response = await PUT(makeRequest("PUT", { provider: "voyage" }), makeParams("project-1"));
+    const response = await PUT(makeRequest("PUT", { provider: "voyage" }), makeParams("11111111-1111-4111-8111-111111111111"));
 
     expect(response.status).toBe(400);
   });
@@ -176,12 +197,12 @@ describe("PUT /api/projects/{projectId}/model", () => {
     mockGetAuthenticatedUser.mockResolvedValue({ id: "user-1", email: "a@b.com" });
     mockVerifyProjectOwnership.mockResolvedValue(true);
 
-    const badRequest = new Request("http://localhost/api/projects/project-1/model", {
+    const badRequest = new Request("http://localhost/api/projects/11111111-1111-4111-8111-111111111111/model", {
       method: "PUT",
       headers: { "content-type": "application/json" },
       body: "{not json",
     });
-    const response = await PUT(badRequest, makeParams("project-1"));
+    const response = await PUT(badRequest, makeParams("11111111-1111-4111-8111-111111111111"));
     expect(response.status).toBe(400);
   });
 
@@ -192,11 +213,11 @@ describe("PUT /api/projects/{projectId}/model", () => {
     mockGetServiceRoleClient.mockReturnValue({});
     mockSetActiveProvider.mockResolvedValue(undefined);
 
-    const response = await PUT(makeRequest("PUT", { provider: "gemini" }), makeParams("project-1"));
+    const response = await PUT(makeRequest("PUT", { provider: "gemini" }), makeParams("11111111-1111-4111-8111-111111111111"));
 
     expect(response.status).toBe(200);
     expect(await response.json()).toEqual({ activeProvider: "gemini" });
-    expect(mockSetActiveProvider).toHaveBeenCalledWith({}, "project-1", "user-1", "gemini");
+    expect(mockSetActiveProvider).toHaveBeenCalledWith({}, "11111111-1111-4111-8111-111111111111", "user-1", "gemini");
   });
 
   it("returns 400 { error: 'missing_credentials' } (not 500) when the owner hasn't connected that provider's credential yet, and doesn't log via console.error", async () => {
@@ -207,7 +228,7 @@ describe("PUT /api/projects/{projectId}/model", () => {
     mockSetActiveProvider.mockRejectedValue(new MissingProviderCredentialsError("anthropic", ["anthropic", "voyage"]));
     const consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
 
-    const response = await PUT(makeRequest("PUT", { provider: "anthropic" }), makeParams("project-1"));
+    const response = await PUT(makeRequest("PUT", { provider: "anthropic" }), makeParams("11111111-1111-4111-8111-111111111111"));
 
     expect(response.status).toBe(400);
     const payload = await response.json();
@@ -222,10 +243,10 @@ describe("PUT /api/projects/{projectId}/model", () => {
     mockGetAuthenticatedUser.mockResolvedValue({ id: "user-1", email: "a@b.com" });
     mockVerifyProjectOwnership.mockResolvedValue(true);
     mockGetServiceRoleClient.mockReturnValue({});
-    mockSetActiveProvider.mockRejectedValue(new Error("project-1 belongs to someone else"));
+    mockSetActiveProvider.mockRejectedValue(new Error("11111111-1111-4111-8111-111111111111 belongs to someone else"));
     const consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
 
-    const response = await PUT(makeRequest("PUT", { provider: "openai" }), makeParams("project-1"));
+    const response = await PUT(makeRequest("PUT", { provider: "openai" }), makeParams("11111111-1111-4111-8111-111111111111"));
 
     expect(response.status).toBe(500);
     expect(consoleErrorSpy).toHaveBeenCalled();

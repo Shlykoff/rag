@@ -3,8 +3,13 @@
 // The generic adapter contract every channel under lib/channels/ (Telegram
 // today, Slack/others later) implements. Deliberately provider-agnostic --
 // nothing here mentions Telegram, so a future Slack adapter (or anything
-// else) implements the exact same shape, and lib/channels/index.ts's
-// registry can dispatch to any of them by a plain string key.
+// else) implements the exact same shape. (An earlier lib/channels/index.ts
+// speculatively registered adapters by string key for a hypothetical
+// future generic-dispatch caller that never materialized -- deleted as
+// dead code; the one real caller,
+// app/api/channels/telegram/[integrationId]/route.ts, imports
+// lib/channels/telegram/adapter.ts directly, since Next.js's own URL
+// routing is already channel-specific.)
 //
 // IMPORT BOUNDARY (CLAUDE.md non-negotiable rule 8): this file, and
 // everything else under lib/channels/**, may import lib/gateway/answer.ts

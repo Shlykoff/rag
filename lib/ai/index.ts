@@ -162,6 +162,27 @@ export interface GetAIProvidersParams {
   projectId: string;
   /** The project's owner (already server-validated by the caller -- e.g. the RLS-scoped ownership check in app/api/chat/route.ts, or the gateway's own service-role project-owner lookup for external channels), whose account-level ai_provider_credentials are used. */
   ownerUserId: string;
+  /**
+   * Optional escape hatch for a caller that has ALREADY fetched this exact
+   * `{id, user_id}` projects row via service_role moments earlier in the
+   * same call chain, for its own equivalent purpose -- e.g.
+   * lib/gateway/answer.ts, which resolves `ownerUserId` from this exact row
+   * one step before ever calling this function. When provided, this
+   * function skips its own redundant re-fetch of the identical row but
+   * still runs the exact same in-memory ownership-match guard below against
+   * it -- this does NOT weaken the check, it only avoids a second DB round
+   * trip for a row the caller can prove it just read.
+   *
+   * Do NOT pass this to skip real verification: the only legitimate use is
+   * "I, the caller, already did the equivalent service-role fetch+check
+   * myself, immediately before this call, with no user-controlled input in
+   * between." app/api/chat/route.ts's web path deliberately omits this --
+   * it crosses an RLS -> service-role trust boundary (the ownership check
+   * that ran before it used the RLS-scoped session client, a DIFFERENT
+   * client/query than this function's own), so it must independently
+   * re-verify here every time, not reuse another client's result.
+   */
+  preFetchedProjectRow?: { id: string; user_id: string };
 }
 
 /**
@@ -211,15 +232,23 @@ export async function getAIProviders(
   params: GetAIProvidersParams,
   supabase: SupabaseClient
 ): Promise<AIProviderPair> {
-  const { projectId, ownerUserId } = params;
+  const { projectId, ownerUserId, preFetchedProjectRow } = params;
 
-  const { data: project, error: projectError } = await supabase
-    .from("projects")
-    .select("id, user_id")
-    .eq("id", projectId)
-    .maybeSingle<{ id: string; user_id: string }>();
-  if (projectError) {
-    throw new Error(`getAIProviders: failed to load project ${projectId}: ${projectError.message}`);
+  let project: { id: string; user_id: string } | null;
+  if (preFetchedProjectRow) {
+    // See GetAIProvidersParams.preFetchedProjectRow's own doc comment --
+    // the caller already did the equivalent service-role fetch itself.
+    project = preFetchedProjectRow;
+  } else {
+    const { data, error: projectError } = await supabase
+      .from("projects")
+      .select("id, user_id")
+      .eq("id", projectId)
+      .maybeSingle<{ id: string; user_id: string }>();
+    if (projectError) {
+      throw new Error(`getAIProviders: failed to load project ${projectId}: ${projectError.message}`);
+    }
+    project = data;
   }
   if (!project || project.user_id !== ownerUserId) {
     throw new Error(
@@ -283,4 +312,6 @@ export {
   getActiveProvider,
   setActiveProvider,
   MissingProviderCredentialsError,
+  ALL_CREDENTIAL_PROVIDERS,
+  getConfiguredProvidersMap,
 } from "./credentials";

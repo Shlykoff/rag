@@ -44,6 +44,8 @@ import { z } from "zod";
 import { getServiceRoleClient } from "@/lib/supabase/service-client";
 import { getAuthenticatedUser, getRouteHandlerSupabaseClient, verifyProjectOwnership } from "@/lib/supabase/server-client";
 import { PROJECT_SELECT_COLUMNS, ProjectNameSchema, toProjectDTO, type ProjectRow } from "../shared";
+import { isUuidShape } from "@/lib/validation/uuid";
+import { parseJsonBody } from "@/lib/http/parse-json-body";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -55,6 +57,15 @@ export async function GET(
   { params }: { params: Promise<{ projectId: string }> }
 ): Promise<Response> {
   const { projectId } = await params;
+  // Shape-check BEFORE ever touching the DB -- a syntactically-invalid uuid
+  // here used to reach `.eq("id", projectId)` and come back as an uncaught
+  // Postgres "invalid input syntax for type uuid" (a raw 500), instead of
+  // this route's own documented 404. See lib/validation/uuid.ts's header
+  // for why this is a shape check (matching what Postgres's `uuid` column
+  // type itself accepts), not the stricter `z.string().uuid()`.
+  if (!isUuidShape(projectId)) {
+    return Response.json({ error: "not_found" }, { status: 404 });
+  }
 
   const authClient = await getRouteHandlerSupabaseClient();
   const user = await getAuthenticatedUser(authClient);
@@ -85,6 +96,15 @@ export async function PATCH(
   { params }: { params: Promise<{ projectId: string }> }
 ): Promise<Response> {
   const { projectId } = await params;
+  // Shape-check BEFORE ever touching the DB -- a syntactically-invalid uuid
+  // here used to reach `.eq("id", projectId)` and come back as an uncaught
+  // Postgres "invalid input syntax for type uuid" (a raw 500), instead of
+  // this route's own documented 404. See lib/validation/uuid.ts's header
+  // for why this is a shape check (matching what Postgres's `uuid` column
+  // type itself accepts), not the stricter `z.string().uuid()`.
+  if (!isUuidShape(projectId)) {
+    return Response.json({ error: "not_found" }, { status: 404 });
+  }
 
   const authClient = await getRouteHandlerSupabaseClient();
   const user = await getAuthenticatedUser(authClient);
@@ -93,16 +113,8 @@ export async function PATCH(
   const owned = await verifyProjectOwnership(authClient, projectId);
   if (!owned) return Response.json({ error: "not_found" }, { status: 404 });
 
-  let rawBody: unknown;
-  try {
-    rawBody = await request.json();
-  } catch {
-    return Response.json({ error: "invalid_request", details: "Body must be valid JSON." }, { status: 400 });
-  }
-  const parsed = UpdateProjectBodySchema.safeParse(rawBody);
-  if (!parsed.success) {
-    return Response.json({ error: "invalid_request", details: parsed.error.flatten() }, { status: 400 });
-  }
+  const parsed = await parseJsonBody(request, UpdateProjectBodySchema);
+  if ("errorResponse" in parsed) return parsed.errorResponse;
 
   const supabase = getServiceRoleClient();
   const { data, error } = await supabase
@@ -195,6 +207,15 @@ export async function DELETE(
   { params }: { params: Promise<{ projectId: string }> }
 ): Promise<Response> {
   const { projectId } = await params;
+  // Shape-check BEFORE ever touching the DB -- a syntactically-invalid uuid
+  // here used to reach `.eq("id", projectId)` and come back as an uncaught
+  // Postgres "invalid input syntax for type uuid" (a raw 500), instead of
+  // this route's own documented 404. See lib/validation/uuid.ts's header
+  // for why this is a shape check (matching what Postgres's `uuid` column
+  // type itself accepts), not the stricter `z.string().uuid()`.
+  if (!isUuidShape(projectId)) {
+    return Response.json({ error: "not_found" }, { status: 404 });
+  }
 
   const authClient = await getRouteHandlerSupabaseClient();
   const user = await getAuthenticatedUser(authClient);

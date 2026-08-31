@@ -38,3 +38,27 @@ export interface NormalizedDocument {
   sourceRef: string | null;
   storagePath?: string;
 }
+
+/**
+ * The `DocumentSource` interface CLAUDE.md's "Источники документов" design
+ * section calls for: "интерфейс DocumentSource в lib/sources/ с методом,
+ * возвращающим нормализованный документ". This is that contract, named
+ * explicitly (rather than left purely as a shape convention every adapter
+ * happens to follow) so it's checkable in code, not just in comments.
+ *
+ * Deliberately expressed as ONE shared method signature per adapter's
+ * *output*, not a single unified method signature across all four
+ * adapters' full call shape -- each adapter's actual fetch function
+ * (importNotionDocument/importUrlDocument/importSingleDriveFile/
+ * processManualUpload) necessarily takes different INPUT (a Notion page
+ * needs `{supabase, ownerUserId, pageUrl}`, a bare URL just needs `{url}`,
+ * an uploaded file needs raw bytes, a Drive file needs `{supabase,
+ * ownerUserId, fileId}`) -- forcing one method signature across all four
+ * would mean every adapter accepts a union of unrelated parameters it
+ * mostly ignores, which is worse than the alternative this interface
+ * actually enforces: every adapter's fetch function must be typed
+ * `(...): Promise<DocumentSource>` (or a value assignable to it), so
+ * `lib/ingestion/ingest.ts`/`lib/sources/pipeline.ts` can treat the output
+ * of any of them identically regardless of where a document came from.
+ */
+export type DocumentSource = NormalizedDocument;

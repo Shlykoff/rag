@@ -72,6 +72,30 @@ describe("chunkText", () => {
     }
   });
 
+  // Regression test: overlapTokens: 0 is explicitly accepted as legal by
+  // this function's own validation (overlapTokens must be >= 0), but the
+  // overlap-carryover loop used to unconditionally carry at least one
+  // trailing sentence into the next chunk regardless of overlapChars,
+  // because the loop's break condition never fires on its first iteration
+  // (overlapSentences.length > 0 is false before anything's been added
+  // yet). Not reachable via today's production call site (which always
+  // uses the default ~12% overlap), but exported/tested/documented as
+  // supported behavior -- must genuinely produce zero overlap.
+  it("produces genuinely ZERO overlap when overlapTokens: 0 is explicitly requested", () => {
+    const paragraph = makeParagraph(30, 8, "p0");
+    const chunks = chunkText(paragraph, { targetTokens: 100, overlapTokens: 0 });
+    expect(chunks.length).toBeGreaterThan(1);
+
+    for (let i = 0; i < chunks.length - 1; i++) {
+      const currentSentences = chunks[i].content.split(/(?<=\.)\s+/);
+      const nextSentences = chunks[i + 1].content.split(/(?<=\.)\s+/);
+      const lastOfCurrent = currentSentences[currentSentences.length - 1];
+      // With zero overlap, none of the trailing sentence(s) from chunk[i]
+      // should reappear at the start of chunk[i+1].
+      expect(nextSentences[0]).not.toBe(lastOfCurrent);
+    }
+  });
+
   it("never cuts a sentence in half -- every chunk is made of whole sentences", () => {
     const paragraph = makeParagraph(25, 10, "p3");
     const chunks = chunkText(paragraph, { targetTokens: 80, overlapTokens: 10 });

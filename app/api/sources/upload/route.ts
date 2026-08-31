@@ -105,8 +105,11 @@ export async function POST(request: Request): Promise<Response> {
       projectId,
       ownerUserId: user.id,
       title: normalized.title,
-      sourceType: "manual_upload",
-      sourceRef: null,
+      // Read off `normalized` itself now that ManualUploadResult conforms
+      // to DocumentSource (lib/sources/types.ts), instead of this route
+      // re-hardcoding values only lib/sources/manual-upload.ts should own.
+      sourceType: normalized.sourceType,
+      sourceRef: normalized.sourceRef,
       text: normalized.text,
       object: {
         suffix: `original.${normalized.original.extension}`,

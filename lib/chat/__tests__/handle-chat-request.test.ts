@@ -3,6 +3,7 @@ import { handleChatRequest, type ChatRequestInput, type ChatStreamEvent } from "
 import type { ChatProvider, ChatStreamResult, EmbeddingsProvider, TokenUsage } from "../../ai/types";
 import { AIProviderError } from "../../ai/errors";
 import type { MatchedChunk } from "../../retrieval/search";
+import { checkChatRateLimit, DEFAULT_CHAT_RATE_LIMIT } from "../../rate-limit/rate-limiter";
 import type { SupabaseClient } from "@supabase/supabase-js";
 
 /** Rejected placeholder for usage/text on a stream that fails before ever producing them -- see the equivalent helper/comment in lib/ai/__tests__/stream-utils.test.ts for why the eager .catch is needed. */
@@ -42,6 +43,7 @@ interface FakeConfig {
 function makeFakeSupabase(config: FakeConfig) {
   const inserted: { table: string; row: Record<string, unknown> }[] = [];
   const rpcCalls: { name: string; args: Record<string, unknown> }[] = [];
+  const historyLimitCalls: number[] = [];
   let externalSelectCallIndex = 0;
 
   function from(table: string) {
@@ -103,7 +105,20 @@ function makeFakeSupabase(config: FakeConfig) {
         eq() {
           return this;
         },
-        order: async () => ({ data: config.history ?? [], error: null }),
+        // fetchHistory now queries most-recent-first + LIMIT (see
+        // handle-chat-request.ts's MAX_HISTORY_MESSAGES) then reverses back
+        // to chronological order itself -- this fake always hands back
+        // `config.history` verbatim (already in the order tests construct
+        // it), consistent with a `.order(desc).limit(n)` call whose result
+        // handleChatRequest then re-reverses to exactly `config.history`'s
+        // order when tests provide history already oldest-first.
+        order() {
+          return this;
+        },
+        limit: async (n: number) => {
+          historyLimitCalls.push(n);
+          return { data: [...(config.history ?? [])].reverse(), error: null };
+        },
         insert: async (row: Record<string, unknown>) => {
           inserted.push({ table, row });
           if (config.failInserts?.messages) {
@@ -133,7 +148,7 @@ function makeFakeSupabase(config: FakeConfig) {
   });
 
   const supabase = { from, rpc } as unknown as SupabaseClient;
-  return { supabase, inserted, rpcCalls };
+  return { supabase, inserted, rpcCalls, historyLimitCalls };
 }
 
 function fakeEmbeddings(): EmbeddingsProvider {
@@ -309,6 +324,47 @@ describe("handleChatRequest", () => {
     );
   });
 
+  // Regression test for Bug 6: fetchHistory used to have no LIMIT at all --
+  // this asserts handleChatRequest actually bounds the query (via
+  // MAX_HISTORY_MESSAGES), and that the result handed to the chat provider
+  // is still in correct chronological (oldest-first) order after the
+  // query's own most-recent-first ordering is reversed back.
+  it("bounds how much prior history is fetched (a LIMIT is applied to the messages query)", async () => {
+    const { supabase, historyLimitCalls } = makeFakeSupabase({
+      conversation: { id: "conv-1", user_id: "owner-1" },
+      history: [
+        { role: "user", content: "Earlier question" },
+        { role: "assistant", content: "Earlier answer" },
+      ],
+      matches: [matchedChunk()],
+    });
+    const chatProvider = fakeChatProvider(["ok"]);
+    await collect(
+      handleChatRequest(
+        { ...baseInput, conversationId: "conv-1" },
+        { supabase, chatProvider, embeddingsProvider: fakeEmbeddings() }
+      )
+    );
+
+    // A concrete, positive limit was passed to the query -- not unbounded.
+    expect(historyLimitCalls).toHaveLength(1);
+    expect(historyLimitCalls[0]).toBeGreaterThan(0);
+    expect(Number.isFinite(historyLimitCalls[0])).toBe(true);
+
+    // Ordering is still correct (oldest-first) despite the underlying query
+    // being most-recent-first + reversed back -- see the fake's own
+    // `.limit()` implementation for how it simulates that.
+    expect(chatProvider.streamChat).toHaveBeenCalledWith(
+      expect.objectContaining({
+        messages: [
+          { role: "user", content: "Earlier question" },
+          { role: "assistant", content: "Earlier answer" },
+          { role: "user", content: "What is X?" },
+        ],
+      })
+    );
+  });
+
   it("yields an error and persists nothing when the conversation does not belong to the project/owner", async () => {
     const { supabase, inserted } = makeFakeSupabase({ conversation: null });
     const events = await collect(
@@ -442,6 +498,51 @@ describe("handleChatRequest", () => {
     expect(inserted.find((i) => i.table === "messages" && i.row.role === "user")).toBeTruthy();
   });
 
+  // Regression test for Bug 1 -- distinct from the "zero deltas but usage
+  // REJECTS" case above: here the stream resolves completely successfully
+  // (the delta loop finishes with no throw, `stream.usage`/`stream.text`
+  // both resolve normally) but produced literally zero characters of
+  // output text. Before the fix, this fell all the way through to the
+  // ordinary success path and persisted a blank ("") assistant message
+  // with no error anywhere -- on Telegram specifically,
+  // splitTelegramMessage("") returns [] (lib/channels/telegram/client.ts),
+  // so the participant would receive NOTHING back, silently.
+  it("yields a graceful error event (not a blank persisted message) when the stream resolves successfully but streams ZERO deltas", async () => {
+    const { supabase, inserted } = makeFakeSupabase({ createdConversationId: "conv-new", matches: [matchedChunk()] });
+    const zeroButSuccessfulChatProvider: ChatProvider = {
+      providerName: "fake-chat",
+      modelName: "fake-chat-model",
+      streamChat: vi.fn().mockImplementation((): ChatStreamResult => ({
+        textStream: (async function* () {})(), // yields nothing, completes normally
+        usage: Promise.resolve({ promptTokens: 5, completionTokens: 0, totalTokens: 5 }),
+        text: Promise.resolve(""),
+      })),
+    };
+
+    const events = await collect(
+      handleChatRequest(baseInput, {
+        supabase,
+        chatProvider: zeroButSuccessfulChatProvider,
+        embeddingsProvider: fakeEmbeddings(),
+      })
+    );
+
+    // Exactly one graceful error event, nothing else after it -- no `done`.
+    const errorEvent = events.find((e) => e.type === "error");
+    expect(errorEvent).toBeDefined();
+    expect(events[events.length - 1]).toBe(errorEvent);
+    expect(events.find((e) => e.type === "done")).toBeUndefined();
+
+    // No blank assistant message, no chat_request usage_events row --
+    // same "no partial persistence on a failed turn" contract as every
+    // other failure path.
+    expect(inserted.find((i) => i.table === "messages" && i.row.role === "assistant")).toBeUndefined();
+    expect(
+      inserted.find((i) => i.table === "usage_events" && i.row.event_type === "chat_request")
+    ).toBeUndefined();
+    expect(inserted.find((i) => i.table === "messages" && i.row.role === "user")).toBeTruthy();
+  });
+
   it("yields a graceful error event (preserving retryable/userMessage) when the embeddings provider fails during retrieval, instead of throwing", async () => {
     const { supabase, inserted, rpcCalls } = makeFakeSupabase({ createdConversationId: "conv-new" });
     const events = await collect(
@@ -500,14 +601,117 @@ describe("handleChatRequest", () => {
       expect(assistantRow?.row.content).toBe("У меня нет информации об этом.");
       expect(assistantRow?.row.sources).toEqual([]);
 
-      // No chat_request usage_events row -- no chat-completion call ever happened.
-      expect(inserted.find((i) => i.table === "usage_events" && i.row.event_type === "chat_request")).toBeUndefined();
+      // A chat_request usage_events row IS still written here, with all
+      // token counts zero (no real chat-completion call ever happened) --
+      // the row itself must exist so checkChatRateLimit's persistent,
+      // DB-backed per-project rate limit (a COUNT(*) over chat_request
+      // rows) actually sees this turn; see the dedicated rate-limit test
+      // below for the end-to-end version of this.
+      const chatUsageRow = inserted.find((i) => i.table === "usage_events" && i.row.event_type === "chat_request");
+      expect(chatUsageRow).toMatchObject({
+        row: { project_id: "project-1", user_id: "owner-1", prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 },
+      });
       // The embedding_request row IS still logged -- a real embeddings call
       // did happen, to search in the first place.
       expect(inserted.find((i) => i.table === "usage_events" && i.row.event_type === "embedding_request")).toBeTruthy();
       // Retrieval genuinely ran the RPC -- it's what determined there was
       // nothing relevant, not a heuristic that skipped calling it.
       expect(rpcCalls).toHaveLength(1);
+    });
+
+    // Regression test for Bug 2: before the fix, this short-circuit path
+    // never wrote a chat_request usage_events row at all, so
+    // checkChatRateLimit's persistent DB-backed limit (a COUNT(*) over
+    // chat_request rows in a trailing window) could never see repeated
+    // no-context turns against the same project -- only the transient
+    // in-memory reservation layer (reserveChatRateLimitSlot) would ever
+    // catch them, and that layer alone is bypassable across separate
+    // requests once each one's reservation is released. This test uses a
+    // purpose-built fake (not makeFakeSupabase, which doesn't model a
+    // count-style SELECT) that actually accumulates inserted chat_request
+    // rows and answers checkChatRateLimit's real query shape against them.
+    it("repeated no-context turns against the same project eventually trip checkChatRateLimit", async () => {
+      const chatRequestRows: { created_at: string }[] = [];
+      let conversationCounter = 0;
+
+      const countableSupabase = {
+        from(table: string) {
+          if (table === "conversations") {
+            return {
+              select() {
+                return this;
+              },
+              eq() {
+                return this;
+              },
+              insert: () => ({
+                select() {
+                  return this;
+                },
+                single: async () => ({ data: { id: `conv-${conversationCounter++}` }, error: null }),
+              }),
+            };
+          }
+          if (table === "messages") {
+            return {
+              select() {
+                return this;
+              },
+              eq() {
+                return this;
+              },
+              order() {
+                return this;
+              },
+              limit: async () => ({ data: [], error: null }),
+              insert: async () => ({ error: null }),
+            };
+          }
+          if (table === "usage_events") {
+            return {
+              insert: async (row: Record<string, unknown>) => {
+                if (row.event_type === "chat_request") {
+                  chatRequestRows.push({ created_at: new Date().toISOString() });
+                }
+                return { error: null };
+              },
+              // Mirrors checkChatRateLimit's exact query chain
+              // (lib/rate-limit/rate-limiter.ts):
+              // .select("created_at", {count:"exact"}).eq(...).eq(...).gte(...).order(...)
+              select() {
+                return this;
+              },
+              eq() {
+                return this;
+              },
+              gte() {
+                return this;
+              },
+              order: async () => ({ data: chatRequestRows, error: null, count: chatRequestRows.length }),
+            };
+          }
+          throw new Error(`countableSupabase: unexpected table ${table}`);
+        },
+        rpc: vi.fn().mockResolvedValue({ data: [], error: null }), // no relevant chunks -- always short-circuits
+      } as unknown as SupabaseClient;
+
+      const chatProvider = fakeChatProvider(["should never be reached"]);
+      const embeddingsProvider = fakeEmbeddings();
+
+      // Send exactly maxRequests no-context turns -- each one, if it
+      // actually wrote its own chat_request row, brings the project right
+      // up to (but not yet over) the limit.
+      for (let i = 0; i < DEFAULT_CHAT_RATE_LIMIT.maxRequests; i++) {
+        const events = await collect(
+          handleChatRequest(baseInput, { supabase: countableSupabase, chatProvider, embeddingsProvider })
+        );
+        expect(events.find((e) => e.type === "error")).toBeUndefined();
+      }
+      expect(chatRequestRows).toHaveLength(DEFAULT_CHAT_RATE_LIMIT.maxRequests);
+
+      const result = await checkChatRateLimit(countableSupabase, "project-1", DEFAULT_CHAT_RATE_LIMIT);
+      expect(result.allowed).toBe(false);
+      expect(result.currentCount).toBe(DEFAULT_CHAT_RATE_LIMIT.maxRequests);
     });
 
     it("also short-circuits when retrieval returns chunks but ALL of them fall below the relevance threshold", async () => {

@@ -120,6 +120,7 @@ class OpenAICompatibleCore {
     return embedInBatches(texts, {
       provider: this.providerName,
       batchSize: EMBEDDING_BATCH_SIZE,
+      dimensions: this.dimensions,
       callBatch: async (batch) => {
         // `dimensions` is what pins every provider to the same 1024-wide
         // vector space (see CLAUDE.md). For the real OpenAI API this is the

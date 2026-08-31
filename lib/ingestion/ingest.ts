@@ -143,13 +143,27 @@ export async function ingestDocument(
     }
 
     // Delete-before-insert: REQUIRED for idempotent re-sync, per the
-    // document_chunks migration's table comment. Doing the delete and
-    // insert as two separate statements (not a single transaction) is a
-    // deliberate, acceptable tradeoff here: Supabase's PostgREST-based
-    // client doesn't expose multi-statement transactions, and the
-    // realistic failure mode (delete succeeds, insert fails) already
-    // leaves the document correctly marked 'error' by the catch block
-    // below with zero (not stale) chunks -- which is safe for
+    // document_chunks migration's table comment. Runs AFTER a successful
+    // embed, not concurrently with it -- deliberately, even though the
+    // delete has no data dependency on the embedding vectors and hiding
+    // its latency behind the (usually slower) embed call is tempting.
+    // Reverted from a concurrent Promise.all version (see git history):
+    // running the delete unconditionally alongside the embed attempt meant
+    // ANY embed failure (expired key, transient network blip, provider
+    // rate limit -- all realistic right at the moment of a manual
+    // "Refresh") instantly wiped the existing, still-servable chunk set,
+    // making the document unsearchable until the next successful sync
+    // instead of leaving it stale-but-searchable. That's a real regression
+    // in the safety-over-latency direction this project otherwise commits
+    // to (e.g. the project-delete route's Storage sweep runs BEFORE the DB
+    // delete and aborts the whole operation on failure rather than risk
+    // orphaning data) -- not worth a small latency win. Doing the delete
+    // and insert as two separate statements (not a single transaction) is
+    // still a deliberate, acceptable tradeoff here: Supabase's
+    // PostgREST-based client doesn't expose multi-statement transactions,
+    // and the realistic failure mode (delete succeeds, insert fails)
+    // already leaves the document correctly marked 'error' by the catch
+    // block below with zero (not stale) chunks -- which is safe for
     // match_document_chunks (nothing to return) even if not the ideal UX.
     const { error: deleteError } = await supabase
       .from("document_chunks")

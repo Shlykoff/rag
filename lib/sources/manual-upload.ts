@@ -10,6 +10,7 @@
 import "server-only";
 import { SourceError } from "./errors";
 import { detectExtractionType, extractText } from "./text-extraction";
+import type { DocumentSource } from "./types";
 
 // 20MB: PDFs of ordinary text-heavy documents (policies, guides, reports --
 // the kind of thing this project ingests) are essentially always well under
@@ -31,9 +32,24 @@ export interface ManualUploadInput {
   buffer: Buffer;
 }
 
-export interface ManualUploadResult {
-  title: string;
-  text: string;
+/**
+ * Conforms to the `DocumentSource` contract (lib/sources/types.ts) like the
+ * other three adapters' return values already did -- this interface used
+ * to be structurally different (no `sourceType`/`sourceRef` at all), the
+ * one adapter that didn't match the `{title, text, sourceType, sourceRef}`
+ * shape CLAUDE.md specifies every source normalizes down to. `sourceType`
+ * is always the `"manual_upload"` literal and `sourceRef` is always `null`
+ * (manual uploads have nothing external to re-fetch -- see
+ * NormalizedDocument.sourceRef's own doc comment and the
+ * `documents_source_ref_required_unless_manual` DB constraint;
+ * lib/sources/pipeline.ts's callers already passed exactly these two
+ * literal values by hand before this fix, so this just moves that
+ * knowledge into the one place that actually knows it's producing a
+ * manual_upload document).
+ */
+export interface ManualUploadResult extends DocumentSource {
+  sourceType: "manual_upload";
+  sourceRef: null;
   /** Raw bytes to persist verbatim as the Storage "original" object -- manual_upload's storage_path always holds the original file, not a text cache (see the documents migration's storage_path comment). */
   original: {
     buffer: Buffer;
@@ -92,6 +108,8 @@ export async function processManualUpload(input: ManualUploadInput): Promise<Man
   return {
     title: deriveTitleFromFilename(input.filename),
     text,
+    sourceType: "manual_upload",
+    sourceRef: null,
     original: { buffer: input.buffer, extension, contentType },
   };
 }

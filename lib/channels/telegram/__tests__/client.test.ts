@@ -42,6 +42,33 @@ describe("splitTelegramMessage", () => {
     expect(chunks).toEqual(["a".repeat(100), "a".repeat(100), "a".repeat(50)]);
   });
 
+  // Regression test: a hard cut (no whitespace boundary nearby) landing
+  // exactly inside a UTF-16 surrogate pair (e.g. most emoji are two 16-bit
+  // code units in JS strings) used to silently split the pair in half,
+  // corrupting both resulting chunks into lone unpaired surrogates.
+  // Engineered so `maxLength` lands exactly between the emoji's high and
+  // low surrogate: 99 plain chars, then the emoji at indices 99-100, cut at
+  // 100 -- i.e. precisely inside the pair before the fix.
+  it("backs off one character instead of splitting a UTF-16 surrogate pair on a hard cut", () => {
+    const emoji = "\u{1F600}"; // U+1F600 GRINNING FACE -- a surrogate pair in UTF-16
+    const text = "a".repeat(99) + emoji + "a".repeat(50);
+    const chunks = splitTelegramMessage(text, 100);
+
+    expect(chunks.length).toBeGreaterThan(1);
+    for (const chunk of chunks) {
+      const last = chunk.charCodeAt(chunk.length - 1);
+      const first = chunk.charCodeAt(0);
+      // No chunk may end with a dangling high surrogate or start with a
+      // dangling low surrogate -- both are the signature of a split pair.
+      expect(last >= 0xd800 && last <= 0xdbff).toBe(false);
+      expect(first >= 0xdc00 && first <= 0xdfff).toBe(false);
+    }
+    // Rejoining every chunk reproduces the original text exactly, emoji
+    // intact -- proves no code unit was dropped or duplicated at the cut.
+    expect(chunks.join("")).toBe(text);
+    expect(chunks.join("")).toContain(emoji);
+  });
+
   it("uses Telegram's real 4096-char default limit when no maxLength is passed", () => {
     const text = "x".repeat(5000);
     const chunks = splitTelegramMessage(text);

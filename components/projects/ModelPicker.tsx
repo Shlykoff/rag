@@ -28,14 +28,16 @@
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import { redirectToLogin } from "@/lib/ui/client-redirect";
+import { getJson, putJson } from "@/components/sources/request-helpers";
+import { PROVIDER_DISPLAY_INFO, PROVIDER_DISPLAY_ORDER } from "@/lib/ui/provider-metadata";
 // Type-only import -- lib/ai/index.ts transitively re-exports from
 // lib/ai/credentials.ts, which is `import "server-only"`-tagged; a runtime
 // (value) import of anything from "@/lib/ai" here would pull that into
 // this "use client" bundle and fail the build. Type-only imports are
 // erased at compile time (same pattern components/profile/types.ts already
-// documents for itself), so labels below are duplicated locally (matching
-// OPTIONS' own `label` field, sourced from lib/ai/index.ts's
-// PROVIDER_REGISTRY) rather than calling the server-only getProviderLabel().
+// documents for itself). Display labels/required-credentials themselves now
+// live in lib/ui/provider-metadata.ts (client-safe, imported above) rather
+// than being duplicated locally.
 import type { ActiveAIProvider, AIProviderCredentialType } from "@/lib/ai";
 
 type ConfiguredFlags = Record<AIProviderCredentialType, boolean>;
@@ -50,33 +52,19 @@ type LoadState =
   | { status: "error"; message: string }
   | { status: "ready"; activeProvider: ActiveAIProvider | null; configured: ConfiguredFlags };
 
-const OPTIONS: { id: ActiveAIProvider; label: string; requires: AIProviderCredentialType[] }[] = [
-  { id: "openai", label: "OpenAI", requires: ["openai"] },
-  { id: "anthropic", label: "Anthropic Claude (+ Voyage AI для embeddings)", requires: ["anthropic", "voyage"] },
-  { id: "gemini", label: "Google Gemini", requires: ["gemini"] },
-];
-
 async function fetchModelState(projectId: string): Promise<LoadState> {
-  try {
-    const response = await fetch(`/api/projects/${projectId}/model`);
-    if (response.status === 401) {
+  const result = await getJson<GetResponseBody>(`/api/projects/${projectId}/model`);
+  if (!result.ok) {
+    if (result.kind === "unauthorized") {
       redirectToLogin();
       return { status: "loading" };
     }
-    if (response.status === 404) {
+    if (result.kind === "not_found") {
       return { status: "error", message: "Проект не найден — возможно, он был удалён в другой вкладке." };
     }
-    if (!response.ok) {
-      return { status: "error", message: "Не удалось загрузить настройки модели. Попробуйте обновить страницу." };
-    }
-    const data = (await response.json()) as GetResponseBody;
-    return { status: "ready", activeProvider: data.activeProvider, configured: data.configured };
-  } catch {
-    return {
-      status: "error",
-      message: "Не удалось подключиться к серверу. Проверьте, что Supabase запущен, и обновите страницу.",
-    };
+    return { status: "error", message: result.message };
   }
+  return { status: "ready", activeProvider: result.data.activeProvider, configured: result.data.configured };
 }
 
 export function ModelPicker({ projectId }: { projectId: string }) {
@@ -123,31 +111,24 @@ export function ModelPicker({ projectId }: { projectId: string }) {
     if (provider === activeProvider || saving) return;
     setSaving(provider);
     setSaveError(null);
-    try {
-      const response = await fetch(`/api/projects/${projectId}/model`, {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ provider }),
-      });
-      if (response.status === 401) {
+    const result = await putJson<{ provider: ActiveAIProvider }>(`/api/projects/${projectId}/model`, { provider });
+    setSaving(null);
+    if (!result.ok) {
+      if (result.kind === "unauthorized") {
         redirectToLogin();
         return;
       }
-      if (!response.ok) {
-        const body = (await response.json().catch(() => ({}))) as { error?: string; message?: string };
-        if (body.error === "missing_credentials") {
-          setSaveError(body.message ?? "Сначала подключите нужный ключ в профиле.");
-          return;
-        }
-        setSaveError(body.message ?? "Не удалось обновить модель проекта. Попробуйте ещё раз.");
-        return;
-      }
-      setState((prev) => (prev.status === "ready" ? { ...prev, activeProvider: provider } : prev));
-    } catch {
-      setSaveError("Не удалось подключиться к серверу.");
-    } finally {
-      setSaving(null);
+      // Covers the `400 { error: "missing_credentials" }` race (e.g. the
+      // owner deleted a credential in another tab between this page's load
+      // and the click) the same way the pre-refactor inline handling did --
+      // normalizeResponse's describeErrorBody() already prefers the
+      // server's own `message` when present (which this route's contract
+      // always sets for missing_credentials -- see this file's own header
+      // comment), so no separate branch on `result.code` is needed here.
+      setSaveError(result.message);
+      return;
     }
+    setState((prev) => (prev.status === "ready" ? { ...prev, activeProvider: provider } : prev));
   }
 
   return (
@@ -157,7 +138,7 @@ export function ModelPicker({ projectId }: { projectId: string }) {
         <p className="field-hint">
           Сейчас активна:{" "}
           <strong>
-            {activeProvider ? (OPTIONS.find((o) => o.id === activeProvider)?.label ?? activeProvider) : "модель ещё не выбрана"}
+            {activeProvider ? (PROVIDER_DISPLAY_INFO[activeProvider]?.label ?? activeProvider) : "модель ещё не выбрана"}
           </strong>
         </p>
       </section>
@@ -175,29 +156,30 @@ export function ModelPicker({ projectId }: { projectId: string }) {
       ) : (
         <fieldset className="card" style={{ display: "flex", flexDirection: "column", gap: "0.7rem" }}>
           <legend className="provider-section-title">Выберите провайдера для этого проекта</legend>
-          {OPTIONS.map((option) => {
-            const available = option.requires.every((req) => configured[req]);
-            const isActive = activeProvider === option.id;
-            const missing = option.requires.filter((req) => !configured[req]);
+          {PROVIDER_DISPLAY_ORDER.map((providerId) => {
+            const info = PROVIDER_DISPLAY_INFO[providerId];
+            const available = info.requiresCredentials.every((req) => configured[req]);
+            const isActive = activeProvider === providerId;
+            const missing = info.requiresCredentials.filter((req) => !configured[req]);
             return (
               <label
-                key={option.id}
+                key={providerId}
                 className={`model-option${isActive ? " model-option-active" : ""}${!available ? " model-option-unavailable" : ""}`}
               >
                 <input
                   type="radio"
                   name="active-provider"
-                  value={option.id}
+                  value={providerId}
                   checked={isActive}
                   disabled={!available || saving !== null}
-                  onChange={() => handleSelect(option.id)}
+                  onChange={() => handleSelect(providerId)}
                 />
                 <div className="model-option-main">
                   <div style={{ display: "flex", alignItems: "center", gap: "0.5rem", flexWrap: "wrap" }}>
-                    <span>{option.label}</span>
+                    <span>{info.label}</span>
                     {isActive ? <span className="badge badge-success">активна</span> : null}
                     {!available ? <span className="badge badge-neutral">не настроен</span> : null}
-                    {saving === option.id ? <span className="spinner" aria-hidden="true" /> : null}
+                    {saving === providerId ? <span className="spinner" aria-hidden="true" /> : null}
                   </div>
                   {!available ? (
                     <p className="field-hint" style={{ marginTop: "0.3rem" }}>

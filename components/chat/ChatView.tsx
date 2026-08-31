@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState, type FormEvent } from "react";
+import { memo, useCallback, useEffect, useRef, useState, type FormEvent } from "react";
 import { useRouter } from "next/navigation";
 import { parseSSEStream } from "./parse-sse";
 import { MessageBubble } from "./MessageBubble";
@@ -44,6 +44,13 @@ export function ChatView({ projectId, conversationId: initialConversationId, ini
   const isNewChatRef = useRef<boolean>(initialConversationId === undefined);
   const abortRef = useRef<AbortController | null>(null);
   const listEndRef = useRef<HTMLDivElement | null>(null);
+  // Mirrors `isStreaming` state without being a `sendMessage` dependency --
+  // keeps `sendMessage` (and, transitively, `handleRetry` below) at a
+  // stable identity across renders instead of changing every time
+  // `isStreaming` flips, so `MessageContainer`/`MessageBubble` (wrapped in
+  // React.memo below) don't lose their memoization just because a callback
+  // prop got a fresh reference on every streamed delta.
+  const isStreamingRef = useRef(false);
 
   useEffect(() => {
     listEndRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
@@ -55,13 +62,13 @@ export function ChatView({ projectId, conversationId: initialConversationId, ini
     };
   }, []);
 
-  function updateAssistantMessage(id: string, patch: Partial<ChatMessageVM>) {
+  const updateAssistantMessage = useCallback((id: string, patch: Partial<ChatMessageVM>) => {
     setMessages((prev) => prev.map((m) => (m.id === id ? { ...m, ...patch } : m)));
-  }
+  }, []);
 
-  async function sendMessage(text: string) {
+  const sendMessage = useCallback(async (text: string) => {
     const trimmed = text.trim();
-    if (!trimmed || isStreaming) return;
+    if (!trimmed || isStreamingRef.current) return;
 
     setRateLimitNotice(null);
 
@@ -78,6 +85,7 @@ export function ChatView({ projectId, conversationId: initialConversationId, ini
     setMessages((prev) => [...prev, userMessage, assistantMessage]);
     setInput("");
     setIsStreaming(true);
+    isStreamingRef.current = true;
 
     const controller = new AbortController();
     abortRef.current = controller;
@@ -192,6 +200,7 @@ export function ChatView({ projectId, conversationId: initialConversationId, ini
       });
     } finally {
       setIsStreaming(false);
+      isStreamingRef.current = false;
       // New-chat -> now-persisted-conversation navigation: only once, only
       // when this view started with no conversationId
       // (projects/[projectId]/chat/(list)/page.tsx) and the server actually
@@ -204,16 +213,21 @@ export function ChatView({ projectId, conversationId: initialConversationId, ini
         router.refresh();
       }
     }
-  }
+  }, [projectId, router, updateAssistantMessage]);
+
+  const handleRetry = useCallback(
+    (content: string) => {
+      void sendMessage(content);
+    },
+    [sendMessage]
+  );
 
   function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     void sendMessage(input);
   }
 
-  function handleRetry(content: string) {
-    void sendMessage(content);
-  }
+  const dismissNoProviderModal = useCallback(() => setShowNoProviderModal(false), []);
 
   return (
     <div className="chat-view">
@@ -271,13 +285,21 @@ export function ChatView({ projectId, conversationId: initialConversationId, ini
       </form>
 
       {showNoProviderModal ? (
-        <NoProviderModal projectId={projectId} onDismiss={() => setShowNoProviderModal(false)} />
+        <NoProviderModal projectId={projectId} onDismiss={dismissNoProviderModal} />
       ) : null}
     </div>
   );
 }
 
-function MessageContainer({
+// Wrapped in React.memo -- ChatView re-renders its whole `messages` array
+// on every streamed SSE delta (setMessages), but `.map()` only produces a
+// new `message` object reference for the one bubble actually being
+// updated; every other message in the array keeps its previous object
+// reference. Memoizing here (together with `handleRetry` being a stable
+// `useCallback` above) means only the actively-streaming message's
+// MessageContainer/MessageBubble actually re-renders per delta, not the
+// entire prior history.
+const MessageContainer = memo(function MessageContainer({
   message,
   onRetry,
 }: {
@@ -296,7 +318,7 @@ function MessageContainer({
       ) : null}
     </div>
   );
-}
+});
 
 function describeGenericError(status: number, errorCode?: string): string {
   if (status === 400) return "Некорректный запрос. Попробуйте переформулировать сообщение.";

@@ -25,15 +25,32 @@ import Link from "next/link";
 
 export function NoProviderModal({ projectId, onDismiss }: { projectId: string; onDismiss: () => void }) {
   const closeButtonRef = useRef<HTMLButtonElement>(null);
+  // Latest `onDismiss` without being a dependency of the mount-only focus
+  // effect below -- ChatView.tsx (the only current caller) passes a fresh
+  // inline arrow function on every render, and this modal is rendered while
+  // the chat textarea stays mounted behind it, so making that effect depend
+  // on `onDismiss` directly re-ran it (and re-stole focus via
+  // `closeButtonRef.current?.focus()`) on every keystroke, not just once on
+  // mount. This separate effect just keeps the ref in sync -- writing to a
+  // ref from inside an effect (not during render, per
+  // react-hooks/refs -- refs may only be read/written outside of render)
+  // is cheap and has no visible side effect of its own, so it re-running on
+  // every `onDismiss` change is harmless; the focus-stealing effect below
+  // reads `onDismissRef.current` instead of closing over `onDismiss`
+  // directly, so it can stay mount-only ([] deps).
+  const onDismissRef = useRef(onDismiss);
+  useEffect(() => {
+    onDismissRef.current = onDismiss;
+  }, [onDismiss]);
 
   useEffect(() => {
     closeButtonRef.current?.focus();
     function handleKeyDown(event: KeyboardEvent) {
-      if (event.key === "Escape") onDismiss();
+      if (event.key === "Escape") onDismissRef.current();
     }
     document.addEventListener("keydown", handleKeyDown);
     return () => document.removeEventListener("keydown", handleKeyDown);
-  }, [onDismiss]);
+  }, []);
 
   return (
     <div className="modal-backdrop" role="presentation" onClick={onDismiss}>

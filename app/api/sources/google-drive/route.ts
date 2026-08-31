@@ -47,6 +47,7 @@ import { safeErrorForLog } from "@/lib/sources/errors";
 import { AIProviderError } from "@/lib/ai/errors";
 import { checkSourceIngestRateLimit } from "@/lib/rate-limit/source-ingest-rate-limiter";
 import { uuidShapeSchema } from "@/lib/validation/uuid";
+import { parseJsonBody } from "@/lib/http/parse-json-body";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -56,21 +57,24 @@ export const runtime = "nodejs";
 // the seeded demo project's sentinel id, a real Postgres `uuid` value.
 const BodySchema = z.object({ projectId: uuidShapeSchema, folderId: z.string().min(1).max(200) });
 
+// Files are ingested with bounded concurrency, not strictly one-at-a-time
+// -- each file's upsertDocumentFromSource() call is an independent chunk+
+// embed+store pipeline (lib/ingestion/ingest.ts) with no data dependency on
+// any other file in the folder, so a large folder no longer waits on every
+// file sequentially. Capped (not a fully unbounded Promise.all across the
+// whole folder) for the same reason lib/ai/embed-batch.ts caps its own
+// per-document batch concurrency: a folder can realistically contain many
+// files, and firing all of their embeddings calls at once risks tripping
+// the embeddings vendor's own per-account rate/concurrency limits.
+const INGEST_CONCURRENCY = 4;
+
 export async function POST(request: Request): Promise<Response> {
   const authClient = await getRouteHandlerSupabaseClient();
   const user = await getAuthenticatedUser(authClient);
   if (!user) return Response.json({ error: "unauthorized" }, { status: 401 });
 
-  let rawBody: unknown;
-  try {
-    rawBody = await request.json();
-  } catch {
-    return Response.json({ error: "invalid_request", details: "Body must be valid JSON." }, { status: 400 });
-  }
-  const parsed = BodySchema.safeParse(rawBody);
-  if (!parsed.success) {
-    return Response.json({ error: "invalid_request", details: parsed.error.flatten() }, { status: 400 });
-  }
+  const parsed = await parseJsonBody(request, BodySchema);
+  if ("errorResponse" in parsed) return parsed.errorResponse;
   const { projectId, folderId } = parsed.data;
 
   const owned = await verifyProjectOwnership(authClient, projectId);
@@ -92,50 +96,80 @@ export async function POST(request: Request): Promise<Response> {
   }
 
   const supabase = getServiceRoleClient();
+  // Captured by the `worker()` closure below -- assigned to its own const
+  // so TypeScript's null-narrowing of `user` (from the `if (!user) return`
+  // guard above) doesn't need to survive into a nested function
+  // declaration, which it can't reliably do across an intervening `await`.
+  const ownerUserId = user.id;
   try {
-    // The Drive credential lookup itself stays account-level (user.id, not
-    // projectId) -- source credentials are still per-account, see
+    // The Drive credential lookup itself stays account-level (ownerUserId,
+    // not projectId) -- source credentials are still per-account, see
     // lib/sources/credentials.ts's own header.
-    const { imported, skipped } = await syncGoogleDriveFolder(supabase, user.id, folderId);
+    const { imported, skipped } = await syncGoogleDriveFolder(supabase, ownerUserId, folderId);
 
     const results: { fileId: string; documentId: string | null; status: "ready" | "error" }[] = [];
-    for (const file of imported) {
-      const fileId = file.sourceRef as string; // google-drive.ts always sets sourceRef (the Drive file id) -- never null
-      try {
-        const result = await upsertDocumentFromSource(supabase, {
-          projectId,
-          ownerUserId: user.id,
-          title: file.title,
-          sourceType: "google_drive",
-          sourceRef: fileId,
-          text: file.text,
-          object: { suffix: "content.txt", content: file.text, contentType: "text/plain; charset=utf-8" },
-        });
-        results.push({ fileId, documentId: result.documentId, status: "ready" });
-      } catch (err) {
-        // "No active AI provider" is a per-PROJECT state, not a per-file
-        // one (see lib/ai/index.ts's getAIProviders()) -- every remaining
-        // file in this folder would fail with the exact same
-        // AIProviderError{kind:"no_credentials"}, so recording N identical
-        // per-file "error" rows (and burning through the whole folder doing
-        // it) would be both wasteful and a worse message than just telling
-        // the user once to configure a provider. Rethrow so this is handled
-        // by the outer catch -> sourceErrorResponse(), which turns it into
-        // the same clean 422 { error: "no_credentials" } every other
-        // app/api/sources/* route returns -- see that function's comment.
-        if (err instanceof AIProviderError && err.kind === "no_credentials") {
-          throw err;
+    // Set the moment ANY worker sees a whole-project no_credentials failure
+    // -- every other worker checks this before picking up its next file, so
+    // once detected, no further NEW ingests start (workers already in
+    // flight when it's set are not aborted, since AIProviderError -- unlike
+    // a bad network call -- has no cancelable in-flight request to abort;
+    // they're simply allowed to finish, and their errors are ignored below
+    // since noCredentialsError is already set).
+    let noCredentialsError: AIProviderError | null = null;
+
+    let nextIndex = 0;
+    async function worker(): Promise<void> {
+      while (nextIndex < imported.length) {
+        if (noCredentialsError) return;
+        const file = imported[nextIndex++];
+        const fileId = file.sourceRef as string; // google-drive.ts always sets sourceRef (the Drive file id) -- never null
+        try {
+          const result = await upsertDocumentFromSource(supabase, {
+            projectId,
+            ownerUserId,
+            title: file.title,
+            sourceType: "google_drive",
+            sourceRef: fileId,
+            text: file.text,
+            object: { suffix: "content.txt", content: file.text, contentType: "text/plain; charset=utf-8" },
+          });
+          results.push({ fileId, documentId: result.documentId, status: "ready" });
+        } catch (err) {
+          // "No active AI provider" is a per-PROJECT state, not a per-file
+          // one (see lib/ai/index.ts's getAIProviders()) -- every remaining
+          // file in this folder would fail with the exact same
+          // AIProviderError{kind:"no_credentials"}, so recording N identical
+          // per-file "error" rows (and burning through the whole folder
+          // doing it) would be both wasteful and a worse message than just
+          // telling the user once to configure a provider. Recorded (not
+          // thrown from inside the worker itself) so every OTHER worker
+          // can see it and stop picking up new work too -- rethrown once,
+          // after every worker has settled, below.
+          if (err instanceof AIProviderError && err.kind === "no_credentials") {
+            noCredentialsError = err;
+            return;
+          }
+          // Any other, genuinely per-file ingest failure (e.g. a transient
+          // embeddings API error, or a Drive-specific issue for just this
+          // file) must not undo/abort the rest of the folder sync -- report
+          // it in the response alongside the successes rather than throwing.
+          // Logged via safeErrorForLog(), not the raw `err` -- see that
+          // function's doc comment (lib/sources/errors.ts) for why a raw
+          // Google Drive error can carry a live OAuth Authorization header.
+          console.error(`google-drive sync: failed to ingest file ${fileId} (${file.title}):`, safeErrorForLog(err));
+          results.push({ fileId, documentId: null, status: "error" });
         }
-        // Any other, genuinely per-file ingest failure (e.g. a transient
-        // embeddings API error, or a Drive-specific issue for just this
-        // file) must not undo/abort the rest of the folder sync -- report
-        // it in the response alongside the successes rather than throwing.
-        // Logged via safeErrorForLog(), not the raw `err` -- see that
-        // function's doc comment (lib/sources/errors.ts) for why a raw
-        // Google Drive error can carry a live OAuth Authorization header.
-        console.error(`google-drive sync: failed to ingest file ${fileId} (${file.title}):`, safeErrorForLog(err));
-        results.push({ fileId, documentId: null, status: "error" });
       }
+    }
+
+    const workerCount = Math.min(INGEST_CONCURRENCY, imported.length);
+    await Promise.all(Array.from({ length: workerCount }, () => worker()));
+
+    if (noCredentialsError) {
+      // Handled by the outer catch -> sourceErrorResponse(), which turns it
+      // into the same clean 422 { error: "no_credentials" } every other
+      // app/api/sources/* route returns -- see that function's comment.
+      throw noCredentialsError;
     }
 
     return Response.json({ imported: results, skipped }, { status: 200 });

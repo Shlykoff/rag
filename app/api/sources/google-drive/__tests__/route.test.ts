@@ -82,16 +82,27 @@ describe("POST /api/sources/google-drive", () => {
     expect(mockSyncGoogleDriveFolder).not.toHaveBeenCalled();
   });
 
-  it("returns 422 { error: 'no_credentials' } and stops after the first file, without logging it as a server error, when the project has no active AI provider", async () => {
+  // Files are now ingested with bounded concurrency (INGEST_CONCURRENCY in
+  // route.ts), not strictly one-at-a-time -- so "fails fast" no longer
+  // means "exactly one call, ever" for a folder bigger than the
+  // concurrency cap: the first WAVE of concurrently-dispatched files may
+  // all be attempted before any of their (identical) no_credentials
+  // failures is observed, but every file BEYOND that first wave is never
+  // even attempted. 10 files (comfortably more than the concurrency cap)
+  // demonstrates the bounded-waste property this test is actually about,
+  // without depending on the exact concurrency constant.
+  it("returns 422 { error: 'no_credentials' } and stops well short of the whole folder, without logging it as a server error, when the project has no active AI provider", async () => {
     mockGetRouteHandlerSupabaseClient.mockResolvedValue({});
     mockGetAuthenticatedUser.mockResolvedValue({ id: "user-1", email: "a@b.com" });
     mockVerifyProjectOwnership.mockResolvedValue(true);
     mockGetServiceRoleClient.mockReturnValue({});
+    const TOTAL_FILES = 10;
     mockSyncGoogleDriveFolder.mockResolvedValue({
-      imported: [
-        { sourceRef: "file-1", title: "Doc 1", text: "hello" },
-        { sourceRef: "file-2", title: "Doc 2", text: "world" },
-      ],
+      imported: Array.from({ length: TOTAL_FILES }, (_, i) => ({
+        sourceRef: `file-${i}`,
+        title: `Doc ${i}`,
+        text: "content",
+      })),
       skipped: [],
     });
     mockUpsertDocumentFromSource.mockRejectedValue(noCredentialsError());
@@ -104,12 +115,72 @@ describe("POST /api/sources/google-drive", () => {
       error: "no_credentials",
       message: "Добавьте и выберите AI-провайдера для этого проекта, чтобы начать общаться с ассистентом.",
     });
-    // Fails fast on the first file instead of retrying the same guaranteed
+    // Bounded to (at most) one concurrency wave's worth of attempts --
+    // nowhere near all 10 files -- instead of retrying the same guaranteed
     // failure for every remaining file in the folder.
-    expect(mockUpsertDocumentFromSource).toHaveBeenCalledTimes(1);
+    expect(mockUpsertDocumentFromSource.mock.calls.length).toBeGreaterThan(0);
+    expect(mockUpsertDocumentFromSource.mock.calls.length).toBeLessThan(TOTAL_FILES);
     expect(consoleErrorSpy).not.toHaveBeenCalled();
 
     consoleErrorSpy.mockRestore();
+  });
+
+  // Regression test for the concurrency fix: files used to be ingested
+  // strictly one at a time; this proves more than one is genuinely in
+  // flight at once (bounded, not unbounded -- see the next test).
+  it("ingests multiple files concurrently rather than strictly sequentially", async () => {
+    mockGetRouteHandlerSupabaseClient.mockResolvedValue({});
+    mockGetAuthenticatedUser.mockResolvedValue({ id: "user-1", email: "a@b.com" });
+    mockVerifyProjectOwnership.mockResolvedValue(true);
+    mockGetServiceRoleClient.mockReturnValue({});
+    mockSyncGoogleDriveFolder.mockResolvedValue({
+      imported: Array.from({ length: 8 }, (_, i) => ({ sourceRef: `file-${i}`, title: `Doc ${i}`, text: "content" })),
+      skipped: [],
+    });
+
+    let inFlight = 0;
+    let maxInFlight = 0;
+    mockUpsertDocumentFromSource.mockImplementation(async () => {
+      inFlight++;
+      maxInFlight = Math.max(maxInFlight, inFlight);
+      await Promise.resolve(); // yield once so overlap is observable
+      inFlight--;
+      return { documentId: "doc-x", chunkCount: 1, created: true };
+    });
+
+    const response = await POST(makeRequest({ projectId: PROJECT_ID, folderId: "folder-1" }));
+
+    expect(response.status).toBe(200);
+    expect(maxInFlight).toBeGreaterThan(1);
+  });
+
+  it("caps ingestion concurrency instead of firing every file in the folder at once", async () => {
+    mockGetRouteHandlerSupabaseClient.mockResolvedValue({});
+    mockGetAuthenticatedUser.mockResolvedValue({ id: "user-1", email: "a@b.com" });
+    mockVerifyProjectOwnership.mockResolvedValue(true);
+    mockGetServiceRoleClient.mockReturnValue({});
+    const TOTAL_FILES = 20;
+    mockSyncGoogleDriveFolder.mockResolvedValue({
+      imported: Array.from({ length: TOTAL_FILES }, (_, i) => ({ sourceRef: `file-${i}`, title: `Doc ${i}`, text: "content" })),
+      skipped: [],
+    });
+
+    let inFlight = 0;
+    let maxInFlight = 0;
+    mockUpsertDocumentFromSource.mockImplementation(async () => {
+      inFlight++;
+      maxInFlight = Math.max(maxInFlight, inFlight);
+      await Promise.resolve();
+      await Promise.resolve();
+      inFlight--;
+      return { documentId: "doc-x", chunkCount: 1, created: true };
+    });
+
+    const response = await POST(makeRequest({ projectId: PROJECT_ID, folderId: "folder-1" }));
+
+    expect(response.status).toBe(200);
+    expect(maxInFlight).toBeLessThan(TOTAL_FILES);
+    expect(maxInFlight).toBeLessThanOrEqual(5);
   });
 
   it("still reports a genuinely per-file failure as status: 'error' for just that file and continues syncing the rest (unaffected by the no_credentials short-circuit)", async () => {

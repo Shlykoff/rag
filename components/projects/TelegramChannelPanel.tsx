@@ -34,10 +34,18 @@
 // This is live-computed, not a cached DB flag, so it self-corrects on the
 // next page load/refresh if the webhook is later revoked or restored
 // outside the app -- nothing here needs to poll or invalidate anything.
+//
+// GET/POST/DELETE fetch + status-code branching goes through
+// components/sources/request-helpers.ts's getJson()/postJson()/del()
+// (shared with ModelPicker.tsx/ProfileForm.tsx) rather than hand-rolling
+// its own 401/429/!ok handling per call site; the rate-limit "(~N сек.)"
+// suffix uses that module's retryAfterSuffix() rather than reimplementing
+// the same `Math.ceil(retryAfterMs / 1000)` formatting inline.
 
 import { useEffect, useRef, useState, type FormEvent } from "react";
 import { redirectToLogin } from "@/lib/ui/client-redirect";
 import { resolveTelegramWebhookStatus } from "@/lib/ui/format";
+import { del, getJson, postJson, retryAfterSuffix } from "@/components/sources/request-helpers";
 
 type WebhookStatus = "confirmed" | "unconfirmed";
 
@@ -64,27 +72,23 @@ type LoadState =
   | { status: "ready"; connected: true; enabled: boolean; displayLabel: string | null; webhookStatus: WebhookStatus };
 
 async function fetchStatus(projectId: string): Promise<LoadState> {
-  try {
-    const response = await fetch(`/api/projects/${projectId}/channels/telegram`);
-    if (response.status === 401) {
+  const result = await getJson<StatusResponse>(`/api/projects/${projectId}/channels/telegram`);
+  if (!result.ok) {
+    if (result.kind === "unauthorized") {
       redirectToLogin();
       return { status: "loading" };
     }
-    if (!response.ok) {
-      return { status: "error", message: "Не удалось загрузить статус Telegram-интеграции. Попробуйте обновить страницу." };
-    }
-    const data = (await response.json()) as StatusResponse;
-    if (!data.connected) return { status: "ready", connected: false };
-    return {
-      status: "ready",
-      connected: true,
-      enabled: data.enabled ?? true,
-      displayLabel: data.displayLabel ?? null,
-      webhookStatus: resolveTelegramWebhookStatus(data.webhookStatus),
-    };
-  } catch {
-    return { status: "error", message: "Не удалось подключиться к серверу. Проверьте, что Supabase запущен." };
+    return { status: "error", message: result.message };
   }
+  const data = result.data;
+  if (!data.connected) return { status: "ready", connected: false };
+  return {
+    status: "ready",
+    connected: true,
+    enabled: data.enabled ?? true,
+    displayLabel: data.displayLabel ?? null,
+    webhookStatus: resolveTelegramWebhookStatus(data.webhookStatus),
+  };
 }
 
 const DISCONNECT_CONFIRM_TIMEOUT_MS = 5000;
@@ -149,55 +153,41 @@ export function TelegramChannelPanel({ projectId }: { projectId: string }) {
     }
 
     setConnecting(true);
-    try {
-      const response = await fetch(`/api/projects/${projectId}/channels/telegram`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          botToken: trimmedToken,
-          webhookBaseUrl: trimmedUrl,
-          displayLabel: displayLabel.trim() || undefined,
-        }),
-      });
-      if (response.status === 401) {
+    const result = await postJson<ConnectResponse>(`/api/projects/${projectId}/channels/telegram`, {
+      botToken: trimmedToken,
+      webhookBaseUrl: trimmedUrl,
+      displayLabel: displayLabel.trim() || undefined,
+    });
+    setConnecting(false);
+    if (!result.ok) {
+      if (result.kind === "unauthorized") {
         redirectToLogin();
         return;
       }
-      if (response.status === 429) {
-        const body = (await response.json().catch(() => ({}))) as { message?: string; retryAfterMs?: number };
-        setConnectError(
-          `${body.message ?? "Слишком много запросов."}${body.retryAfterMs ? ` (~${Math.ceil(body.retryAfterMs / 1000)} сек.)` : ""}`
-        );
+      if (result.kind === "rate_limited") {
+        setConnectError(`${result.message}${retryAfterSuffix(result.retryAfterMs)}`);
         return;
       }
-      if (!response.ok) {
-        const body = (await response.json().catch(() => ({}))) as { error?: string; message?: string; details?: unknown };
-        if (body.error === "telegram_setup_failed") {
-          // The single most common cause: an invalid/revoked bot token --
-          // this is the server's own already-actionable message, never a
-          // raw error dump (see this file's own header comment).
-          setConnectError(body.message ?? "Не удалось подключить бота. Проверьте токен и попробуйте снова.");
-          return;
-        }
-        setConnectError(body.message ?? (typeof body.details === "string" ? body.details : "Не удалось подключить Telegram-бота."));
-        return;
-      }
-      const data = (await response.json()) as ConnectResponse;
-      setState({
-        status: "ready",
-        connected: true,
-        enabled: data.enabled,
-        displayLabel: data.displayLabel,
-        webhookStatus: data.webhookStatus,
-      });
-      setConnectSuccess(`Бот подключён. Webhook зарегистрирован: ${data.webhookUrl}`);
-      setBotToken("");
-      setShowConnectForm(false);
-    } catch {
-      setConnectError("Не удалось подключиться к серверу.");
-    } finally {
-      setConnecting(false);
+      // Covers `telegram_setup_failed` (the single most common cause: an
+      // invalid/revoked bot token) the same way every other failure is
+      // handled -- normalizeResponse's describeErrorBody() already prefers
+      // the server's own actionable `message` when present (see this
+      // file's own header comment: never a raw error dump), so no separate
+      // branch on `result.code` is needed here.
+      setConnectError(result.message);
+      return;
     }
+    const data = result.data;
+    setState({
+      status: "ready",
+      connected: true,
+      enabled: data.enabled,
+      displayLabel: data.displayLabel,
+      webhookStatus: data.webhookStatus,
+    });
+    setConnectSuccess(`Бот подключён. Webhook зарегистрирован: ${data.webhookUrl}`);
+    setBotToken("");
+    setShowConnectForm(false);
   }
 
   function handleDisconnectClick() {
@@ -211,29 +201,19 @@ export function TelegramChannelPanel({ projectId }: { projectId: string }) {
     if (confirmTimeoutRef.current) clearTimeout(confirmTimeoutRef.current);
     setDisconnecting(true);
     setDisconnectError(null);
-    try {
-      const response = await fetch(`/api/projects/${projectId}/channels/telegram`, { method: "DELETE" });
-      if (response.status === 401) {
+    const result = await del<{ status: string }>(`/api/projects/${projectId}/channels/telegram`);
+    setDisconnecting(false);
+    if (!result.ok) {
+      if (result.kind === "unauthorized") {
         redirectToLogin();
         return;
       }
-      if (response.status === 429) {
-        const body = (await response.json().catch(() => ({}))) as { message?: string };
-        setDisconnectError(body.message ?? "Слишком много запросов. Попробуйте чуть позже.");
-        return;
-      }
-      if (!response.ok) {
-        setDisconnectError("Не удалось отключить бота. Попробуйте ещё раз.");
-        return;
-      }
-      setState({ status: "ready", connected: false });
-      setConfirmingDisconnect(false);
-      setConnectSuccess(null);
-    } catch {
-      setDisconnectError("Не удалось подключиться к серверу.");
-    } finally {
-      setDisconnecting(false);
+      setDisconnectError(result.message);
+      return;
     }
+    setState({ status: "ready", connected: false });
+    setConfirmingDisconnect(false);
+    setConnectSuccess(null);
   }
 
   if (state.status === "loading") {

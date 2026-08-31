@@ -15,9 +15,19 @@
 // nextjs-frontend/rag-pipeline-specialist boundary as
 // components/sources/* only ever calling app/api/sources/* routes, never
 // lib/sources/credentials.ts.
+//
+// GET fetch + status-code branching goes through
+// components/sources/request-helpers.ts's getJson() (shared with
+// ModelPicker.tsx/TelegramChannelPanel.tsx) rather than hand-rolling its
+// own fetch/401/429/!ok handling; per-provider display labels come from
+// lib/ui/provider-metadata.ts's PROVIDER_DISPLAY_INFO (shared with
+// ModelPicker.tsx/ActiveProviderSection.tsx) rather than being duplicated
+// here as plain JSX text.
 
 import { useEffect, useState } from "react";
 import { redirectToLogin } from "@/lib/ui/client-redirect";
+import { getJson } from "@/components/sources/request-helpers";
+import { PROVIDER_DISPLAY_INFO } from "@/lib/ui/provider-metadata";
 import { ProviderKeyField } from "./ProviderKeyField";
 import { ActiveProviderSection } from "./ActiveProviderSection";
 import type { AIProviderCredentialType, ConfiguredFlags } from "./types";
@@ -44,9 +54,9 @@ type LoadState =
  * effect's synchronous call stack).
  */
 async function fetchProviderState(): Promise<LoadState> {
-  try {
-    const response = await fetch("/api/profile/ai-providers");
-    if (response.status === 401) {
+  const result = await getJson<GetResponseBody>("/api/profile/ai-providers");
+  if (!result.ok) {
+    if (result.kind === "unauthorized") {
       redirectToLogin();
       // Unreachable in practice -- redirectToLogin() is a hard navigation
       // (window.location.href), so the component unmounts before this
@@ -54,24 +64,9 @@ async function fetchProviderState(): Promise<LoadState> {
       // return type.
       return { status: "loading" };
     }
-    if (response.status === 429) {
-      const body = (await response.json().catch(() => ({}))) as { message?: string };
-      return { status: "error", message: body.message ?? "Слишком много запросов. Попробуйте чуть позже." };
-    }
-    if (!response.ok) {
-      return {
-        status: "error",
-        message: "Не удалось загрузить настройки AI-провайдеров. Попробуйте обновить страницу.",
-      };
-    }
-    const data = (await response.json()) as GetResponseBody;
-    return { status: "ready", configured: data.configured };
-  } catch {
-    return {
-      status: "error",
-      message: "Не удалось подключиться к серверу. Проверьте, что Supabase запущен, и обновите страницу.",
-    };
+    return { status: "error", message: result.message };
   }
+  return { status: "ready", configured: result.data.configured };
 }
 
 export function ProfileForm() {
@@ -121,7 +116,7 @@ export function ProfileForm() {
     <div style={{ display: "flex", flexDirection: "column", gap: "1.25rem" }}>
       <section className="card" aria-labelledby="provider-openai-heading">
         <h2 id="provider-openai-heading" className="provider-section-title">
-          OpenAI
+          {PROVIDER_DISPLAY_INFO.openai.label}
         </h2>
         <p className="field-hint" style={{ marginBottom: "0.7rem" }}>
           Чат и поиск по документам через OpenAI (по умолчанию <code>gpt-4.1-mini</code> +{" "}
@@ -142,7 +137,7 @@ export function ProfileForm() {
 
       <section className="card" aria-labelledby="provider-anthropic-heading">
         <h2 id="provider-anthropic-heading" className="provider-section-title">
-          Anthropic Claude (+ Voyage AI для embeddings)
+          {PROVIDER_DISPLAY_INFO.anthropic.label}
         </h2>
         <p className="field-hint" style={{ marginBottom: "0.7rem" }}>
           У Anthropic нет собственных embeddings — для поиска по документам нужен ещё ключ Voyage AI.
@@ -176,7 +171,7 @@ export function ProfileForm() {
 
       <section className="card" aria-labelledby="provider-gemini-heading">
         <h2 id="provider-gemini-heading" className="provider-section-title">
-          Google Gemini
+          {PROVIDER_DISPLAY_INFO.gemini.label}
         </h2>
         <p className="field-hint" style={{ marginBottom: "0.7rem" }}>
           Чат и поиск по документам через Gemini. Ключ — в{" "}

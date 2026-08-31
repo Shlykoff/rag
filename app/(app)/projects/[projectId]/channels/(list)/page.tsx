@@ -56,27 +56,33 @@ export default async function ProjectChannelsPage({ params }: { params: Promise<
   }
   const sessions = (sessionRows ?? []) as ConversationRow[];
 
-  // One small query per session for its most recent message preview --
-  // bounded by MAX_SESSIONS (well above realistic demo-scale external
-  // traffic, same "keep it simple, document the bound" tradeoff this
-  // codebase already makes elsewhere, e.g.
-  // app/api/projects/[projectId]/route.ts's STORAGE_LIST_PAGE_SIZE
-  // comment) rather than one bigger query + client-side grouping.
-  const previews = await Promise.all(
-    sessions.map(async (session) => {
-      const { data, error } = await supabase
-        .from("messages")
-        .select("content, role")
-        .eq("conversation_id", session.id)
-        .order("created_at", { ascending: false })
-        .limit(1);
-      if (error) {
-        console.error(`projects/[projectId]/channels: failed to load last message for ${session.id}:`, error.message);
-        return null;
+  // Single query for every session's most recent message, instead of one
+  // round-trip per session (previously up to MAX_SESSIONS separate
+  // queries). `.in("conversation_id", sessionIds)` ordered by created_at
+  // desc pulls every message for these sessions in one go; grouping by
+  // conversation_id here (in the Server Component, before rendering) and
+  // keeping only the first (= most recent, since we're already sorted
+  // desc) row per conversation reproduces the exact same "one preview per
+  // session" result the N+1 version produced, at a fixed query count
+  // regardless of MAX_SESSIONS.
+  const sessionIds = sessions.map((session) => session.id);
+  const previewByConversationId = new Map<string, LastMessageRow>();
+  if (sessionIds.length > 0) {
+    const { data: messageRows, error: messagesError } = await supabase
+      .from("messages")
+      .select("conversation_id, content, role")
+      .in("conversation_id", sessionIds)
+      .order("created_at", { ascending: false });
+    if (messagesError) {
+      console.error(`projects/[projectId]/channels: failed to load last messages (${projectId}):`, messagesError.message);
+    } else {
+      for (const row of (messageRows ?? []) as (LastMessageRow & { conversation_id: string })[]) {
+        if (!previewByConversationId.has(row.conversation_id)) {
+          previewByConversationId.set(row.conversation_id, row);
+        }
       }
-      return ((data ?? [])[0] as LastMessageRow | undefined) ?? null;
-    })
-  );
+    }
+  }
 
   return (
     <div className="sources-page">
@@ -104,8 +110,8 @@ export default async function ProjectChannelsPage({ params }: { params: Promise<
           </div>
         ) : (
           <ul className="channel-session-list">
-            {sessions.map((session, index) => {
-              const preview = previews[index];
+            {sessions.map((session) => {
+              const preview = previewByConversationId.get(session.id) ?? null;
               return (
                 <li key={session.id}>
                   <Link href={`/projects/${projectId}/channels/${session.id}`} className="card channel-session-card">

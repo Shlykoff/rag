@@ -220,19 +220,46 @@ interface PriorMessageRow {
   content: string;
 }
 
+// Hard cap on how much prior conversation history gets loaded into context
+// for a turn -- every OTHER size-sensitive piece of this pipeline is
+// bounded (retrieval's assembled context by maxContextTokens, a single
+// incoming message by app/api/chat/route.ts's own schema), but a
+// long-running conversation's history had no limit at all: every prior
+// message was fetched and resent to the chat provider on every subsequent
+// turn. 20 messages (~10 user/assistant turn pairs) is picked to land in
+// the same rough order of magnitude as lib/retrieval/search.ts's own
+// DEFAULT_MAX_CONTEXT_TOKENS (3000 tokens) -- ordinary chat turns are much
+// shorter than a retrieved chunk, so this many of them is comparable
+// context weight, not an arbitrarily different budget.
+//
+// Trade-off, worth stating plainly rather than leaving implicit: once a
+// conversation exceeds this many messages, OLDER turns are silently
+// dropped from what the model sees on later messages. Nothing is deleted
+// -- the full history still exists in `messages` and is still returned to
+// the frontend for display -- this only bounds what gets RE-SENT to the
+// chat provider as conversational context on each new turn.
+const MAX_HISTORY_MESSAGES = 20;
+
 async function fetchHistory(
   supabase: SupabaseClient,
   conversationId: string
 ): Promise<ChatMessage[]> {
+  // Queried most-recent-first so LIMIT keeps the LATEST messages (not the
+  // earliest, which `.order(asc).limit(n)` would have kept instead) --
+  // then reversed back into chronological order below, since the chat
+  // provider expects oldest-to-newest.
   const { data, error } = await supabase
     .from("messages")
     .select("role, content")
     .eq("conversation_id", conversationId)
-    .order("created_at", { ascending: true });
+    .order("created_at", { ascending: false })
+    .limit(MAX_HISTORY_MESSAGES);
   if (error) {
     throw new Error(`fetchHistory: failed to load messages for ${conversationId}: ${error.message}`);
   }
-  return ((data ?? []) as PriorMessageRow[]).map((row) => ({ role: row.role, content: row.content }));
+  return ((data ?? []) as PriorMessageRow[])
+    .map((row) => ({ role: row.role, content: row.content }))
+    .reverse();
 }
 
 function buildSystemPromptWithContext(contextText: string): string {
@@ -392,22 +419,31 @@ export async function* handleChatRequest(
   // (lib/tokens.ts's chars/4 heuristic) logged for rough cost tracking,
   // not a billing-accurate figure. user_id stays the project OWNER for
   // both ownership shapes -- see the module header.
-  const { error: embeddingUsageError } = await deps.supabase.from("usage_events").insert({
-    project_id: input.projectId,
-    user_id: input.ownerUserId,
-    event_type: "embedding_request",
-    provider: deps.embeddingsProvider.providerName,
-    model: deps.embeddingsProvider.modelName,
-    prompt_tokens: estimateTokens(trimmedMessage),
-    completion_tokens: null,
-    total_tokens: estimateTokens(trimmedMessage),
-  });
-  if (embeddingUsageError) {
-    // Non-fatal: usage logging must never block the user from getting an
-    // answer. Logged server-side for operators to notice, not surfaced to
-    // the client.
-    console.error(`handleChatRequest: failed to log embedding_request usage: ${embeddingUsageError.message}`);
-  }
+  //
+  // Fire-and-forget (NOT awaited inline): its result is only ever logged,
+  // never acted on, so there is no reason to block the anti-hallucination
+  // check (or any subsequent yield) on this write completing -- a slow or
+  // stalled usage_events insert used to add its full latency to every
+  // turn for no benefit downstream. Errors are still caught and logged,
+  // same as before.
+  void (async () => {
+    const { error: embeddingUsageError } = await deps.supabase.from("usage_events").insert({
+      project_id: input.projectId,
+      user_id: input.ownerUserId,
+      event_type: "embedding_request",
+      provider: deps.embeddingsProvider.providerName,
+      model: deps.embeddingsProvider.modelName,
+      prompt_tokens: estimateTokens(trimmedMessage),
+      completion_tokens: null,
+      total_tokens: estimateTokens(trimmedMessage),
+    });
+    if (embeddingUsageError) {
+      // Non-fatal: usage logging must never block the user from getting an
+      // answer. Logged server-side for operators to notice, not surfaced to
+      // the client.
+      console.error(`handleChatRequest: failed to log embedding_request usage: ${embeddingUsageError.message}`);
+    }
+  })();
 
   // Code-level anti-hallucination short-circuit -- see MIN_RELEVANT_SIMILARITY's
   // own comment above for the full reasoning. No sources are attached (there
@@ -418,21 +454,46 @@ export async function* handleChatRequest(
     yield { type: "sources", sources: [] };
     yield { type: "delta", text: NO_RELEVANT_CONTEXT_REPLY };
 
-    const { error: insertNoContextMessageError } = await deps.supabase.from("messages").insert({
-      conversation_id: conversation.id,
-      role: "assistant",
-      content: NO_RELEVANT_CONTEXT_REPLY,
-      sources: [],
-    });
+    // A chat_request usage_events row IS still written here even though no
+    // real chat-completion call happened (prompt/completion/total_tokens
+    // are all 0, reflecting zero real LLM cost) -- this is deliberately
+    // NOT the same thing as "no usage to log". checkChatRateLimit's
+    // persistent, DB-backed per-project rate limit (see
+    // lib/rate-limit/rate-limiter.ts) works by COUNT(*)-ing chat_request
+    // rows in a trailing window; without a row here, a caller could send
+    // unlimited no-relevant-context turns (each still triggering a real,
+    // billed embeddings call above) without ever tripping that persistent
+    // budget -- only the transient in-memory reservation
+    // (reserveChatRateLimitSlot) would ever see them. Run alongside the
+    // assistant-message insert via Promise.all -- neither result feeds the
+    // other, so there's no reason to serialize them.
+    const [{ error: insertNoContextMessageError }, { error: noContextUsageError }] = await Promise.all([
+      deps.supabase.from("messages").insert({
+        conversation_id: conversation.id,
+        role: "assistant",
+        content: NO_RELEVANT_CONTEXT_REPLY,
+        sources: [],
+      }),
+      deps.supabase.from("usage_events").insert({
+        project_id: input.projectId,
+        user_id: input.ownerUserId,
+        event_type: "chat_request",
+        provider: deps.chatProvider.providerName,
+        model: deps.chatProvider.modelName,
+        prompt_tokens: 0,
+        completion_tokens: 0,
+        total_tokens: 0,
+      }),
+    ]);
     if (insertNoContextMessageError) {
       throw new Error(
         `handleChatRequest: failed to persist assistant message: ${insertNoContextMessageError.message}`
       );
     }
+    if (noContextUsageError) {
+      console.error(`handleChatRequest: failed to log chat_request usage: ${noContextUsageError.message}`);
+    }
 
-    // No chat_request usage_events row -- no chat-completion call was ever
-    // made, so there is no real usage to log (unlike the embedding_request
-    // row above, which reflects a real embeddings call that did happen).
     const zeroUsage: TokenUsage = { promptTokens: 0, completionTokens: 0, totalTokens: 0 };
     yield { type: "done", usage: zeroUsage };
     return;
@@ -477,28 +538,54 @@ export async function* handleChatRequest(
     return; // no assistant message / usage_events row on failure -- see module comment
   }
 
-  const { error: insertAssistantMessageError } = await deps.supabase.from("messages").insert({
-    conversation_id: conversation.id,
-    role: "assistant",
-    content: fullText,
-    sources: retrieval.sources,
-  });
+  // A completion that resolves successfully -- the delta loop finished and
+  // `stream.usage` resolved, neither one throwing -- but streamed literally
+  // ZERO deltas is not actually a success: the model produced no text at
+  // all. Left unchecked, this silently persisted a blank assistant message
+  // with no error anywhere. Verified live: on Telegram specifically,
+  // `splitTelegramMessage("")` (lib/channels/telegram/client.ts) returns
+  // `[]`, so `sendTelegramMessage` makes zero outbound API calls -- the
+  // participant gets literally nothing back, with no error surfaced to
+  // them, to the caller, or to server logs. Treated the same as any other
+  // known chat-provider failure mode: a graceful `error` event, no
+  // assistant message / usage_events row persisted for this turn.
+  if (fullText.trim().length === 0) {
+    const emptyOutputErr = new AIProviderError({
+      provider: deps.chatProvider.providerName,
+      kind: "unknown",
+      retryable: false,
+      message: `${deps.chatProvider.providerName} streamed zero output text for a non-empty prompt (conversation ${conversation.id})`,
+      userMessage: "Модель вернула пустой ответ. Попробуйте переформулировать вопрос.",
+    });
+    yield { type: "error", message: emptyOutputErr.userMessage, retryable: emptyOutputErr.retryable };
+    return; // no assistant message / usage_events row on failure -- see module comment
+  }
+
+  // Two independent writes, neither result feeding the other -- run
+  // concurrently via Promise.all rather than sequential awaits.
+  const [{ error: insertAssistantMessageError }, { error: chatUsageError }] = await Promise.all([
+    deps.supabase.from("messages").insert({
+      conversation_id: conversation.id,
+      role: "assistant",
+      content: fullText,
+      sources: retrieval.sources,
+    }),
+    deps.supabase.from("usage_events").insert({
+      project_id: input.projectId,
+      user_id: input.ownerUserId,
+      event_type: "chat_request",
+      provider: deps.chatProvider.providerName,
+      model: deps.chatProvider.modelName,
+      prompt_tokens: usage.promptTokens,
+      completion_tokens: usage.completionTokens,
+      total_tokens: usage.totalTokens,
+    }),
+  ]);
   if (insertAssistantMessageError) {
     throw new Error(
       `handleChatRequest: failed to persist assistant message: ${insertAssistantMessageError.message}`
     );
   }
-
-  const { error: chatUsageError } = await deps.supabase.from("usage_events").insert({
-    project_id: input.projectId,
-    user_id: input.ownerUserId,
-    event_type: "chat_request",
-    provider: deps.chatProvider.providerName,
-    model: deps.chatProvider.modelName,
-    prompt_tokens: usage.promptTokens,
-    completion_tokens: usage.completionTokens,
-    total_tokens: usage.totalTokens,
-  });
   if (chatUsageError) {
     console.error(`handleChatRequest: failed to log chat_request usage: ${chatUsageError.message}`);
   }

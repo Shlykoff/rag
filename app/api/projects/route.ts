@@ -42,6 +42,7 @@ import { z } from "zod";
 import { getServiceRoleClient } from "@/lib/supabase/service-client";
 import { getAuthenticatedUser, getRouteHandlerSupabaseClient } from "@/lib/supabase/server-client";
 import { PROJECT_SELECT_COLUMNS, ProjectNameSchema, toProjectDTO, type ProjectRow } from "./shared";
+import { parseJsonBody } from "@/lib/http/parse-json-body";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -73,16 +74,8 @@ export async function POST(request: Request): Promise<Response> {
   const user = await getAuthenticatedUser(authClient);
   if (!user) return Response.json({ error: "unauthorized" }, { status: 401 });
 
-  let rawBody: unknown;
-  try {
-    rawBody = await request.json();
-  } catch {
-    return Response.json({ error: "invalid_request", details: "Body must be valid JSON." }, { status: 400 });
-  }
-  const parsed = CreateProjectBodySchema.safeParse(rawBody);
-  if (!parsed.success) {
-    return Response.json({ error: "invalid_request", details: parsed.error.flatten() }, { status: 400 });
-  }
+  const parsed = await parseJsonBody(request, CreateProjectBodySchema);
+  if ("errorResponse" in parsed) return parsed.errorResponse;
 
   const supabase = getServiceRoleClient();
   const { data, error } = await supabase

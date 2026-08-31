@@ -35,6 +35,7 @@ import { upsertDocumentFromSource } from "@/lib/sources/pipeline";
 import { sourceErrorResponse, sourceIngestRateLimitedResponse } from "@/lib/sources/http-error";
 import { checkSourceIngestRateLimit } from "@/lib/rate-limit/source-ingest-rate-limiter";
 import { uuidShapeSchema } from "@/lib/validation/uuid";
+import { parseJsonBody } from "@/lib/http/parse-json-body";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -49,16 +50,8 @@ export async function POST(request: Request): Promise<Response> {
   const user = await getAuthenticatedUser(authClient);
   if (!user) return Response.json({ error: "unauthorized" }, { status: 401 });
 
-  let rawBody: unknown;
-  try {
-    rawBody = await request.json();
-  } catch {
-    return Response.json({ error: "invalid_request", details: "Body must be valid JSON." }, { status: 400 });
-  }
-  const parsed = BodySchema.safeParse(rawBody);
-  if (!parsed.success) {
-    return Response.json({ error: "invalid_request", details: parsed.error.flatten() }, { status: 400 });
-  }
+  const parsed = await parseJsonBody(request, BodySchema);
+  if ("errorResponse" in parsed) return parsed.errorResponse;
   const { projectId, pageUrl } = parsed.data;
 
   const owned = await verifyProjectOwnership(authClient, projectId);

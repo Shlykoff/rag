@@ -97,9 +97,9 @@ function toAuthenticatedUser(user: User): AuthenticatedUser {
  *
  * This is the projects-pivot generalization of the "own vs. someone else's
  * row, respond identically" pattern already used by
- * app/api/sources/[documentId]/route.ts (that route's own ownership check
- * predates this helper and is not yet routed through it -- see this task's
- * report for why). Every route that accepts a projectId (directly, or
+ * app/api/sources/[documentId]/route.ts, which routes its own ownership
+ * check through this exact helper (via app/api/sources/shared.ts's
+ * loadOwnedDocument()). Every route that accepts a projectId (directly, or
  * derived from a document/conversation row) MUST call this -- or an
  * equivalent RLS-backed check -- before ever passing that projectId into a
  * service-role call (lib/ai/, lib/retrieval/, lib/rate-limit/,

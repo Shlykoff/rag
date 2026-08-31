@@ -54,6 +54,47 @@ describe("normalizeProviderError", () => {
     expect(dns.retryable).toBe(true);
   });
 
+  // Regression test: Voyage (paired with anthropic for embeddings, see
+  // lib/ai/index.ts) throws error shapes that don't match any generic
+  // errno/code/cause/AbortError check -- verified live against
+  // node_modules/voyageai's actual error classes (dist/esm/errors/*.mjs).
+  // Constructed here exactly as those classes actually shape their
+  // instances (a bare Error subclass with only `.name` set), not a
+  // hypothetical/simplified stand-in.
+  it("classifies a real-shaped VoyageAITimeoutError as a retryable network error", () => {
+    const timeoutErr = Object.assign(new Error("Timeout exceeded when calling POST /v1/embeddings."), {
+      name: "VoyageAITimeoutError",
+    });
+    const err = normalizeProviderError(timeoutErr, "voyage");
+    expect(err.kind).toBe("network");
+    expect(err.retryable).toBe(true);
+  });
+
+  it("classifies a real-shaped, status-less VoyageAIError (connection failure) as a retryable network error", () => {
+    // Voyage's Fetcher.mjs discards the underlying TypeError's own
+    // errno/code/cause for a connection-level failure and rethrows as a
+    // bare VoyageAIError with no statusCode/body/rawResponse at all.
+    const connectionErr = Object.assign(new Error("fetch failed"), {
+      name: "VoyageAIError",
+      statusCode: undefined,
+      body: undefined,
+      rawResponse: undefined,
+    });
+    const err = normalizeProviderError(connectionErr, "voyage");
+    expect(err.kind).toBe("network");
+    expect(err.retryable).toBe(true);
+  });
+
+  it("still classifies a real-shaped VoyageAIError WITH a statusCode by that status, not as a network error", () => {
+    const rateLimited = Object.assign(new Error("Status code: 429"), {
+      name: "VoyageAIError",
+      statusCode: 429,
+    });
+    const err = normalizeProviderError(rateLimited, "voyage");
+    expect(err.kind).toBe("rate_limited");
+    expect(err.retryable).toBe(true);
+  });
+
   it("falls back to 'unknown', not retryable, for totally unrecognized errors", () => {
     const err = normalizeProviderError("a plain string error", "openai");
     expect(err.kind).toBe("unknown");

@@ -27,6 +27,7 @@
 // silent gap.
 
 import "server-only";
+import { createSlidingWindowLimiter } from "./sliding-window";
 
 export interface ChannelParticipantRateLimitConfig {
   /** Max messages allowed within windowMs, per (project, channel, externalParticipantId). */
@@ -55,16 +56,22 @@ export interface ChannelParticipantRateLimitResult {
   retryAfterMs: number;
 }
 
-const requestTimestamps = new Map<string, number[]>();
+// Own private limiter instance (its own Map, independent of every other
+// module's) -- see lib/rate-limit/sliding-window.ts's header for why each
+// call site instantiates separately rather than sharing one.
+const limiter = createSlidingWindowLimiter({
+  windowMs: DEFAULT_CHANNEL_PARTICIPANT_RATE_LIMIT.windowMs,
+  maxEntries: DEFAULT_CHANNEL_PARTICIPANT_RATE_LIMIT.maxRequests,
+});
 
 /** Same composite-key shape as lib/rate-limit/conversation-lock.ts ("layer 3") -- both layers key off exactly the same (project, channel, participant) triple, deliberately kept as one shared helper so the two layers can never silently drift apart on how they derive a key from the same inputs. */
 export function channelParticipantKey(projectId: string, channel: string, externalParticipantId: string): string {
   return `${projectId}:${channel}:${externalParticipantId}`;
 }
 
-/** Test-only escape hatch: requestTimestamps is module-level state that would otherwise leak between test cases run in the same process. Not meant to be reached for outside lib/rate-limit/__tests__. */
+/** Test-only escape hatch: the limiter's Map is module-level state that would otherwise leak between test cases run in the same process. Not meant to be reached for outside lib/rate-limit/__tests__. */
 export function __resetChannelParticipantRateLimitForTests(): void {
-  requestTimestamps.clear();
+  limiter.reset();
 }
 
 /**
@@ -86,27 +93,6 @@ export function checkChannelParticipantRateLimit(
   config: ChannelParticipantRateLimitConfig = DEFAULT_CHANNEL_PARTICIPANT_RATE_LIMIT
 ): ChannelParticipantRateLimitResult {
   const key = channelParticipantKey(projectId, channel, externalParticipantId);
-  const now = Date.now();
-  const cutoff = now - config.windowMs;
-  const existing = requestTimestamps.get(key) ?? [];
-  const fresh = existing.filter((ts) => ts > cutoff);
-
-  if (fresh.length >= config.maxRequests) {
-    // Still write back the purged (but not incremented) list -- keeps the
-    // map from accumulating stale entries for a participant who keeps
-    // getting rejected without ever succeeding.
-    if (fresh.length > 0) requestTimestamps.set(key, fresh);
-    else requestTimestamps.delete(key);
-    const oldest = fresh[0];
-    return {
-      allowed: false,
-      currentCount: fresh.length,
-      limit: config.maxRequests,
-      retryAfterMs: Math.max(0, oldest + config.windowMs - now),
-    };
-  }
-
-  fresh.push(now);
-  requestTimestamps.set(key, fresh);
-  return { allowed: true, currentCount: fresh.length, limit: config.maxRequests, retryAfterMs: 0 };
+  const result = limiter.check(key, { windowMs: config.windowMs, maxEntries: config.maxRequests });
+  return { allowed: result.allowed, currentCount: result.currentCount, limit: result.limit, retryAfterMs: result.retryAfterMs };
 }

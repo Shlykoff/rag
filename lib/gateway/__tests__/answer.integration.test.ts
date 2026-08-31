@@ -162,7 +162,15 @@ describe.skipIf(!hasIntegrationEnv())("answerExternalMessage (integration, real 
     });
 
     expect(result).toEqual({ kind: "ok", text: "Hello there" });
-    expect(mockGetAIProviders).toHaveBeenCalledWith({ projectId, ownerUserId: userId }, expect.anything());
+    // preFetchedProjectRow is now included -- answerExternalMessage() passes
+    // through the exact {id, user_id} row it already fetched to resolve
+    // ownerUserId, so getAIProviders() can skip its own redundant re-fetch
+    // of the identical row (see lib/ai/index.ts's GetAIProvidersParams doc
+    // comment).
+    expect(mockGetAIProviders).toHaveBeenCalledWith(
+      { projectId, ownerUserId: userId, preFetchedProjectRow: { id: projectId, user_id: userId } },
+      expect.anything()
+    );
 
     const { data: conv, error: convError } = await supabase
       .from("conversations")

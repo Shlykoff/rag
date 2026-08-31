@@ -53,15 +53,15 @@ import { getAuthenticatedUser, getRouteHandlerSupabaseClient, verifyProjectOwner
 import {
   getActiveProvider,
   setActiveProvider,
-  hasAIProviderCredential,
+  getConfiguredProvidersMap,
   MissingProviderCredentialsError,
-  type AIProviderCredentialType,
 } from "@/lib/ai";
+import { isUuidShape } from "@/lib/validation/uuid";
+import { parseJsonBody } from "@/lib/http/parse-json-body";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
-const ALL_CREDENTIAL_PROVIDERS: AIProviderCredentialType[] = ["openai", "anthropic", "gemini", "voyage"];
 // Deliberately hardcoded (not derived from lib/ai's SUPPORTED_AI_PROVIDERS
 // list) -- app/api/profile/ai-providers/route.ts's own ProviderTypeSchema
 // already made this exact choice for the sibling account-level route; kept
@@ -75,6 +75,13 @@ export async function GET(
   { params }: { params: Promise<{ projectId: string }> }
 ): Promise<Response> {
   const { projectId } = await params;
+  // Shape-check BEFORE ever touching the DB -- see
+  // app/api/projects/[projectId]/route.ts's identical guard for why (a raw
+  // Postgres "invalid input syntax for type uuid" 500 instead of this
+  // route's own documented 404).
+  if (!isUuidShape(projectId)) {
+    return Response.json({ error: "not_found" }, { status: 404 });
+  }
 
   const authClient = await getRouteHandlerSupabaseClient();
   const user = await getAuthenticatedUser(authClient);
@@ -85,14 +92,10 @@ export async function GET(
 
   const supabase = getServiceRoleClient();
   try {
-    const [activeProvider, configuredFlags] = await Promise.all([
+    const [activeProvider, configured] = await Promise.all([
       getActiveProvider(supabase, projectId),
-      Promise.all(ALL_CREDENTIAL_PROVIDERS.map((p) => hasAIProviderCredential(supabase, user.id, p))),
+      getConfiguredProvidersMap(supabase, user.id),
     ]);
-    const configured = Object.fromEntries(ALL_CREDENTIAL_PROVIDERS.map((p, i) => [p, configuredFlags[i]])) as Record<
-      AIProviderCredentialType,
-      boolean
-    >;
     return Response.json({ activeProvider, configured }, { status: 200 });
   } catch (err) {
     console.error(`GET /api/projects/${projectId}/model: failed to load provider state:`, err);
@@ -105,6 +108,13 @@ export async function PUT(
   { params }: { params: Promise<{ projectId: string }> }
 ): Promise<Response> {
   const { projectId } = await params;
+  // Shape-check BEFORE ever touching the DB -- see
+  // app/api/projects/[projectId]/route.ts's identical guard for why (a raw
+  // Postgres "invalid input syntax for type uuid" 500 instead of this
+  // route's own documented 404).
+  if (!isUuidShape(projectId)) {
+    return Response.json({ error: "not_found" }, { status: 404 });
+  }
 
   const authClient = await getRouteHandlerSupabaseClient();
   const user = await getAuthenticatedUser(authClient);
@@ -113,16 +123,8 @@ export async function PUT(
   const owned = await verifyProjectOwnership(authClient, projectId);
   if (!owned) return Response.json({ error: "not_found" }, { status: 404 });
 
-  let rawBody: unknown;
-  try {
-    rawBody = await request.json();
-  } catch {
-    return Response.json({ error: "invalid_request", details: "Body must be valid JSON." }, { status: 400 });
-  }
-  const parsed = PutBodySchema.safeParse(rawBody);
-  if (!parsed.success) {
-    return Response.json({ error: "invalid_request", details: parsed.error.flatten() }, { status: 400 });
-  }
+  const parsed = await parseJsonBody(request, PutBodySchema);
+  if ("errorResponse" in parsed) return parsed.errorResponse;
 
   const supabase = getServiceRoleClient();
   try {

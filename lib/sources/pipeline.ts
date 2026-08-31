@@ -25,6 +25,9 @@ import "server-only";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { ingestDocumentWithDefaultProviders, type IngestResult } from "../ingestion/ingest";
 import type { DocumentSourceType } from "./types";
+import { importUrlDocument } from "./url";
+import { importNotionDocument } from "./notion";
+import { importSingleDriveFile } from "./google-drive";
 
 export interface StoredObject {
   /** Appended after `${projectId}/${documentId}/` -- e.g. "original.pdf" (manual_upload) or "content.txt" (every other source's cached text extraction). */
@@ -194,4 +197,66 @@ export async function upsertDocumentFromSource(
 
   const result = await createDocumentFromSource(supabase, params);
   return { ...result, created: true };
+}
+
+export interface RefetchContext {
+  /** The credential owner -- source credentials stay account-level (see lib/sources/credentials.ts), never project-scoped. */
+  ownerUserId: string;
+}
+
+export interface RefetchResult {
+  title: string;
+  text: string;
+  object: StoredObject;
+}
+
+/**
+ * Uniform re-fetch entry point for "Refresh"
+ * (app/api/sources/[documentId]/refresh/route.ts): dispatches to the
+ * adapter matching `sourceType` and normalizes each one's differently-
+ * shaped result into the one shape refreshDocumentFromSource actually
+ * needs (extracted text + a StoredObject to re-upload alongside it).
+ * Mirrors lib/ai/index.ts's PROVIDER_REGISTRY dispatch-by-key pattern --
+ * this project's other precedent for "one lookup table instead of the
+ * caller hand-branching on a string union" -- which lib/sources/ itself had
+ * no equivalent for before this fix (the refresh route used to branch on
+ * `sourceType` directly). `manual_upload` is deliberately not a valid input
+ * here: it has nothing external to re-fetch, so the route rejects it with
+ * its own 400 BEFORE ever reaching this function -- see that route's
+ * comment for why that check stays there rather than being folded into
+ * this dispatcher.
+ */
+export async function refetchByRef(
+  sourceType: "notion" | "url" | "google_drive",
+  sourceRef: string,
+  supabase: SupabaseClient,
+  ctx: RefetchContext
+): Promise<RefetchResult> {
+  if (sourceType === "url") {
+    const normalized = await importUrlDocument(sourceRef);
+    return {
+      title: normalized.title,
+      text: normalized.text,
+      object: { suffix: "content.txt", content: normalized.text, contentType: "text/plain; charset=utf-8" },
+    };
+  }
+  if (sourceType === "notion") {
+    const normalized = await importNotionDocument(supabase, ctx.ownerUserId, sourceRef);
+    return {
+      title: normalized.title,
+      text: normalized.text,
+      object: { suffix: "content.txt", content: normalized.text, contentType: "text/plain; charset=utf-8" },
+    };
+  }
+  // google_drive: source_ref on a per-file document row is the Drive FILE
+  // id, not the folder id -- refreshing one file re-downloads/exports just
+  // that file rather than re-listing (and re-importing every file in) the
+  // whole folder. Re-syncing the whole folder (picking up newly added
+  // files) is POST /api/sources/google-drive's job, not this endpoint's.
+  const normalized = await importSingleDriveFile(supabase, ctx.ownerUserId, sourceRef);
+  return {
+    title: normalized.title,
+    text: normalized.text,
+    object: { suffix: "content.txt", content: normalized.text, contentType: "text/plain; charset=utf-8" },
+  };
 }

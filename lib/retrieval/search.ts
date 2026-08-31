@@ -24,8 +24,16 @@ import "server-only";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { EmbeddingsProvider } from "../ai/types";
 import { estimateTokens } from "../tokens";
+// Canonical source of `DocumentSourceType` -- this module used to redeclare
+// its own copy of the exact same string union (a THIRD independent
+// redeclaration alongside lib/sources/types.ts's own, and lib/ui/format.ts's
+// -- see that file's own header for why it can't just import lib/sources/
+// directly). lib/retrieval/ has no such cross-domain restriction (it's core
+// app code, not the isolated lib/channels/ module CLAUDE.md rule 8 guards),
+// so this imports the real type instead of drifting from it.
+import type { DocumentSourceType } from "../sources/types";
 
-export type DocumentSourceType = "manual_upload" | "notion" | "url" | "google_drive";
+export type { DocumentSourceType };
 
 /** One row from match_document_chunks, typed to match the RPC's `returns table (...)` exactly (see supabase/migrations/20260819052359_create_match_document_chunks_rpc.sql). */
 export interface MatchedChunk {
@@ -72,6 +80,18 @@ export interface RetrievalOptions {
 const DEFAULT_MATCH_COUNT = 6;
 const DEFAULT_MAX_CONTEXT_TOKENS = 3000;
 
+// Deliberately NOT unified with lib/ui/format.ts's sourceTypeLabel()/
+// citationLabel() even though both are "DocumentSourceType -> Russian
+// text" mappings over the same canonical type (now imported above, not
+// redeclared): the two serve genuinely different audiences with genuinely
+// different phrasing, not just different casing of the same words.
+// sourceTypeLabel() produces a standalone capitalized UI badge ("Google
+// Drive"); this produces a lowercase noun phrase meant to read naturally
+// INLINE inside a context header the LLM sees ("файл из Google Drive"),
+// which is also asserted verbatim by lib/retrieval/__tests__/context.test.ts.
+// Collapsing them into one shared table would either change the LLM-facing
+// prompt text or the UI's badge text as a side effect of "deduplicating" a
+// resemblance that's actually coincidental, not the same string.
 function describeSourceType(type: DocumentSourceType): string {
   switch (type) {
     case "manual_upload":

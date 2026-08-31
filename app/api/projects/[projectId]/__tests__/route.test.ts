@@ -35,7 +35,7 @@ vi.mock("@/lib/supabase/service-client", () => ({
 import { GET, PATCH, DELETE } from "../route";
 
 function makeRequest(method: string, body?: unknown): Request {
-  return new Request("http://localhost/api/projects/project-1", {
+  return new Request("http://localhost/api/projects/11111111-1111-4111-8111-111111111111", {
     method,
     headers: body !== undefined ? { "content-type": "application/json" } : undefined,
     body: body !== undefined ? JSON.stringify(body) : undefined,
@@ -47,7 +47,7 @@ function makeParams(projectId: string): { params: Promise<{ projectId: string }>
 }
 
 const SAMPLE_ROW = {
-  id: "project-1",
+  id: "11111111-1111-4111-8111-111111111111",
   name: "бот1",
   active_ai_provider: "openai" as const,
   created_at: "2026-01-01T00:00:00Z",
@@ -56,7 +56,7 @@ const SAMPLE_ROW = {
 };
 
 const SAMPLE_DTO = {
-  id: "project-1",
+  id: "11111111-1111-4111-8111-111111111111",
   name: "бот1",
   activeAiProvider: "openai",
   documentCount: 2,
@@ -116,7 +116,7 @@ function makeDeleteStub(options: {
 
   const deleteSelect = vi
     .fn()
-    .mockResolvedValue({ data: options.dbDeleteError ? null : (options.deletedRows ?? [{ id: "project-1" }]), error: options.dbDeleteError ?? null });
+    .mockResolvedValue({ data: options.dbDeleteError ? null : (options.deletedRows ?? [{ id: "11111111-1111-4111-8111-111111111111" }]), error: options.dbDeleteError ?? null });
   const deleteEqId = vi.fn().mockReturnValue({ select: deleteSelect });
   const deleteFn = vi.fn().mockReturnValue({ eq: deleteEqId });
 
@@ -132,6 +132,33 @@ function makeDeleteStub(options: {
   };
 }
 
+// Regression test: a syntactically-invalid projectId used to reach
+// `.eq("id", projectId)` and surface as an uncaught Postgres "invalid
+// input syntax for type uuid" 500, instead of each route's own documented
+// 404. Covers all three methods since each has its own guard.
+describe("uuid shape guard (GET/PATCH/DELETE)", () => {
+  afterEach(() => vi.clearAllMocks());
+
+  it("GET returns 404 (not 500) for a syntactically invalid projectId, without touching auth", async () => {
+    const response = await GET(makeRequest("GET"), makeParams("not-a-uuid"));
+    expect(response.status).toBe(404);
+    expect(await response.json()).toEqual({ error: "not_found" });
+    expect(mockGetRouteHandlerSupabaseClient).not.toHaveBeenCalled();
+  });
+
+  it("PATCH returns 404 (not 500) for a syntactically invalid projectId, without touching auth", async () => {
+    const response = await PATCH(makeRequest("PATCH", { name: "New name" }), makeParams("not-a-uuid"));
+    expect(response.status).toBe(404);
+    expect(mockGetRouteHandlerSupabaseClient).not.toHaveBeenCalled();
+  });
+
+  it("DELETE returns 404 (not 500) for a syntactically invalid projectId, without touching auth", async () => {
+    const response = await DELETE(makeRequest("DELETE"), makeParams("not-a-uuid"));
+    expect(response.status).toBe(404);
+    expect(mockGetRouteHandlerSupabaseClient).not.toHaveBeenCalled();
+  });
+});
+
 describe("GET /api/projects/{projectId}", () => {
   afterEach(() => vi.clearAllMocks());
 
@@ -139,7 +166,7 @@ describe("GET /api/projects/{projectId}", () => {
     mockGetRouteHandlerSupabaseClient.mockResolvedValue({});
     mockGetAuthenticatedUser.mockResolvedValue(null);
 
-    const response = await GET(makeRequest("GET"), makeParams("project-1"));
+    const response = await GET(makeRequest("GET"), makeParams("11111111-1111-4111-8111-111111111111"));
 
     expect(response.status).toBe(401);
     expect(mockVerifyProjectOwnership).not.toHaveBeenCalled();
@@ -150,7 +177,7 @@ describe("GET /api/projects/{projectId}", () => {
     mockGetAuthenticatedUser.mockResolvedValue({ id: "user-2", email: "b@b.com" });
     mockVerifyProjectOwnership.mockResolvedValue(false);
 
-    const response = await GET(makeRequest("GET"), makeParams("project-1"));
+    const response = await GET(makeRequest("GET"), makeParams("11111111-1111-4111-8111-111111111111"));
 
     expect(response.status).toBe(404);
     expect(await response.json()).toEqual({ error: "not_found" });
@@ -162,7 +189,7 @@ describe("GET /api/projects/{projectId}", () => {
     mockGetAuthenticatedUser.mockResolvedValue({ id: "user-1", email: "a@b.com" });
     mockVerifyProjectOwnership.mockResolvedValue(false);
 
-    const response = await GET(makeRequest("GET"), makeParams("does-not-exist"));
+    const response = await GET(makeRequest("GET"), makeParams("99999999-9999-4999-8999-999999999999"));
 
     expect(response.status).toBe(404);
   });
@@ -173,7 +200,7 @@ describe("GET /api/projects/{projectId}", () => {
     mockVerifyProjectOwnership.mockResolvedValue(true);
     mockGetServiceRoleClient.mockReturnValue(makeGetStub({ data: SAMPLE_ROW, error: null }));
 
-    const response = await GET(makeRequest("GET"), makeParams("project-1"));
+    const response = await GET(makeRequest("GET"), makeParams("11111111-1111-4111-8111-111111111111"));
 
     expect(response.status).toBe(200);
     expect(await response.json()).toEqual({ project: SAMPLE_DTO });
@@ -187,7 +214,7 @@ describe("PATCH /api/projects/{projectId}", () => {
     mockGetRouteHandlerSupabaseClient.mockResolvedValue({});
     mockGetAuthenticatedUser.mockResolvedValue(null);
 
-    const response = await PATCH(makeRequest("PATCH", { name: "new name" }), makeParams("project-1"));
+    const response = await PATCH(makeRequest("PATCH", { name: "new name" }), makeParams("11111111-1111-4111-8111-111111111111"));
 
     expect(response.status).toBe(401);
     expect(mockVerifyProjectOwnership).not.toHaveBeenCalled();
@@ -198,7 +225,7 @@ describe("PATCH /api/projects/{projectId}", () => {
     mockGetAuthenticatedUser.mockResolvedValue({ id: "user-2", email: "b@b.com" });
     mockVerifyProjectOwnership.mockResolvedValue(false);
 
-    const response = await PATCH(makeRequest("PATCH", { name: "hijacked" }), makeParams("project-1"));
+    const response = await PATCH(makeRequest("PATCH", { name: "hijacked" }), makeParams("11111111-1111-4111-8111-111111111111"));
 
     expect(response.status).toBe(404);
     expect(mockGetServiceRoleClient).not.toHaveBeenCalled();
@@ -209,7 +236,7 @@ describe("PATCH /api/projects/{projectId}", () => {
     mockGetAuthenticatedUser.mockResolvedValue({ id: "user-1", email: "a@b.com" });
     mockVerifyProjectOwnership.mockResolvedValue(true);
 
-    const response = await PATCH(makeRequest("PATCH", { name: "" }), makeParams("project-1"));
+    const response = await PATCH(makeRequest("PATCH", { name: "" }), makeParams("11111111-1111-4111-8111-111111111111"));
 
     expect(response.status).toBe(400);
     expect(mockGetServiceRoleClient).not.toHaveBeenCalled();
@@ -220,12 +247,12 @@ describe("PATCH /api/projects/{projectId}", () => {
     mockGetAuthenticatedUser.mockResolvedValue({ id: "user-1", email: "a@b.com" });
     mockVerifyProjectOwnership.mockResolvedValue(true);
 
-    const badRequest = new Request("http://localhost/api/projects/project-1", {
+    const badRequest = new Request("http://localhost/api/projects/11111111-1111-4111-8111-111111111111", {
       method: "PATCH",
       headers: { "content-type": "application/json" },
       body: "{not json",
     });
-    const response = await PATCH(badRequest, makeParams("project-1"));
+    const response = await PATCH(badRequest, makeParams("11111111-1111-4111-8111-111111111111"));
     expect(response.status).toBe(400);
   });
 
@@ -236,7 +263,7 @@ describe("PATCH /api/projects/{projectId}", () => {
     const stub = makePatchStub({ data: { ...SAMPLE_ROW, name: "новое имя" }, error: null });
     mockGetServiceRoleClient.mockReturnValue(stub);
 
-    const response = await PATCH(makeRequest("PATCH", { name: "  новое имя  " }), makeParams("project-1"));
+    const response = await PATCH(makeRequest("PATCH", { name: "  новое имя  " }), makeParams("11111111-1111-4111-8111-111111111111"));
 
     expect(response.status).toBe(200);
     expect(await response.json()).toEqual({ project: { ...SAMPLE_DTO, name: "новое имя" } });
@@ -249,7 +276,7 @@ describe("PATCH /api/projects/{projectId}", () => {
     mockVerifyProjectOwnership.mockResolvedValue(true);
     mockGetServiceRoleClient.mockReturnValue(makePatchStub({ data: null, error: null }));
 
-    const response = await PATCH(makeRequest("PATCH", { name: "новое имя" }), makeParams("project-1"));
+    const response = await PATCH(makeRequest("PATCH", { name: "новое имя" }), makeParams("11111111-1111-4111-8111-111111111111"));
 
     expect(response.status).toBe(404);
   });
@@ -262,7 +289,7 @@ describe("DELETE /api/projects/{projectId}", () => {
     mockGetRouteHandlerSupabaseClient.mockResolvedValue({});
     mockGetAuthenticatedUser.mockResolvedValue(null);
 
-    const response = await DELETE(makeRequest("DELETE"), makeParams("project-1"));
+    const response = await DELETE(makeRequest("DELETE"), makeParams("11111111-1111-4111-8111-111111111111"));
 
     expect(response.status).toBe(401);
     expect(mockVerifyProjectOwnership).not.toHaveBeenCalled();
@@ -273,7 +300,7 @@ describe("DELETE /api/projects/{projectId}", () => {
     mockGetAuthenticatedUser.mockResolvedValue({ id: "user-2", email: "b@b.com" });
     mockVerifyProjectOwnership.mockResolvedValue(false);
 
-    const response = await DELETE(makeRequest("DELETE"), makeParams("project-1"));
+    const response = await DELETE(makeRequest("DELETE"), makeParams("11111111-1111-4111-8111-111111111111"));
 
     expect(response.status).toBe(404);
     expect(await response.json()).toEqual({ error: "not_found" });
@@ -287,15 +314,15 @@ describe("DELETE /api/projects/{projectId}", () => {
     const stub = makeDeleteStub({
       listLevels: [
         {
-          path: "project-1",
+          path: "11111111-1111-4111-8111-111111111111",
           data: [
             { id: null, name: "doc-a" }, // pseudo-folder -> descend
             { id: null, name: "doc-b" },
           ],
           error: null,
         },
-        { path: "project-1/doc-a", data: [{ id: "obj-1", name: "content.txt" }], error: null },
-        { path: "project-1/doc-b", data: [{ id: "obj-2", name: "original.pdf" }], error: null },
+        { path: "11111111-1111-4111-8111-111111111111/doc-a", data: [{ id: "obj-1", name: "content.txt" }], error: null },
+        { path: "11111111-1111-4111-8111-111111111111/doc-b", data: [{ id: "obj-2", name: "original.pdf" }], error: null },
       ],
     });
     mockGetServiceRoleClient.mockReturnValue(stub);
@@ -307,14 +334,14 @@ describe("DELETE /api/projects/{projectId}", () => {
     });
     stub.__spies.deleteFn.mockImplementation(() => {
       callOrder.push("db-delete");
-      return { eq: vi.fn().mockReturnValue({ select: vi.fn().mockResolvedValue({ data: [{ id: "project-1" }], error: null }) }) };
+      return { eq: vi.fn().mockReturnValue({ select: vi.fn().mockResolvedValue({ data: [{ id: "11111111-1111-4111-8111-111111111111" }], error: null }) }) };
     });
 
-    const response = await DELETE(makeRequest("DELETE"), makeParams("project-1"));
+    const response = await DELETE(makeRequest("DELETE"), makeParams("11111111-1111-4111-8111-111111111111"));
 
     expect(response.status).toBe(200);
-    expect(await response.json()).toEqual({ projectId: "project-1", status: "deleted" });
-    expect(stub.__spies.remove).toHaveBeenCalledWith(["project-1/doc-a/content.txt", "project-1/doc-b/original.pdf"]);
+    expect(await response.json()).toEqual({ projectId: "11111111-1111-4111-8111-111111111111", status: "deleted" });
+    expect(stub.__spies.remove).toHaveBeenCalledWith(["11111111-1111-4111-8111-111111111111/doc-a/content.txt", "11111111-1111-4111-8111-111111111111/doc-b/original.pdf"]);
     // Storage cleanup happens BEFORE the DB delete -- see route.ts's own
     // ordering comment (the opposite order from the single-document
     // delete route, deliberately).
@@ -325,10 +352,10 @@ describe("DELETE /api/projects/{projectId}", () => {
     mockGetRouteHandlerSupabaseClient.mockResolvedValue({});
     mockGetAuthenticatedUser.mockResolvedValue({ id: "user-1", email: "a@b.com" });
     mockVerifyProjectOwnership.mockResolvedValue(true);
-    const stub = makeDeleteStub({ listLevels: [{ path: "project-1", data: [], error: null }] });
+    const stub = makeDeleteStub({ listLevels: [{ path: "11111111-1111-4111-8111-111111111111", data: [], error: null }] });
     mockGetServiceRoleClient.mockReturnValue(stub);
 
-    const response = await DELETE(makeRequest("DELETE"), makeParams("project-1"));
+    const response = await DELETE(makeRequest("DELETE"), makeParams("11111111-1111-4111-8111-111111111111"));
 
     expect(response.status).toBe(200);
     expect(stub.__spies.remove).not.toHaveBeenCalled();
@@ -338,11 +365,11 @@ describe("DELETE /api/projects/{projectId}", () => {
     mockGetRouteHandlerSupabaseClient.mockResolvedValue({});
     mockGetAuthenticatedUser.mockResolvedValue({ id: "user-1", email: "a@b.com" });
     mockVerifyProjectOwnership.mockResolvedValue(true);
-    const stub = makeDeleteStub({ listLevels: [{ path: "project-1", data: null, error: { message: "storage is down" } }] });
+    const stub = makeDeleteStub({ listLevels: [{ path: "11111111-1111-4111-8111-111111111111", data: null, error: { message: "storage is down" } }] });
     mockGetServiceRoleClient.mockReturnValue(stub);
     const consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
 
-    const response = await DELETE(makeRequest("DELETE"), makeParams("project-1"));
+    const response = await DELETE(makeRequest("DELETE"), makeParams("11111111-1111-4111-8111-111111111111"));
 
     expect(response.status).toBe(500);
     expect(await response.json()).toEqual({
@@ -359,15 +386,15 @@ describe("DELETE /api/projects/{projectId}", () => {
     mockVerifyProjectOwnership.mockResolvedValue(true);
     const stub = makeDeleteStub({
       listLevels: [
-        { path: "project-1", data: [{ id: null, name: "doc-a" }], error: null },
-        { path: "project-1/doc-a", data: [{ id: "obj-1", name: "content.txt" }], error: null },
+        { path: "11111111-1111-4111-8111-111111111111", data: [{ id: null, name: "doc-a" }], error: null },
+        { path: "11111111-1111-4111-8111-111111111111/doc-a", data: [{ id: "obj-1", name: "content.txt" }], error: null },
       ],
       removeError: { message: "storage is down" },
     });
     mockGetServiceRoleClient.mockReturnValue(stub);
     const consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
 
-    const response = await DELETE(makeRequest("DELETE"), makeParams("project-1"));
+    const response = await DELETE(makeRequest("DELETE"), makeParams("11111111-1111-4111-8111-111111111111"));
 
     expect(response.status).toBe(500);
     expect((await response.json()).error).toBe("storage_cleanup_failed");
@@ -379,10 +406,10 @@ describe("DELETE /api/projects/{projectId}", () => {
     mockGetRouteHandlerSupabaseClient.mockResolvedValue({});
     mockGetAuthenticatedUser.mockResolvedValue({ id: "user-1", email: "a@b.com" });
     mockVerifyProjectOwnership.mockResolvedValue(true);
-    const stub = makeDeleteStub({ listLevels: [{ path: "project-1", data: [], error: null }], deletedRows: [] });
+    const stub = makeDeleteStub({ listLevels: [{ path: "11111111-1111-4111-8111-111111111111", data: [], error: null }], deletedRows: [] });
     mockGetServiceRoleClient.mockReturnValue(stub);
 
-    const response = await DELETE(makeRequest("DELETE"), makeParams("project-1"));
+    const response = await DELETE(makeRequest("DELETE"), makeParams("11111111-1111-4111-8111-111111111111"));
 
     expect(response.status).toBe(404);
     expect(await response.json()).toEqual({ error: "not_found" });
@@ -393,13 +420,13 @@ describe("DELETE /api/projects/{projectId}", () => {
     mockGetAuthenticatedUser.mockResolvedValue({ id: "user-1", email: "a@b.com" });
     mockVerifyProjectOwnership.mockResolvedValue(true);
     const stub = makeDeleteStub({
-      listLevels: [{ path: "project-1", data: [{ id: "obj-stray", name: "stray.txt" }], error: null }],
+      listLevels: [{ path: "11111111-1111-4111-8111-111111111111", data: [{ id: "obj-stray", name: "stray.txt" }], error: null }],
     });
     mockGetServiceRoleClient.mockReturnValue(stub);
 
-    const response = await DELETE(makeRequest("DELETE"), makeParams("project-1"));
+    const response = await DELETE(makeRequest("DELETE"), makeParams("11111111-1111-4111-8111-111111111111"));
 
     expect(response.status).toBe(200);
-    expect(stub.__spies.remove).toHaveBeenCalledWith(["project-1/stray.txt"]);
+    expect(stub.__spies.remove).toHaveBeenCalledWith(["11111111-1111-4111-8111-111111111111/stray.txt"]);
   });
 });

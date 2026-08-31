@@ -66,6 +66,8 @@ import { getAuthenticatedUser, getRouteHandlerSupabaseClient, verifyProjectOwner
 import { reserveChatRateLimitSlot } from "@/lib/rate-limit/rate-limiter";
 import { handleChatRequest, type ChatStreamEvent } from "@/lib/chat/handle-chat-request";
 import { uuidShapeSchema } from "@/lib/validation/uuid";
+import { parseJsonBody } from "@/lib/http/parse-json-body";
+import { rateLimitedResponse } from "@/lib/http/rate-limited-response";
 
 // Streaming responses must not be pre-rendered/cached and need the Node.js
 // runtime (the AI SDK provider packages and the Supabase client both
@@ -99,20 +101,8 @@ export async function POST(request: Request): Promise<Response> {
     return Response.json({ error: "unauthorized" }, { status: 401 });
   }
 
-  let rawBody: unknown;
-  try {
-    rawBody = await request.json();
-  } catch {
-    return Response.json({ error: "invalid_request", details: "Body must be valid JSON." }, { status: 400 });
-  }
-
-  const parsed = ChatRequestBodySchema.safeParse(rawBody);
-  if (!parsed.success) {
-    return Response.json(
-      { error: "invalid_request", details: parsed.error.flatten() },
-      { status: 400 }
-    );
-  }
+  const parsed = await parseJsonBody(request, ChatRequestBodySchema);
+  if ("errorResponse" in parsed) return parsed.errorResponse;
   const { projectId } = parsed.data;
 
   // Ownership verification BEFORE anything else touches this projectId
@@ -148,17 +138,7 @@ export async function POST(request: Request): Promise<Response> {
   // this project (see lib/gateway/answer.ts).
   const rateLimit = await reserveChatRateLimitSlot(supabase, projectId);
   if (!rateLimit.allowed) {
-    return Response.json(
-      {
-        error: "rate_limited",
-        message: "Сервис перегружен, попробуйте через несколько секунд.",
-        retryAfterMs: rateLimit.retryAfterMs,
-      },
-      {
-        status: 429,
-        headers: { "Retry-After": String(Math.ceil(rateLimit.retryAfterMs / 1000)) },
-      }
-    );
+    return rateLimitedResponse("Сервис перегружен, попробуйте через несколько секунд.", rateLimit.retryAfterMs);
   }
   // Released once this request's stream has fully finished (success or
   // failure) in the ReadableStream's `finally` below -- see

@@ -38,6 +38,7 @@ vi.mock("../credentials", () => ({
 
 import { getAIProviders, getEmbeddingsProvider, getActiveProviderLabel } from "../index";
 import { AIProviderError } from "../errors";
+import type { SupabaseClient } from "@supabase/supabase-js";
 
 const PROJECT_ID = "project-1";
 const OWNER_ID = "owner-1";
@@ -211,6 +212,44 @@ describe("getAIProviders({projectId, ownerUserId}, supabase)", () => {
     );
     expect(err).toBeInstanceOf(AIProviderError);
     expect((err as AIProviderError).kind).toBe("no_credentials");
+  });
+
+  // Regression test for the redundant-double-fetch fix (lib/gateway/answer.ts):
+  // when a caller passes preFetchedProjectRow, getAIProviders() must skip
+  // its own `.from("projects")` re-fetch entirely (the fake below throws if
+  // it's ever called) while still applying the exact same ownership guard.
+  it("skips its own projects fetch when preFetchedProjectRow is given, but still enforces the ownership guard against it", async () => {
+    saved = saveEnv();
+    mockGetActiveProvider.mockResolvedValue("openai");
+    mockGetAIProviderCredential.mockResolvedValue("test-openai-key");
+    const supabaseThatMustNotBeQueried = {
+      from() {
+        throw new Error("getAIProviders must not re-fetch the projects row when preFetchedProjectRow is given");
+      },
+    } as unknown as SupabaseClient;
+
+    const { chatProvider } = await getAIProviders(
+      { projectId: PROJECT_ID, ownerUserId: OWNER_ID, preFetchedProjectRow: { id: PROJECT_ID, user_id: OWNER_ID } },
+      supabaseThatMustNotBeQueried
+    );
+    expect(chatProvider.providerName).toBe("openai");
+  });
+
+  it("still rejects via preFetchedProjectRow when its user_id doesn't match ownerUserId -- the guard isn't bypassed by skipping the fetch", async () => {
+    saved = saveEnv();
+    const supabaseThatMustNotBeQueried = {
+      from() {
+        throw new Error("must not be queried");
+      },
+    } as unknown as SupabaseClient;
+
+    await expect(
+      getAIProviders(
+        { projectId: PROJECT_ID, ownerUserId: OWNER_ID, preFetchedProjectRow: { id: PROJECT_ID, user_id: "someone-else" } },
+        supabaseThatMustNotBeQueried
+      )
+    ).rejects.toThrow(/does not exist or does not belong to user/);
+    expect(mockGetActiveProvider).not.toHaveBeenCalled();
   });
 
   it("an overridden OPENAI_EMBEDDING_MODEL shows up on embeddingsProvider, not chatProvider", async () => {

@@ -32,6 +32,17 @@ import { encryptCredential, decryptCredential } from "./crypto";
 /** Matches the `ai_provider_type` Postgres enum exactly (see the ai_provider_credentials migration) -- every provider that can hold a stored API key, including 'voyage' (Anthropic's fixed embeddings pairing, never independently selectable as an active provider -- see ActiveAIProvider below). */
 export type AIProviderCredentialType = "openai" | "anthropic" | "gemini" | "voyage";
 
+/**
+ * Every value AIProviderCredentialType can take, as a concrete array --
+ * used to be independently redeclared (byte-for-byte identical) in both
+ * app/api/profile/ai-providers/route.ts and
+ * app/api/projects/[projectId]/model/route.ts. Deliberately hardcoded here
+ * too (not derived from lib/ai/index.ts's SUPPORTED_AI_PROVIDERS, which
+ * excludes 'voyage' -- see that constant's own comment) since this list
+ * specifically needs to include 'voyage', unlike SUPPORTED_AI_PROVIDERS.
+ */
+export const ALL_CREDENTIAL_PROVIDERS: AIProviderCredentialType[] = ["openai", "anthropic", "gemini", "voyage"];
+
 /** The subset of AIProviderCredentialType that can actually be `user_settings.active_ai_provider` -- excludes 'voyage', enforced both by the DB CHECK constraint (user_settings_active_provider_not_voyage) and by this narrower type, so a caller can't even attempt to pass 'voyage' to setActiveProvider() without a compile error. */
 export type ActiveAIProvider = Exclude<AIProviderCredentialType, "voyage">;
 
@@ -126,6 +137,30 @@ export async function hasAIProviderCredential(
     throw new Error(`hasAIProviderCredential: failed to check ${provider} credential: ${error.message}`);
   }
   return (count ?? 0) > 0;
+}
+
+/**
+ * Returns which of EVERY credential provider (ALL_CREDENTIAL_PROVIDERS) is
+ * currently configured for `userId`, as a `{ openai: boolean, ... }` map --
+ * one round trip (all four `hasAIProviderCredential` checks run
+ * concurrently via Promise.all, not sequentially). Used to be
+ * independently re-implemented (identical `Promise.all(...).map` +
+ * `Object.fromEntries` logic) in both
+ * app/api/profile/ai-providers/route.ts's GET and
+ * app/api/projects/[projectId]/model/route.ts's GET, which use this
+ * exact same "is X configured" shape for two different purposes (the
+ * former: what to show as connected on the account-level profile screen;
+ * the latter: which options a project's "pick a model" screen can offer).
+ */
+export async function getConfiguredProvidersMap(
+  supabase: SupabaseClient,
+  userId: string
+): Promise<Record<AIProviderCredentialType, boolean>> {
+  const flags = await Promise.all(ALL_CREDENTIAL_PROVIDERS.map((provider) => hasAIProviderCredential(supabase, userId, provider)));
+  return Object.fromEntries(ALL_CREDENTIAL_PROVIDERS.map((provider, i) => [provider, flags[i]])) as Record<
+    AIProviderCredentialType,
+    boolean
+  >;
 }
 
 /**

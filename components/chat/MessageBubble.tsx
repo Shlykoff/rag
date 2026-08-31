@@ -1,7 +1,12 @@
+import { memo } from "react";
 import { SourceList } from "./SourceList";
 import type { ChatMessageVM } from "./types";
 
-export function MessageBubble({ message }: { message: ChatMessageVM }) {
+// Wrapped in React.memo -- see ChatView.tsx's MessageContainer (its only
+// caller) for why: without this, every streamed SSE delta re-rendering the
+// whole `messages` array would re-render every prior bubble too, not just
+// the one actively streaming in.
+export const MessageBubble = memo(function MessageBubble({ message }: { message: ChatMessageVM }) {
   const isUser = message.role === "user";
 
   return (
@@ -29,4 +34,4 @@ export function MessageBubble({ message }: { message: ChatMessageVM }) {
       </div>
     </div>
   );
-}
+});

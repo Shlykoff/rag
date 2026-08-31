@@ -88,10 +88,24 @@ describe("DELETE /api/sources/{documentId}", () => {
     mockGetRouteHandlerSupabaseClient.mockResolvedValue({});
     mockGetAuthenticatedUser.mockResolvedValue(null);
 
-    const response = await DELETE(makeRequest("doc-1"), makeParams("doc-1"));
+    const response = await DELETE(makeRequest("11111111-1111-4111-8111-111111111111"), makeParams("11111111-1111-4111-8111-111111111111"));
 
     expect(response.status).toBe(401);
     expect(await response.json()).toEqual({ error: "unauthorized" });
+    expect(mockGetServiceRoleClient).not.toHaveBeenCalled();
+  });
+
+  // Regression test: a syntactically-invalid documentId used to reach
+  // `.eq("id", documentId)` against a real Postgres `uuid` column and come
+  // back as an uncaught "invalid input syntax for type uuid" error (a bare
+  // 500), instead of this route's own documented 404. Never even reaches
+  // auth/the DB now.
+  it("returns 404 (not a 500) for a syntactically invalid documentId, without touching auth or the DB", async () => {
+    const response = await DELETE(makeRequest("not-a-uuid"), makeParams("not-a-uuid"));
+
+    expect(response.status).toBe(404);
+    expect(await response.json()).toEqual({ error: "not_found" });
+    expect(mockGetRouteHandlerSupabaseClient).not.toHaveBeenCalled();
     expect(mockGetServiceRoleClient).not.toHaveBeenCalled();
   });
 
@@ -101,7 +115,7 @@ describe("DELETE /api/sources/{documentId}", () => {
     const stub = makeSupabaseStub({ doc: null });
     mockGetServiceRoleClient.mockReturnValue(stub);
 
-    const response = await DELETE(makeRequest("doc-missing"), makeParams("doc-missing"));
+    const response = await DELETE(makeRequest("99999999-9999-4999-8999-999999999999"), makeParams("99999999-9999-4999-8999-999999999999"));
 
     expect(response.status).toBe(404);
     expect(await response.json()).toEqual({ error: "not_found" });
@@ -113,12 +127,12 @@ describe("DELETE /api/sources/{documentId}", () => {
     mockGetRouteHandlerSupabaseClient.mockResolvedValue({});
     mockGetAuthenticatedUser.mockResolvedValue({ id: "user-1", email: "a@b.com" });
     const stub = makeSupabaseStub({
-      doc: { id: "doc-1", project_id: "someone-elses-project", storage_path: "someone-elses-project/doc-1/content.txt" },
+      doc: { id: "11111111-1111-4111-8111-111111111111", project_id: "someone-elses-project", storage_path: "someone-elses-project/11111111-1111-4111-8111-111111111111/content.txt" },
     });
     mockGetServiceRoleClient.mockReturnValue(stub);
     mockVerifyProjectOwnership.mockResolvedValue(false);
 
-    const response = await DELETE(makeRequest("doc-1"), makeParams("doc-1"));
+    const response = await DELETE(makeRequest("11111111-1111-4111-8111-111111111111"), makeParams("11111111-1111-4111-8111-111111111111"));
 
     expect(response.status).toBe(404);
     expect(await response.json()).toEqual({ error: "not_found" });
@@ -130,7 +144,7 @@ describe("DELETE /api/sources/{documentId}", () => {
     mockGetRouteHandlerSupabaseClient.mockResolvedValue({});
     mockGetAuthenticatedUser.mockResolvedValue({ id: "user-1", email: "a@b.com" });
     const stub = makeSupabaseStub({
-      doc: { id: "doc-1", project_id: "project-1", storage_path: "project-1/doc-1/content.txt" },
+      doc: { id: "11111111-1111-4111-8111-111111111111", project_id: "project-1", storage_path: "project-1/11111111-1111-4111-8111-111111111111/content.txt" },
     });
     mockGetServiceRoleClient.mockReturnValue(stub);
     mockVerifyProjectOwnership.mockResolvedValue(true);
@@ -139,7 +153,7 @@ describe("DELETE /api/sources/{documentId}", () => {
     stub.__spies.deleteFn.mockImplementation(() => {
       callOrder.push("db-delete");
       return {
-        eq: vi.fn().mockReturnValue({ select: vi.fn().mockResolvedValue({ data: [{ id: "doc-1" }], error: null }) }),
+        eq: vi.fn().mockReturnValue({ select: vi.fn().mockResolvedValue({ data: [{ id: "11111111-1111-4111-8111-111111111111" }], error: null }) }),
       };
     });
     stub.__spies.remove.mockImplementation(async () => {
@@ -147,11 +161,11 @@ describe("DELETE /api/sources/{documentId}", () => {
       return { error: null };
     });
 
-    const response = await DELETE(makeRequest("doc-1"), makeParams("doc-1"));
+    const response = await DELETE(makeRequest("11111111-1111-4111-8111-111111111111"), makeParams("11111111-1111-4111-8111-111111111111"));
 
     expect(response.status).toBe(200);
-    expect(await response.json()).toEqual({ documentId: "doc-1", status: "deleted" });
-    expect(stub.__spies.remove).toHaveBeenCalledWith(["project-1/doc-1/content.txt"]);
+    expect(await response.json()).toEqual({ documentId: "11111111-1111-4111-8111-111111111111", status: "deleted" });
+    expect(stub.__spies.remove).toHaveBeenCalledWith(["project-1/11111111-1111-4111-8111-111111111111/content.txt"]);
     // DB delete (and its cascade to document_chunks) must happen before the
     // Storage object is removed -- see route.ts's ordering comment.
     expect(callOrder).toEqual(["db-delete", "storage-remove"]);
@@ -160,11 +174,11 @@ describe("DELETE /api/sources/{documentId}", () => {
   it("skips the Storage removal entirely when storage_path is null", async () => {
     mockGetRouteHandlerSupabaseClient.mockResolvedValue({});
     mockGetAuthenticatedUser.mockResolvedValue({ id: "user-1", email: "a@b.com" });
-    const stub = makeSupabaseStub({ doc: { id: "doc-1", project_id: "project-1", storage_path: null } });
+    const stub = makeSupabaseStub({ doc: { id: "11111111-1111-4111-8111-111111111111", project_id: "project-1", storage_path: null } });
     mockGetServiceRoleClient.mockReturnValue(stub);
     mockVerifyProjectOwnership.mockResolvedValue(true);
 
-    const response = await DELETE(makeRequest("doc-1"), makeParams("doc-1"));
+    const response = await DELETE(makeRequest("11111111-1111-4111-8111-111111111111"), makeParams("11111111-1111-4111-8111-111111111111"));
 
     expect(response.status).toBe(200);
     expect(stub.__spies.remove).not.toHaveBeenCalled();
@@ -174,17 +188,17 @@ describe("DELETE /api/sources/{documentId}", () => {
     mockGetRouteHandlerSupabaseClient.mockResolvedValue({});
     mockGetAuthenticatedUser.mockResolvedValue({ id: "user-1", email: "a@b.com" });
     const stub = makeSupabaseStub({
-      doc: { id: "doc-1", project_id: "project-1", storage_path: "project-1/doc-1/content.txt" },
+      doc: { id: "11111111-1111-4111-8111-111111111111", project_id: "project-1", storage_path: "project-1/11111111-1111-4111-8111-111111111111/content.txt" },
       storageRemoveError: { message: "storage is down" },
     });
     mockGetServiceRoleClient.mockReturnValue(stub);
     mockVerifyProjectOwnership.mockResolvedValue(true);
     const consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
 
-    const response = await DELETE(makeRequest("doc-1"), makeParams("doc-1"));
+    const response = await DELETE(makeRequest("11111111-1111-4111-8111-111111111111"), makeParams("11111111-1111-4111-8111-111111111111"));
 
     expect(response.status).toBe(200);
-    expect(await response.json()).toEqual({ documentId: "doc-1", status: "deleted" });
+    expect(await response.json()).toEqual({ documentId: "11111111-1111-4111-8111-111111111111", status: "deleted" });
     expect(consoleErrorSpy).toHaveBeenCalled();
     consoleErrorSpy.mockRestore();
   });
@@ -193,14 +207,14 @@ describe("DELETE /api/sources/{documentId}", () => {
     mockGetRouteHandlerSupabaseClient.mockResolvedValue({});
     mockGetAuthenticatedUser.mockResolvedValue({ id: "user-1", email: "a@b.com" });
     const stub = makeSupabaseStub({
-      doc: { id: "doc-1", project_id: "project-1", storage_path: "project-1/doc-1/content.txt" },
+      doc: { id: "11111111-1111-4111-8111-111111111111", project_id: "project-1", storage_path: "project-1/11111111-1111-4111-8111-111111111111/content.txt" },
       deleteError: { message: "db is down" },
     });
     mockGetServiceRoleClient.mockReturnValue(stub);
     mockVerifyProjectOwnership.mockResolvedValue(true);
     const consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
 
-    const response = await DELETE(makeRequest("doc-1"), makeParams("doc-1"));
+    const response = await DELETE(makeRequest("11111111-1111-4111-8111-111111111111"), makeParams("11111111-1111-4111-8111-111111111111"));
 
     expect(response.status).toBe(500);
     expect(stub.__spies.remove).not.toHaveBeenCalled();
@@ -221,13 +235,13 @@ describe("DELETE /api/sources/{documentId}", () => {
     mockGetRouteHandlerSupabaseClient.mockResolvedValue({});
     mockGetAuthenticatedUser.mockResolvedValue({ id: "user-1", email: "a@b.com" });
     const stub = makeSupabaseStub({
-      doc: { id: "doc-1", project_id: "project-1", storage_path: "project-1/doc-1/content.txt" },
+      doc: { id: "11111111-1111-4111-8111-111111111111", project_id: "project-1", storage_path: "project-1/11111111-1111-4111-8111-111111111111/content.txt" },
       deletedRows: [], // <- the row was already gone by the time this DELETE ran
     });
     mockGetServiceRoleClient.mockReturnValue(stub);
     mockVerifyProjectOwnership.mockResolvedValue(true);
 
-    const response = await DELETE(makeRequest("doc-1"), makeParams("doc-1"));
+    const response = await DELETE(makeRequest("11111111-1111-4111-8111-111111111111"), makeParams("11111111-1111-4111-8111-111111111111"));
 
     expect(response.status).toBe(404);
     expect(await response.json()).toEqual({ error: "not_found" });

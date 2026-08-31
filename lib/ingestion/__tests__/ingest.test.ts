@@ -167,8 +167,17 @@ describe("ingestDocument", () => {
     expect(finalUpdate.processing_error).toMatch(/не содержит текста/);
   });
 
-  it("marks the document 'error' and rethrows when the embeddings provider fails", async () => {
-    const { supabase, documentUpdates } = makeFakeSupabase({
+  // Regression test: the chunk-delete must run AFTER a successful embed,
+  // never concurrently with (or before) the embed attempt -- a Promise.all
+  // version of this pipeline was tried and reverted specifically because it
+  // meant ANY embed failure (expired key, transient network blip, provider
+  // rate limit -- all realistic right at the moment of a manual "Refresh")
+  // would unconditionally wipe the existing, still-servable chunk set,
+  // making a previously-working document instantly unsearchable instead of
+  // leaving it stale-but-searchable until the next successful sync. This
+  // asserts the old chunks are never even touched when embedding fails.
+  it("marks the document 'error' and rethrows when the embeddings provider fails, WITHOUT deleting the existing chunks", async () => {
+    const { supabase, documentUpdates, deletedDocumentIds } = makeFakeSupabase({
       fetchResult: { data: { id: "doc-1", project_id: "project-1", source_type: "manual_upload" }, error: null },
     });
     const failingEmbeddings: EmbeddingsProvider = {
@@ -183,6 +192,9 @@ describe("ingestDocument", () => {
     const finalUpdate = documentUpdates[documentUpdates.length - 1].payload;
     expect(finalUpdate.processing_status).toBe("error");
     expect(finalUpdate.processing_error).toMatch(/provider down/);
+    // The old (still-servable) chunk set must be left completely alone on
+    // an embed failure -- the delete call must never even happen.
+    expect(deletedDocumentIds).toHaveLength(0);
   });
 
   it("marks the document 'error' and rethrows when the chunk delete fails", async () => {

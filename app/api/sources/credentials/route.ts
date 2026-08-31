@@ -24,7 +24,23 @@ import "server-only";
 import { z } from "zod";
 import { getServiceRoleClient } from "@/lib/supabase/service-client";
 import { getAuthenticatedUser, getRouteHandlerSupabaseClient } from "@/lib/supabase/server-client";
-import { saveSourceCredential, hasSourceCredential } from "@/lib/sources/credentials";
+import { saveSourceCredential, hasSourceCredential, type SourceCredentialType } from "@/lib/sources/credentials";
+import { isValidGoogleDriveCredentialFormat } from "@/lib/sources/google-drive";
+import { parseJsonBody } from "@/lib/http/parse-json-body";
+
+// Per-source format validators, keyed generically so this route never has
+// to special-case `sourceType === "google_drive"` (or any future source)
+// in its own control flow -- it just looks up whatever hook (if any) that
+// source registered. Notion has no entry: an Internal Integration Secret
+// is an opaque bearer string with no structural format to check up front.
+const CREDENTIAL_FORMAT_CHECKS: Partial<
+  Record<SourceCredentialType, { validate: (credential: string) => boolean; invalidMessage: string }>
+> = {
+  google_drive: {
+    validate: isValidGoogleDriveCredentialFormat,
+    invalidMessage: "credential must be the service account's full JSON key.",
+  },
+};
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -39,26 +55,12 @@ export async function POST(request: Request): Promise<Response> {
   const user = await getAuthenticatedUser(authClient);
   if (!user) return Response.json({ error: "unauthorized" }, { status: 401 });
 
-  let rawBody: unknown;
-  try {
-    rawBody = await request.json();
-  } catch {
-    return Response.json({ error: "invalid_request", details: "Body must be valid JSON." }, { status: 400 });
-  }
-  const parsed = BodySchema.safeParse(rawBody);
-  if (!parsed.success) {
-    return Response.json({ error: "invalid_request", details: parsed.error.flatten() }, { status: 400 });
-  }
+  const parsed = await parseJsonBody(request, BodySchema);
+  if ("errorResponse" in parsed) return parsed.errorResponse;
 
-  if (parsed.data.sourceType === "google_drive") {
-    try {
-      JSON.parse(parsed.data.credential);
-    } catch {
-      return Response.json(
-        { error: "invalid_request", details: "credential must be the service account's full JSON key." },
-        { status: 400 }
-      );
-    }
+  const formatCheck = CREDENTIAL_FORMAT_CHECKS[parsed.data.sourceType];
+  if (formatCheck && !formatCheck.validate(parsed.data.credential)) {
+    return Response.json({ error: "invalid_request", details: formatCheck.invalidMessage }, { status: 400 });
   }
 
   const supabase = getServiceRoleClient();

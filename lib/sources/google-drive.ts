@@ -43,6 +43,33 @@ export interface DriveSyncResult {
   skipped: DriveSyncSkipped[];
 }
 
+/**
+ * Format-only check for a Google Drive credential BEFORE it's ever
+ * encrypted/stored -- a service-account key is JSON, so this is worth
+ * checking eagerly at save time rather than only discovering it's garbage
+ * the next time syncGoogleDriveFolder tries to actually use it (see
+ * buildDriveClient's own JSON.parse below, which still exists as a
+ * defense-in-depth backstop for stored/decrypted corruption, not as the
+ * only place this is ever checked).
+ *
+ * app/api/sources/credentials/route.ts calls this instead of special-
+ * casing `sourceType === "google_drive"` and parsing JSON inline itself --
+ * this is the "per-source validateCredentialFormat hook" this project's
+ * source-agnostic route boundary calls for: the route knows THAT some
+ * sources have a format worth validating, never the specifics of what
+ * that format is. Notion's Internal Integration Secret has no equivalent
+ * hook -- it's just an opaque bearer string, nothing to structurally
+ * validate before actually calling the Notion API with it.
+ */
+export function isValidGoogleDriveCredentialFormat(credential: string): boolean {
+  try {
+    JSON.parse(credential);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 async function buildDriveClient(supabase: SupabaseClient, userId: string): Promise<drive_v3.Drive> {
   const credentialJson = await getSourceCredential(supabase, userId, "google_drive");
   if (!credentialJson) {

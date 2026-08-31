@@ -103,15 +103,28 @@ export function chunkText(text: string, options: ChunkOptions = {}): Chunk[] {
       flush();
       // Carry over trailing sentences worth ~overlapChars into the next
       // chunk, walking backwards from the end of the chunk we just closed.
+      // Guarded by `overlapChars > 0`: with the guard removed, the loop
+      // below unconditionally unshifts at least one sentence on its FIRST
+      // iteration (the `overlapSentences.length > 0` half of the break
+      // condition is false before anything has been added yet, so the
+      // `overlapLength + s.length > overlapChars` check alone never stops
+      // it) -- meaning `overlapTokens: 0`, a value this function's own
+      // validation above accepts as legal, silently still produced one
+      // sentence of overlap instead of genuinely zero. Skipping the loop
+      // entirely when there is nothing to carry over fixes that without
+      // touching the "always carry at least one sentence when some overlap
+      // WAS requested" behavior every other overlap value still needs.
       const overlapSentences: string[] = [];
       let overlapLength = 0;
-      for (let i = current.length - 1; i >= 0; i--) {
-        const s = current[i];
-        if (overlapLength + s.length > overlapChars && overlapSentences.length > 0) {
-          break;
+      if (overlapChars > 0) {
+        for (let i = current.length - 1; i >= 0; i--) {
+          const s = current[i];
+          if (overlapLength + s.length > overlapChars && overlapSentences.length > 0) {
+            break;
+          }
+          overlapSentences.unshift(s);
+          overlapLength += s.length + 1;
         }
-        overlapSentences.unshift(s);
-        overlapLength += s.length + 1;
       }
       current = overlapSentences;
       currentLength = overlapLength;

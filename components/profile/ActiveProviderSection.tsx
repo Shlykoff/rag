@@ -12,53 +12,42 @@
 // always rendered with nothing selected anyway (the old `GET`'s
 // `activeProvider` field is gone too, see ProfileForm.tsx).
 //
-// Downgraded, for this stage only, to a READ-ONLY summary of which
-// providers are fully configured at the account level -- no PUT call, no
-// interactivity, no `activeProvider` prop. A real per-project picker
-// belongs on a future `/projects/[projectId]/model`-style screen
-// (nextjs-frontend's next stage), not bolted onto this page against a
-// made-up project id.
+// Downgraded to a READ-ONLY summary of which providers are fully configured
+// at the account level -- no PUT call, no interactivity, no
+// `activeProvider` prop. Per-project picking now lives on each project's
+// own /projects/[projectId]/model screen (components/projects/ModelPicker.tsx)
+// -- not bolted onto this account-level page, which has no single project
+// id to act on.
 
+import { PROVIDER_DISPLAY_INFO, PROVIDER_DISPLAY_ORDER } from "@/lib/ui/provider-metadata";
 import type { ConfiguredFlags } from "./types";
 
 export interface ActiveProviderSectionProps {
   configured: ConfiguredFlags;
 }
 
-interface ProviderSummary {
-  key: string;
-  label: string;
-  available: boolean;
-}
-
 export function ActiveProviderSection({ configured }: ActiveProviderSectionProps) {
-  const providers: ProviderSummary[] = [
-    { key: "openai", label: "OpenAI", available: configured.openai },
-    {
-      key: "anthropic",
-      label: "Anthropic Claude (+ Voyage AI для embeddings)",
-      available: configured.anthropic && configured.voyage,
-    },
-    { key: "gemini", label: "Google Gemini", available: configured.gemini },
-  ];
-
   return (
     <fieldset className="provider-active-fieldset">
       <legend className="provider-section-title">Готовые к использованию провайдеры</legend>
       <p className="field-hint">
-        Какой из подключённых провайдеров использует конкретный проект/бот, теперь выбирается отдельно
-        для каждого проекта (этот экран появится позже) — здесь только видно, какие ключи у вас на
-        аккаунте полностью настроены.
+        Какой из подключённых провайдеров использует конкретный проект/бот, выбирается отдельно для
+        каждого проекта — на странице «Модель» внутри самого проекта. Здесь только видно, какие ключи у
+        вас на аккаунте полностью настроены.
       </p>
       <ul style={{ display: "flex", flexDirection: "column", gap: "0.4rem", marginTop: "0.6rem", listStyle: "none", padding: 0 }}>
-        {providers.map((provider) => (
-          <li key={provider.key} className="provider-active-option" style={{ display: "flex", gap: "0.5rem", alignItems: "center" }}>
-            <span className={`badge ${provider.available ? "badge-success" : "badge-neutral"}`}>
-              {provider.available ? "готов" : "не настроен"}
-            </span>
-            <span>{provider.label}</span>
-          </li>
-        ))}
+        {PROVIDER_DISPLAY_ORDER.map((provider) => {
+          const info = PROVIDER_DISPLAY_INFO[provider];
+          const available = info.requiresCredentials.every((credential) => configured[credential]);
+          return (
+            <li key={provider} className="provider-active-option" style={{ display: "flex", gap: "0.5rem", alignItems: "center" }}>
+              <span className={`badge ${available ? "badge-success" : "badge-neutral"}`}>
+                {available ? "готов" : "не настроен"}
+              </span>
+              <span>{info.label}</span>
+            </li>
+          );
+        })}
       </ul>
     </fieldset>
   );

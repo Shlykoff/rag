@@ -37,6 +37,7 @@ export class VoyageEmbeddingsProvider implements EmbeddingsProvider {
     return embedInBatches(texts, {
       provider: this.providerName,
       batchSize: EMBEDDING_BATCH_SIZE,
+      dimensions: this.dimensions,
       callBatch: async (batch) => {
         // inputType intentionally left unset (Voyage default: symmetric
         // embeddings). Voyage supports an asymmetric mode

@@ -10,6 +10,7 @@ import "server-only";
 import { SourceError } from "./errors";
 import { AIProviderError } from "../ai/errors";
 import type { SourceIngestRateLimitResult } from "../rate-limit/source-ingest-rate-limiter";
+import { rateLimitedResponse } from "../http/rate-limited-response";
 
 const STATUS_BY_KIND: Record<SourceError["kind"], number> = {
   invalid_input: 400,
@@ -68,15 +69,8 @@ export function sourceErrorResponse(err: unknown): Response {
  * contract to handle regardless of which endpoint returned it.
  */
 export function sourceIngestRateLimitedResponse(rateLimit: Pick<SourceIngestRateLimitResult, "retryAfterMs">): Response {
-  return Response.json(
-    {
-      error: "rate_limited",
-      message: "Слишком много запросов на добавление источников. Попробуйте через несколько секунд.",
-      retryAfterMs: rateLimit.retryAfterMs,
-    },
-    {
-      status: 429,
-      headers: { "Retry-After": String(Math.ceil(rateLimit.retryAfterMs / 1000)) },
-    }
+  return rateLimitedResponse(
+    "Слишком много запросов на добавление источников. Попробуйте через несколько секунд.",
+    rateLimit.retryAfterMs
   );
 }

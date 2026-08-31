@@ -31,6 +31,7 @@
 
 import "server-only";
 import type { SupabaseClient } from "@supabase/supabase-js";
+import { purgeExpired } from "./sliding-window";
 
 export interface RateLimitConfig {
   /** Max chat_request events allowed within `windowMs`. */
@@ -120,15 +121,20 @@ export async function checkChatRateLimit(
 // for that explicit, written-down limitation).
 const activeReservations = new Map<string, number[]>();
 
-/** Drops this project's reservation timestamps older than windowMs, and returns what's left (so callers get the post-purge list without a second map lookup). */
+/**
+ * Drops this project's reservation timestamps older than windowMs, and
+ * returns what's left (so callers get the post-purge list without a second
+ * map lookup). Delegates the actual filter-and-write-back-or-delete logic
+ * to lib/rate-limit/sliding-window.ts's shared purgeExpired() -- the one
+ * piece of this reservation layer that genuinely IS the same "sliding
+ * window" filtering step every other in-memory limiter in this project
+ * needs; see that module's own header for why the REST of this layer
+ * (reserve-now, release-later-by-value) doesn't fit
+ * createSlidingWindowLimiter's record-immediately contract and stays
+ * hand-rolled here.
+ */
 function purgeExpiredReservations(projectId: string, windowMs: number): number[] {
-  const cutoff = Date.now() - windowMs;
-  const existing = activeReservations.get(projectId);
-  if (!existing) return [];
-  const fresh = existing.filter((ts) => ts > cutoff);
-  if (fresh.length > 0) activeReservations.set(projectId, fresh);
-  else activeReservations.delete(projectId);
-  return fresh;
+  return purgeExpired(activeReservations, projectId, windowMs);
 }
 
 /** Test-only escape hatch: activeReservations is module-level state that would otherwise leak between test cases run in the same file/process. Not exported from the package's public surface on purpose -- only lib/rate-limit/__tests__ reaches for this. */

@@ -19,7 +19,7 @@ const mockGetRouteHandlerSupabaseClient = vi.fn();
 const mockGetAuthenticatedUser = vi.fn();
 const mockGetServiceRoleClient = vi.fn();
 const mockSaveAIProviderCredential = vi.fn();
-const mockHasAIProviderCredential = vi.fn();
+const mockGetConfiguredProvidersMap = vi.fn();
 const mockDeleteAIProviderCredential = vi.fn();
 const mockCheckAICredentialsRateLimit = vi.fn();
 
@@ -34,7 +34,7 @@ vi.mock("@/lib/supabase/service-client", () => ({
 
 vi.mock("@/lib/ai", () => ({
   saveAIProviderCredential: (...args: unknown[]) => mockSaveAIProviderCredential(...args),
-  hasAIProviderCredential: (...args: unknown[]) => mockHasAIProviderCredential(...args),
+  getConfiguredProvidersMap: (...args: unknown[]) => mockGetConfiguredProvidersMap(...args),
   deleteAIProviderCredential: (...args: unknown[]) => mockDeleteAIProviderCredential(...args),
 }));
 
@@ -72,9 +72,7 @@ describe("GET /api/profile/ai-providers", () => {
     mockGetRouteHandlerSupabaseClient.mockResolvedValue({});
     mockGetAuthenticatedUser.mockResolvedValue({ id: "user-1", email: "a@b.com" });
     mockGetServiceRoleClient.mockReturnValue({});
-    mockHasAIProviderCredential.mockImplementation(async (_s: unknown, _u: string, provider: string) =>
-      provider === "openai" || provider === "voyage"
-    );
+    mockGetConfiguredProvidersMap.mockResolvedValue({ openai: true, anthropic: false, gemini: false, voyage: true });
 
     const response = await GET();
 
