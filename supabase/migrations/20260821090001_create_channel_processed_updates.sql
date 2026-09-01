@@ -19,7 +19,7 @@ create table public.channel_processed_updates (
 );
 
 comment on table public.channel_processed_updates is
-  'Durable claim/dedup log of inbound webhook update_ids per channel_integrations row, so a channel platform''s delivery retries never produce a duplicate reply. No authenticated/anon grant exists at all (see grants below) -- this table has no legitimate client-side use, it exists purely for the service-role webhook path''s own idempotency.';
+  'Durable claim/dedup log of inbound webhook update_ids per channel_integrations row, so a channel platform''s delivery retries never produce a duplicate reply. No authenticated/anon grant exists at all, and both are explicitly REVOKEd by name before the service_role grant below is issued -- this table has no legitimate client-side use, it exists purely for the service-role webhook path''s own idempotency.';
 comment on column public.channel_processed_updates.update_id is
   'The channel platform''s own update identifier (e.g. Telegram''s update_id). bigint, not uuid/text, since Telegram''s update_id is a plain incrementing integer, not a string/UUID -- keeping its native type avoids a lossy/ambiguous text comparison.';
 
@@ -40,4 +40,14 @@ alter table public.channel_processed_updates enable row level security;
 -- reasoning as usage_events -- see that migration's grant comment), and
 -- not granting UPDATE/DELETE to anyone removes any accidental code path
 -- that could un-claim an update_id and let a duplicate reply through.
+--
+-- The REVOKE below is not optional boilerplate for this table in
+-- particular: "no grant statement was ever written for anon/authenticated"
+-- does NOT by itself guarantee they have no access -- see the projects
+-- migration (20260819052349, "Table-level grants" section) for the
+-- verified mechanism (default privileges depend on which role creates the
+-- table). This table has zero legitimate client-side use, so closing that
+-- gap explicitly here matters more than almost anywhere else in this
+-- schema.
+revoke all on public.channel_processed_updates from anon, authenticated, service_role;
 grant select, insert on public.channel_processed_updates to service_role;

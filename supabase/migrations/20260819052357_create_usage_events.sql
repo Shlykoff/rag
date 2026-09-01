@@ -67,8 +67,11 @@ create policy "usage_events_select_own"
   to authenticated
   using (auth.uid() = user_id);
 
--- Table-level grants: required in addition to RLS on this Supabase/PG
--- image (see the comment in the documents migration for why).
+-- Table-level grants: required in addition to RLS (see the projects
+-- migration, 20260819052349, "Table-level grants" section, for the full
+-- explanation of why an explicit REVOKE naming roles directly must precede
+-- these GRANTs).
+revoke all on public.usage_events from anon, authenticated, service_role;
 -- authenticated: SELECT only, matching the single read-only policy above.
 grant select on public.usage_events to authenticated;
 -- service_role: SELECT + INSERT to record events; no UPDATE/DELETE

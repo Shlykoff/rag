@@ -76,10 +76,15 @@ create policy "ai_provider_credentials_delete_own"
   to authenticated
   using (auth.uid() = user_id);
 
--- Table-level grants: required in addition to RLS on this Supabase/PG
--- image -- without an explicit GRANT, Postgres rejects the query before
--- RLS is even evaluated (see the equivalent comment in the documents
--- migration). Applies to service_role too: BYPASSRLS skips row filtering,
--- not the base table privilege check.
+-- Table-level grants: required in addition to RLS -- without an explicit
+-- GRANT, Postgres rejects the query before RLS is even evaluated. Applies
+-- to service_role too: BYPASSRLS skips row filtering, not the base table
+-- privilege check.
+--
+-- Explicit REVOKE before GRANT, naming anon/authenticated/service_role
+-- directly (not `from public`) -- see the full explanation in the projects
+-- migration (20260819052349, "Table-level grants" section). Especially
+-- important here given this table holds encrypted provider API keys.
+revoke all on public.ai_provider_credentials from anon, authenticated, service_role;
 grant select, insert, update, delete on public.ai_provider_credentials to authenticated;
 grant select, insert, update, delete on public.ai_provider_credentials to service_role;

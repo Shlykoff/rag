@@ -124,10 +124,13 @@ create policy "channel_integrations_delete_own"
     )
   );
 
--- Table-level grants: required in addition to RLS on this Supabase/PG
--- image (see the comment in the documents migration for why).
--- service_role gets full CRUD -- the webhook route looks up the
--- integration by id and may update it (e.g. disabling on repeated auth
--- failures from the channel platform).
+-- Table-level grants: required in addition to RLS (see the projects
+-- migration, 20260819052349, "Table-level grants" section, for the full
+-- explanation of why an explicit REVOKE naming roles directly must precede
+-- these GRANTs -- especially important here given this table holds
+-- encrypted channel credentials). service_role gets full CRUD -- the
+-- webhook route looks up the integration by id and may update it (e.g.
+-- disabling on repeated auth failures from the channel platform).
+revoke all on public.channel_integrations from anon, authenticated, service_role;
 grant select, insert, update, delete on public.channel_integrations to authenticated;
 grant select, insert, update, delete on public.channel_integrations to service_role;

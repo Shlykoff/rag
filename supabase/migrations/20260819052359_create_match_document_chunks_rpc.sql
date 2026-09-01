@@ -71,12 +71,25 @@ comment on function public.match_document_chunks(extensions.vector, int, uuid) i
   'Top-k cosine similarity search over document_chunks for a single project. security definer: enforces scoping itself via p_project_id (do not trust a client-supplied value; the caller must independently verify project ownership before calling), used by the RAG retrieval step server-side.';
 
 -- security definer functions are not covered by the invoker's RLS, and by
--- default Postgres grants EXECUTE on new functions broadly -- lock this
+-- default Postgres grants EXECUTE on new functions to PUBLIC -- lock this
 -- down explicitly: only service_role (i.e. the server, per CLAUDE.md rule
 -- 2) may call it. Neither anon nor authenticated get EXECUTE, precisely
 -- because p_project_id is trusted input and this function does not derive
 -- it from the caller's own JWT (auth.uid()) -- granting it to authenticated
 -- would let any logged-in client pass someone else's project id and read
 -- their chunks.
-revoke all on function public.match_document_chunks(extensions.vector, int, uuid) from public;
+--
+-- Revoking `from public` alone is NOT sufficient and must not be relied on:
+-- it only strips privileges a role holds by virtue of PUBLIC membership.
+-- If this function is ever created under a role whose default ACL grants
+-- EXECUTE to anon/authenticated/service_role directly BY NAME (see the
+-- "supabase_admin"-created-object case documented in the projects
+-- migration, 20260819052349, "Table-level grants" section), that grant is
+-- NOT via PUBLIC and `revoke ... from public` would silently leave it in
+-- place while this comment claimed the function was locked down. Name
+-- every role explicitly in the revoke, then grant back only what's
+-- intended, so the end state does not depend on which role created the
+-- function.
+revoke all on function public.match_document_chunks(extensions.vector, int, uuid)
+  from public, anon, authenticated, service_role;
 grant execute on function public.match_document_chunks(extensions.vector, int, uuid) to service_role;

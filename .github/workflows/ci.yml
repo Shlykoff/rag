@@ -35,12 +35,44 @@ jobs:
           # that reference these -- no real network calls happen at build
           # time (real request-time validation is unaffected; see
           # lib/supabase/*.ts and lib/ai/index.ts for where these are
-          # actually read). Integration tests (which need a real local
-          # Supabase via Docker) intentionally do NOT run in CI -- see
-          # README "Tests" for why that's a separate, Docker-only suite.
+          # actually read). Real Supabase behavior (RLS, migrations) is
+          # covered by the separate integration-tests job below.
           NEXT_PUBLIC_SUPABASE_URL: "https://ci-placeholder.supabase.co"
           NEXT_PUBLIC_SUPABASE_ANON_KEY: "ci-placeholder-anon-key"
           SUPABASE_SERVICE_ROLE_KEY: "ci-placeholder-service-role-key"
           AI_PROVIDER: "openai"
           OPENAI_API_KEY: "sk-ci-placeholder"
           CREDENTIALS_ENCRYPTION_KEY: "0000000000000000000000000000000000000000000000000000000000000000"
+
+  integration-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: ".nvmrc"
+          cache: "npm"
+
+      - run: npm ci
+
+      - uses: supabase/setup-cli@v1
+        with:
+          version: latest
+
+      # Ubuntu GitHub-hosted runners have Docker preinstalled -- `supabase
+      # start` runs the same local Postgres/pgvector/Auth/Storage stack this
+      # project's own integration suite is written against, applying
+      # supabase/migrations/*.sql and supabase/seed.sql on first boot,
+      # exactly like a fresh local `supabase start` does.
+      - name: Start local Supabase
+        run: supabase start
+
+      - name: Run integration tests
+        run: |
+          eval "$(supabase status -o env)"
+          export NEXT_PUBLIC_SUPABASE_URL="$API_URL"
+          export NEXT_PUBLIC_SUPABASE_ANON_KEY="$ANON_KEY"
+          export SUPABASE_SERVICE_ROLE_KEY="$SERVICE_ROLE_KEY"
+          export CREDENTIALS_ENCRYPTION_KEY="0000000000000000000000000000000000000000000000000000000000000000"
+          npx vitest run --config vitest.integration.config.mts

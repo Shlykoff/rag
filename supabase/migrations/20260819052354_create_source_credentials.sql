@@ -81,7 +81,11 @@ create policy "source_credentials_delete_own"
   to authenticated
   using (auth.uid() = user_id);
 
--- Table-level grants: required in addition to RLS on this Supabase/PG
--- image (see the comment in the documents migration for why).
+-- Table-level grants: required in addition to RLS (see the projects
+-- migration, 20260819052349, "Table-level grants" section, for the full
+-- explanation of why an explicit REVOKE naming roles directly must precede
+-- these GRANTs -- especially important here given this table holds
+-- encrypted credentials).
+revoke all on public.source_credentials from anon, authenticated, service_role;
 grant select, insert, update, delete on public.source_credentials to authenticated;
 grant select, insert, update, delete on public.source_credentials to service_role;
