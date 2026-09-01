@@ -12,18 +12,15 @@ import { SourceError } from "./errors";
 import { detectExtractionType, extractText } from "./text-extraction";
 import type { DocumentSource } from "./types";
 
-// 20MB: PDFs of ordinary text-heavy documents (policies, guides, reports --
-// the kind of thing this project ingests) are essentially always well under
-// this even at a few hundred pages; the limit exists to bound extraction
-// time/memory for a single serverless invocation, not because larger files
-// are expected in normal use. NOTE: this is an application-level ceiling
-// enforced in code -- Vercel's own Serverless/Edge Function request body
-// limit (historically ~4.5MB on the Node.js runtime, platform-dependent)
-// may reject a request before it ever reaches this check when deployed
-// there. If uploads larger than that limit need to work in production, the
-// fix is a direct-to-Supabase-Storage upload flow from the client (bypass
-// the serverless function body entirely), not raising this constant --
-// flagged here for nextjs-frontend/qa-reviewer, not silently worked around.
+// 20MB: bounds extraction time/memory for a single serverless invocation,
+// not a limit expected to bind for ordinary text-heavy documents (policies,
+// guides, reports) even at a few hundred pages. NOTE: this is an
+// application-level ceiling -- Vercel's own Serverless/Edge Function
+// request body limit (historically ~4.5MB on the Node.js runtime,
+// platform-dependent) may reject a request before it ever reaches this
+// check when deployed there. If larger uploads need to work in production,
+// the fix is a direct-to-Supabase-Storage upload flow from the client
+// (bypass the serverless function body), not raising this constant.
 export const MANUAL_UPLOAD_MAX_BYTES = 20 * 1024 * 1024;
 
 export interface ManualUploadInput {
@@ -33,19 +30,13 @@ export interface ManualUploadInput {
 }
 
 /**
- * Conforms to the `DocumentSource` contract (lib/sources/types.ts) like the
- * other three adapters' return values already did -- this interface used
- * to be structurally different (no `sourceType`/`sourceRef` at all), the
- * one adapter that didn't match the `{title, text, sourceType, sourceRef}`
- * shape CLAUDE.md specifies every source normalizes down to. `sourceType`
- * is always the `"manual_upload"` literal and `sourceRef` is always `null`
- * (manual uploads have nothing external to re-fetch -- see
- * NormalizedDocument.sourceRef's own doc comment and the
- * `documents_source_ref_required_unless_manual` DB constraint;
- * lib/sources/pipeline.ts's callers already passed exactly these two
- * literal values by hand before this fix, so this just moves that
- * knowledge into the one place that actually knows it's producing a
- * manual_upload document).
+ * Conforms to the `DocumentSource` contract (lib/sources/types.ts), matching
+ * the `{title, text, sourceType, sourceRef}` shape CLAUDE.md specifies every
+ * source normalizes down to. `sourceType` is always the `"manual_upload"`
+ * literal and `sourceRef` is always `null` (manual uploads have nothing
+ * external to re-fetch -- see NormalizedDocument.sourceRef's own doc
+ * comment and the `documents_source_ref_required_unless_manual` DB
+ * constraint).
  */
 export interface ManualUploadResult extends DocumentSource {
   sourceType: "manual_upload";

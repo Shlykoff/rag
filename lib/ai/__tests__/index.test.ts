@@ -1,14 +1,13 @@
 // lib/ai/__tests__/index.test.ts
 //
-// getAIProviders({projectId, ownerUserId}, supabase) is project-scoped now
-// (projects architecture pivot -- see lib/ai/index.ts's header). This file
-// mocks lib/ai/credentials.ts's DB-backed functions (the same "mock the one
-// module-level dependency, exercise this file's own control flow" pattern
-// as lib/ingestion/__tests__/ingest-default-providers.test.ts) so these
-// tests never need a real Supabase client, while still exercising the REAL
-// provider adapters from lib/ai/providers/ -- so this is still the
-// regression test for the chat/embeddings modelName-separation bug (see the
-// long comment below), just no longer driven by env vars.
+// getAIProviders({projectId, ownerUserId}, supabase) is project-scoped (see
+// lib/ai/index.ts's header). This file mocks lib/ai/credentials.ts's
+// DB-backed functions (the same "mock the one module-level dependency,
+// exercise this file's own control flow" pattern as
+// lib/ingestion/__tests__/ingest-default-providers.test.ts) so these tests
+// never need a real Supabase client, while still exercising the real
+// provider adapters from lib/ai/providers/ -- including the
+// chat/embeddings modelName-separation behavior (see the comment below).
 //
 // getAIProviders() itself also does one defense-in-depth `projects` lookup
 // before calling getActiveProvider() -- the fake supabase client below
@@ -131,16 +130,13 @@ describe("getAIProviders({projectId, ownerUserId}, supabase)", () => {
     expect(mockGetAIProviderCredential).toHaveBeenCalledWith(expect.anything(), OWNER_ID, "openai");
   });
 
-  // Regression test for a bug reproduced live before this file's env-var
-  // days: lib/ai/index.ts used to return the SAME object as both
-  // `chatProvider` and `embeddingsProvider` for openai/gemini (both backed
-  // by OpenAICompatibleProvider, which only had one `modelName` field wired
-  // to the CHAT model). That made `embeddingsProvider.modelName` silently
-  // return the chat model, and lib/ingestion/ingest.ts writes exactly that
-  // value into document_chunks.embedding_model. Still asserted directly
-  // against the real registry/adapters (no mocking of
-  // createOpenAICompatiblePair/createGeminiProvider) so it would fail again
-  // if the bug were reintroduced.
+  // Guards the two-distinct-views design in providers/openai.ts: a single
+  // dual-interface object would let `embeddingsProvider.modelName` silently
+  // return the chat model, which lib/ingestion/ingest.ts writes into
+  // document_chunks.embedding_model. Asserted directly against the real
+  // registry/adapters (no mocking of
+  // createOpenAICompatiblePair/createGeminiProvider) so a regression here
+  // would actually fail this test.
   it("AI_PROVIDER-equivalent 'openai': chatProvider and embeddingsProvider are distinct objects with distinct, correct modelNames", async () => {
     saved = saveEnv();
     delete process.env.OPENAI_CHAT_MODEL; // exercise the documented default

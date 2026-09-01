@@ -413,20 +413,14 @@ describe("handleChatRequest", () => {
     expect(inserted.find((i) => i.table === "messages" && i.row.role === "user")).toBeTruthy();
   });
 
-  // Regression test for a bug qa-reviewer reproduced live (6 concurrent
-  // real answerExternalMessage() calls against a real Gemini free-tier
-  // 429, 5 of 6 threw a raw, unnormalized AI_NoOutputGeneratedError instead
-  // of returning a graceful result): a completion that streams ZERO deltas
-  // completes `stream.textStream` normally (no throw during iteration --
-  // see lib/ai/stream-utils.ts's "empty-but-successful stream" branch), so
-  // the OLD code's try/catch (which only wrapped the delta loop) never
-  // fired -- the failure only surfaced when `stream.usage` was awaited
-  // AFTER that try/catch, completely unguarded. Fixed by moving
-  // `await stream.usage` INSIDE the same try -- this proves it stays
-  // fixed: no exception escapes handleChatRequest, a single graceful
-  // `type: "error"` event is yielded instead, and (same as the mid-stream
-  // failure case above) no assistant message/usage_events row is persisted
-  // for the failed turn.
+  // A completion that streams zero deltas completes `stream.textStream`
+  // normally (no throw during iteration -- see lib/ai/stream-utils.ts's
+  // "empty-but-successful stream" branch), but `stream.usage` can still
+  // reject afterward (e.g. a real AI_NoOutputGeneratedError). This proves
+  // that failure is caught too: no exception escapes handleChatRequest, a
+  // single graceful `type: "error"` event is yielded instead, and (same as
+  // the mid-stream failure case above) no assistant message/usage_events
+  // row is persisted for the failed turn.
   it("yields a graceful error event (not an uncaught exception) when the stream completes with ZERO deltas but its usage promise rejects afterward (e.g. a real AI_NoOutputGeneratedError)", async () => {
     // A relevant match -- NOT `[]` -- so this exercises the actual chat
     // provider (and its bug) rather than incidentally short-circuiting via

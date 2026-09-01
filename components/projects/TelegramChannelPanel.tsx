@@ -11,29 +11,27 @@
 // bot token) is surfaced as the server's own clear message, never a raw
 // error dump.
 //
-// WEBHOOK STATUS (qa-reviewer follow-up fix on the API side): a saved
-// `channel_integrations` row alone doesn't mean the bot is actually live --
-// the row is written BEFORE Telegram's own setWebhook call is even
-// attempted, and a previously-working webhook can later go stale outside
-// this app entirely (token revoked, webhook cleared via BotFather, ...).
-// GET now calls Telegram's own getWebhookInfo live on every request and
-// reports `webhookStatus: "confirmed" | "unconfirmed"` alongside
-// `connected: true` -- three states to render, not two:
+// WEBHOOK STATUS: a saved `channel_integrations` row alone doesn't mean
+// the bot is actually live -- the row is written before Telegram's own
+// setWebhook call is even attempted, and a previously-working webhook can
+// later go stale outside this app entirely (token revoked, webhook
+// cleared via BotFather, ...). GET calls Telegram's own getWebhookInfo
+// live on every request and reports `webhookStatus: "confirmed" |
+// "unconfirmed"` alongside `connected: true` -- three states to render,
+// not two:
 //   1. Not connected (`connected: false`) -- show the connect form.
-//   2. Connected but unconfirmed (`webhookStatus: "unconfirmed"`) -- a
-//      credential is saved, but Telegram does NOT currently have this
-//      integration's webhook URL registered, so the bot may not actually
-//      be answering anyone right now. Deliberately NOT styled as an error
-//      (nothing failed just now, from this page's point of view) and NOT
-//      styled as the "bot is live" success state either -- a distinct
-//      warning treatment, since the two mean very different things to a
-//      project owner wondering why their bot has gone quiet.
-//   3. Connected and confirmed (`webhookStatus: "confirmed"`) -- the real
-//      "bot is live and answering" state; only this one gets the
-//      established "Подключён. Webhook активен..." success copy.
+//   2. Connected but unconfirmed -- a credential is saved, but Telegram
+//      does not currently have this integration's webhook URL registered,
+//      so the bot may not be answering anyone right now. Deliberately not
+//      styled as an error (nothing failed just now) and not styled as the
+//      "bot is live" success state either -- a distinct warning treatment,
+//      since the two mean very different things to an owner wondering why
+//      their bot has gone quiet.
+//   3. Connected and confirmed -- the real "bot is live and answering"
+//      state; only this one gets the success copy.
 // This is live-computed, not a cached DB flag, so it self-corrects on the
-// next page load/refresh if the webhook is later revoked or restored
-// outside the app -- nothing here needs to poll or invalidate anything.
+// next page load if the webhook is later revoked or restored outside the
+// app.
 //
 // GET/POST/DELETE fetch + status-code branching goes through
 // components/sources/request-helpers.ts's getJson()/postJson()/del()
@@ -99,11 +97,9 @@ export function TelegramChannelPanel({ projectId }: { projectId: string }) {
 
   const [botToken, setBotToken] = useState("");
   // Lazy initializer (not a useEffect + setState) so this never triggers a
-  // second, cascading render -- react-hooks/set-state-in-effect flags
-  // exactly that pattern (see Sidebar.tsx's/ProfileForm.tsx's own comments
-  // elsewhere in this codebase for the same rule applied to other effects).
-  // `window` is always defined by the time this client component mounts;
-  // the guard is only for the (never actually hit) SSR render pass.
+  // second, cascading render. `window` is always defined by the time this
+  // client component mounts; the guard is only for the (never actually
+  // hit) SSR render pass.
   const [webhookBaseUrl, setWebhookBaseUrl] = useState(() => (typeof window !== "undefined" ? window.location.origin : ""));
   const [displayLabel, setDisplayLabel] = useState("");
   const [connecting, setConnecting] = useState(false);

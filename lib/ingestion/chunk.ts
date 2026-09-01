@@ -103,17 +103,10 @@ export function chunkText(text: string, options: ChunkOptions = {}): Chunk[] {
       flush();
       // Carry over trailing sentences worth ~overlapChars into the next
       // chunk, walking backwards from the end of the chunk we just closed.
-      // Guarded by `overlapChars > 0`: with the guard removed, the loop
-      // below unconditionally unshifts at least one sentence on its FIRST
-      // iteration (the `overlapSentences.length > 0` half of the break
-      // condition is false before anything has been added yet, so the
-      // `overlapLength + s.length > overlapChars` check alone never stops
-      // it) -- meaning `overlapTokens: 0`, a value this function's own
-      // validation above accepts as legal, silently still produced one
-      // sentence of overlap instead of genuinely zero. Skipping the loop
-      // entirely when there is nothing to carry over fixes that without
-      // touching the "always carry at least one sentence when some overlap
-      // WAS requested" behavior every other overlap value still needs.
+      // Guarded by `overlapChars > 0`: without the guard, the loop below
+      // always unshifts at least one sentence on its first iteration even
+      // when `overlapTokens: 0` was requested (a legal value), producing
+      // unwanted overlap instead of none.
       const overlapSentences: string[] = [];
       let overlapLength = 0;
       if (overlapChars > 0) {
@@ -141,12 +134,10 @@ export function chunkText(text: string, options: ChunkOptions = {}): Chunk[] {
 /**
  * Splits text into paragraphs on blank lines, then into sentences within
  * each paragraph via a simple punctuation-based regex (./!/? followed by
- * whitespace, with a lookbehind guard against common abbreviations isn't
- * attempted here -- this is an approximation, same spirit as
- * estimateTokens, good enough for chunk-boundary purposes without a full
- * NLP sentence tokenizer). A paragraph break is preserved as its own
- * boundary (never merged silently into the middle of a sentence run) so
- * chunks still tend to respect paragraph structure, not just sentences.
+ * whitespace) -- an approximation, same spirit as estimateTokens, good
+ * enough for chunk-boundary purposes without a full NLP sentence tokenizer.
+ * A paragraph break is preserved as its own boundary so chunks still tend
+ * to respect paragraph structure, not just sentences.
  */
 function splitIntoSentences(text: string): string[] {
   const paragraphs = text

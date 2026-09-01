@@ -7,11 +7,9 @@
 // app/api/chat/__tests__/route.test.ts's / app/api/sources/[documentId]/
 // __tests__/route.test.ts's style.
 //
-// PROJECTS PIVOT NOTE: this route no longer has a PUT method or an
-// `activeProvider` concept at all -- `active_ai_provider` moved to
-// per-project `projects.active_ai_provider` (see route.ts's own header
-// comment). This file only covers the account-level credential CRUD that
-// remains.
+// This route has no PUT method or `activeProvider` concept:
+// `active_ai_provider` is a per-project setting (see route.ts's own header
+// comment). This file only covers the account-level credential CRUD.
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 

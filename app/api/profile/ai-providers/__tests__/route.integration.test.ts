@@ -1,15 +1,10 @@
 // app/api/profile/ai-providers/__tests__/route.integration.test.ts
 //
-// PROJECTS PIVOT NOTE: this file used to cover the auto-activation UX flow
-// (`maybeAutoActivateProvider()` in route.ts's POST handler), back when
-// `active_ai_provider` was a per-user setting this account-level route
-// picked. That concept moved to per-project `projects.active_ai_provider`
-// (see route.ts's own header comment) -- this account-level route no
-// longer has a PUT method or an `activeProvider` field at all, so there is
-// nothing left to auto-activate here. This file now just round-trips
-// GET/POST/DELETE against a REAL local Supabase (real encryption, real
-// `ai_provider_credentials` rows) -- the auth layer is mocked the same
-// "auth mocked, service-role DB client real" pattern as
+// This route has no PUT method or `activeProvider` field (see route.ts's
+// own header comment) -- `active_ai_provider` is a per-project setting.
+// This file round-trips GET/POST/DELETE against a real local Supabase (real
+// encryption, real `ai_provider_credentials` rows) -- the auth layer is
+// mocked, the same "auth mocked, service-role DB client real" pattern as
 // app/api/sources/[documentId]/__tests__/route.integration.test.ts's header
 // explains.
 

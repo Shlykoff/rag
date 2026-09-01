@@ -2,23 +2,18 @@
 
 // components/chat/NoProviderModal.tsx
 //
-// Triggered specifically by POST /api/chat's `422 { error: "no_credentials" }`
-// (see ChatView.tsx's sendMessage -- distinct from the generic 500/other
-// error handling, which keeps the existing retry-banner treatment).
-// Deliberately minimal per explicit product decision: no onboarding
-// wizard, just a short explanation and a link onward.
+// Triggered by POST /api/chat's `422 { error: "no_credentials" }` (see
+// ChatView.tsx's sendMessage -- distinct from the generic 500/other error
+// handling, which keeps the retry-banner treatment). Deliberately minimal:
+// no onboarding wizard, just a short explanation and a link onward.
 //
-// PROJECTS PIVOT: links to this PROJECT's own /projects/{projectId}/model
-// picker, not directly to the account-level /profile -- lib/ai/index.ts's
-// getAIProviders() throws this exact 422 both when the project has no
-// active_ai_provider chosen yet at all (the common case for a fresh
-// project -- the actionable next step is picking one on /model) and when a
-// specific credential the project points at was since deleted (the
-// actionable step there is /profile) -- the model page itself is where a
-// "nothing configured account-wide yet" state is explained and pointed at
-// /profile (see ModelPicker.tsx), so linking there first is correct for
-// both cases rather than guessing which one happened from this generic
-// message alone.
+// Links to this project's own /projects/{projectId}/model picker, not
+// directly to the account-level /profile: this 422 fires both when the
+// project has no active_ai_provider chosen yet (the common case -- next
+// step is /model) and when its chosen credential was since deleted (next
+// step is /profile) -- /model is the right first stop for both, and is
+// itself where a "nothing configured account-wide" state points onward to
+// /profile (see ModelPicker.tsx).
 
 import { useEffect, useRef } from "react";
 import Link from "next/link";

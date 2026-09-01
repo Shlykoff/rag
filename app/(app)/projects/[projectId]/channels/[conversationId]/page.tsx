@@ -8,13 +8,11 @@ import type { ChatMessageVM, ContextSource } from "@/components/chat/types";
 export const dynamic = "force-dynamic";
 
 // DELIBERATELY NO loading.tsx anywhere above this page (this segment or
-// ../../[projectId]/) -- same reasoning as
-// ../../chat/[conversationId]/page.tsx's identical comment: an ancestor
-// `loading.tsx`'s Suspense boundary can flush a 200 status before this
-// page's own notFound() below ever runs. channels/'s own loading.tsx moved
-// into the sibling `(list)` route group (see ../(list)/page.tsx) for
-// exactly this reason -- see app/(app)/projects/not-found.tsx's header
-// comment (bug 3) for the full story, verified live.
+// ../../[projectId]/) -- an ancestor loading.tsx's Suspense boundary can
+// flush a 200 status before this page's own notFound() below ever runs.
+// See app/(app)/projects/not-found.tsx for the full mechanism; channels/'s
+// own loading.tsx lives in the sibling `(list)` route group instead (see
+// ../(list)/page.tsx) for the same reason.
 interface ConversationRow {
   id: string;
   channel: string;
@@ -31,12 +29,10 @@ interface MessageRow {
 }
 
 // Read-only transcript of ONE external-channel session -- no reply
-// capability by design (owners don't send messages into external sessions,
-// only service_role does, via lib/gateway/answer.ts -- see the
-// conversations migration's RLS comment). Reuses MessageBubble/SourceList
-// from the owner test-chat UI so citations render identically here, just
-// without ChatView's input bar/streaming/retry machinery, none of which
-// apply to a static history view.
+// capability by design; only service_role writes these rows, via
+// lib/gateway/answer.ts. Reuses MessageBubble/SourceList from the owner
+// test-chat UI so citations render identically, without ChatView's input
+// bar/streaming/retry machinery.
 export default async function ChannelSessionTranscriptPage({
   params,
 }: {

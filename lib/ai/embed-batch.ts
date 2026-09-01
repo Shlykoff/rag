@@ -3,29 +3,23 @@
 // Shared batching + partial-failure handling for EmbeddingsProvider.embed()
 // implementations (openai.ts, voyage.ts, and gemini.ts which reuses
 // openai.ts). Used instead of embedding one chunk per API call, per
-// CLAUDE.md's "батчами (не по одному чанку за вызов API)" requirement.
+// CLAUDE.md's batching requirement.
 //
 // Partial batch failure handling: embedding endpoints are all-or-nothing
-// per HTTP call -- a single malformed/oversized input makes the *whole*
-// batch request fail, even though every other input in that batch was
-// fine. If that happened while embedding e.g. 100 chunks in one call, a
-// naive implementation would fail the entire document just because of one
-// chunk. Instead, on a batch failure we bisect the batch into two halves
-// and retry each independently, narrowing down to the specific input(s)
-// that fail even in isolation. Every other input still gets embedded
-// normally. If bisection ultimately isolates one or more permanently
-// failing inputs, we don't silently drop them (that would break the 1:1
-// alignment between the returned array and document_chunks.chunk_index
-// that lib/ingestion/ingest.ts depends on) -- we surface a single
-// aggregate AIProviderError naming which index/indices failed, so the
-// ingestion pipeline can record a precise processing_error.
+// per HTTP call -- one malformed/oversized input fails the whole batch even
+// though every other input was fine. On a batch failure we bisect into two
+// halves and retry each independently, narrowing down to the specific
+// input(s) that fail even in isolation; everything else still embeds
+// normally. Failing inputs are never silently dropped (that would break the
+// 1:1 alignment between the returned array and document_chunks.chunk_index
+// that lib/ingestion/ingest.ts depends on) -- a single aggregate
+// AIProviderError names which index/indices failed.
 //
-// Fail-fast exception to bisection: a SYSTEMIC failure (bad API key,
-// unknown model id -- see isSystemicBatchFailure() below) affects the
-// whole request, not a specific input. Bisecting one of those all the way
-// down to single-item calls just repeats the identical failure O(batchSize)
-// times for no benefit -- every sub-batch would fail with the exact same
-// error. Detected and short-circuited before recursing further.
+// Fail-fast exception to bisection: a systemic failure (bad API key,
+// unknown model id -- see isSystemicBatchFailure()) affects the whole
+// request, not a specific input. Bisecting one of those down to single-item
+// calls would just repeat the identical failure O(batchSize) times for no
+// benefit, so it's detected and short-circuited before recursing further.
 
 import { AIProviderError, normalizeProviderError } from "./errors";
 import { withRetry, type RetryOptions } from "./retry";
@@ -44,15 +38,13 @@ export interface EmbedBatchDeps {
 }
 
 /**
- * True for a normalized error that reflects a whole-REQUEST condition
+ * True for a normalized error that reflects a whole-request condition
  * (invalid/missing credentials, or an unknown model id) rather than a
- * problem with any specific input in the batch. 401/403 (bad/missing API
- * key) and 404 (unknown model id) are the common real-world status codes
- * for this. A plain 400 is deliberately NOT included here -- that's also
- * the shape of a genuinely PER-ITEM problem (e.g. "input too long" for one
- * oversized chunk), which is exactly the case bisection exists to isolate
- * (see the "isolate a single permanently-bad input" test) -- so a bare 400
- * still gets bisected as before.
+ * problem with a specific input. 401/403 (bad/missing API key) and 404
+ * (unknown model id) are the common real-world codes for this. A plain 400
+ * is deliberately excluded -- that's also the shape of a genuine per-item
+ * problem (e.g. "input too long" for one oversized chunk), which is exactly
+ * what bisection exists to isolate, so a bare 400 still gets bisected.
  */
 function isSystemicBatchFailure(err: AIProviderError): boolean {
   return err.status === 401 || err.status === 403 || err.status === 404;
@@ -132,20 +124,14 @@ export async function embedInBatches(
   }
 
   // Batches are independent HTTP calls (disjoint `texts` slices, writing to
-  // disjoint slots of `results`/tagging disjoint indices in `failures`), so
-  // there's no correctness reason to run them one at a time -- but a fully
-  // unbounded `Promise.all` isn't free either: a large manual upload (this
-  // project's own cap is 20MB of text, see
-  // lib/sources/manual-upload.ts's MANUAL_UPLOAD_MAX_BYTES) chunked at
-  // ~650 tokens/chunk can realistically produce several thousand chunks,
-  // i.e. dozens of batches at batchSize 100 -- firing all of them at once
-  // risks tripping the embeddings vendor's OWN per-account concurrency/rate
-  // limits (a different, external limit from lib/rate-limit/'s app-level
-  // limiters, which bound how often a *caller* can trigger an ingest at
-  // all, not how many concurrent HTTP calls one single ingest fans out
-  // into). A small fixed-size worker pool keeps embedding a large document
-  // meaningfully faster than strictly sequential while staying well under
-  // realistic vendor concurrency limits.
+  // disjoint slots of `results`/`failures`), so there's no correctness
+  // reason to run them sequentially -- but an unbounded `Promise.all` risks
+  // tripping the embeddings vendor's own per-account concurrency/rate
+  // limits (distinct from lib/rate-limit/'s app-level limiters, which bound
+  // how often a caller can trigger an ingest, not how many concurrent calls
+  // one ingest fans out into). A small fixed-size worker pool keeps a large
+  // document embedding meaningfully faster than sequential while staying
+  // under realistic vendor concurrency limits.
   const batchStarts: number[] = [];
   for (let start = 0; start < texts.length; start += deps.batchSize) batchStarts.push(start);
 

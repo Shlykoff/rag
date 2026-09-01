@@ -4,28 +4,25 @@
 //
 // Shown by every components/sources/*Form.tsx (and DocumentCard's Refresh
 // button) instead of the generic red error banner when an ingest request
-// comes back `422 { error: "no_credentials" }` -- i.e. the signed-in user
-// has no active AI provider configured yet, or their active provider's
-// stored credential(s) are missing (see lib/ai/index.ts's
-// getAIProviders()). request-helpers.ts's normalizeResponse() surfaces this
-// as its own SourceRequestFailure `kind: "no_credentials"` so callers don't
-// have to re-parse the response body themselves.
+// comes back `422 { error: "no_credentials" }` -- the signed-in user has
+// no active AI provider configured yet, or their active provider's stored
+// credential(s) are missing. request-helpers.ts's normalizeResponse()
+// surfaces this as its own SourceRequestFailure `kind: "no_credentials"`
+// so callers don't have to re-parse the response body themselves.
 //
 // Deliberately an inline banner, not components/chat/NoProviderModal.tsx's
 // full-screen modal: that modal's UX (interrupting an in-progress
-// conversation, "Позже" to dismiss and keep chatting) fits a chat turn that
-// just failed mid-stream. Adding a source is already a page dedicated to
-// configuring integrations, not an ongoing task a full-screen overlay would
-// be interrupting -- an inline banner with the same "go configure it, retrying
-// won't help" message fits the form better without stealing focus from the
-// rest of the "Добавить источник" card (e.g. the other tabs).
+// conversation, "Позже" to dismiss and keep chatting) fits a chat turn
+// that just failed mid-stream. Adding a source is already a dedicated
+// integrations page, not an ongoing task an overlay would interrupt -- an
+// inline banner with the same "go configure it, retrying won't help"
+// message fits the form better, without stealing focus from the rest of
+// the "Добавить источник" card.
 //
-// PROJECTS PIVOT: links to THIS project's /projects/{projectId}/model
-// picker rather than straight to /profile -- see
-// components/chat/NoProviderModal.tsx's identical comment for why (the same
-// 422 { error: "no_credentials" } can mean either "this project hasn't
-// picked a provider yet" or "its picked provider's credential was deleted",
-// and /model is the right first stop for both).
+// Links to this project's own /projects/{projectId}/model picker rather
+// than straight to /profile -- see NoProviderModal.tsx's identical comment
+// for why (/model is the right first stop whether the project hasn't
+// picked a provider yet, or its picked provider's credential was deleted).
 
 import Link from "next/link";
 

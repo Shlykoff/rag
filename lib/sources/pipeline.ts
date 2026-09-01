@@ -10,16 +10,15 @@
 // documents_storage_path_prefixed_with_project_id DB constraint) or the
 // delete-before-insert ingest contract to quietly drift between sources.
 //
-// PROJECTS PIVOT: documents are project-scoped now (see the documents
-// migration), not user-scoped -- every function below takes a `projectId`
-// (what Storage paths/the `documents` row/dedup lookups key off) alongside
-// an `ownerUserId` (the project's owner, threaded through to
-// lib/ingestion/ingest.ts purely so it can resolve the right account-level
-// AI-provider credentials -- see that module's own header). Callers (the
-// app/api/sources/** routes) are responsible for independently verifying
-// `projectId` actually belongs to the authenticated caller BEFORE calling
-// anything here -- this module trusts its caller, the same trust boundary
-// lib/ingestion/ingest.ts documents for itself.
+// Documents are project-scoped, not user-scoped -- every function below
+// takes a `projectId` (what Storage paths/the `documents` row/dedup lookups
+// key off) alongside an `ownerUserId` (the project's owner, threaded
+// through to lib/ingestion/ingest.ts purely so it can resolve the right
+// account-level AI-provider credentials -- see that module's own header).
+// Callers (the app/api/sources/** routes) are responsible for independently
+// verifying `projectId` actually belongs to the authenticated caller
+// BEFORE calling anything here -- this module trusts its caller, the same
+// trust boundary lib/ingestion/ingest.ts documents for itself.
 
 import "server-only";
 import type { SupabaseClient } from "@supabase/supabase-js";
@@ -87,8 +86,8 @@ export async function createDocumentFromSource(
 
   // Storage path depends on documentId, which only exists after the insert
   // above -- this ordering (insert row -> upload object -> set
-  // storage_path -> ingest) is why NormalizedDocument.storagePath (see
-  // lib/sources/types.ts) is always undefined coming out of an adapter.
+  // storage_path -> ingest) is why NormalizedDocument.storagePath is
+  // always undefined coming out of an adapter (see lib/sources/types.ts).
   const storagePath = await uploadObject(supabase, params.projectId, documentId, params.object);
 
   const { error: updateError } = await supabase.from("documents").update({ storage_path: storagePath }).eq("id", documentId);
@@ -217,14 +216,11 @@ export interface RefetchResult {
  * shaped result into the one shape refreshDocumentFromSource actually
  * needs (extracted text + a StoredObject to re-upload alongside it).
  * Mirrors lib/ai/index.ts's PROVIDER_REGISTRY dispatch-by-key pattern --
- * this project's other precedent for "one lookup table instead of the
- * caller hand-branching on a string union" -- which lib/sources/ itself had
- * no equivalent for before this fix (the refresh route used to branch on
- * `sourceType` directly). `manual_upload` is deliberately not a valid input
- * here: it has nothing external to re-fetch, so the route rejects it with
- * its own 400 BEFORE ever reaching this function -- see that route's
- * comment for why that check stays there rather than being folded into
- * this dispatcher.
+ * one lookup table instead of the caller hand-branching on a string union.
+ * `manual_upload` is deliberately not a valid input here: it has nothing
+ * external to re-fetch, so the route rejects it with its own 400 BEFORE
+ * ever reaching this function -- see that route's comment for why that
+ * check stays there rather than being folded into this dispatcher.
  */
 export async function refetchByRef(
   sourceType: "notion" | "url" | "google_drive",

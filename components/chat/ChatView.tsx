@@ -201,12 +201,10 @@ export function ChatView({ projectId, conversationId: initialConversationId, ini
     } finally {
       setIsStreaming(false);
       isStreamingRef.current = false;
-      // New-chat -> now-persisted-conversation navigation: only once, only
-      // when this view started with no conversationId
-      // (projects/[projectId]/chat/(list)/page.tsx) and the server actually
-      // created/confirmed one via the `conversation` SSE event (see
-      // handleChatRequest -- it's always yielded first, before any possible
-      // error).
+      // New-chat -> persisted-conversation navigation, only once: only
+      // when this view started with no conversationId and the server
+      // confirmed one via the `conversation` SSE event (always yielded
+      // first, before any possible error -- see handleChatRequest).
       if (isNewChatRef.current && receivedConversationId) {
         isNewChatRef.current = false;
         router.replace(`/projects/${projectId}/chat/${receivedConversationId}`);

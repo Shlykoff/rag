@@ -3,9 +3,8 @@
 // Small helper shared by the two `projects` CRUD route files
 // (./route.ts's GET-list/POST-create, ./[projectId]/route.ts's
 // GET-one/PATCH-rename/DELETE) so the "one project, as returned over the
-// wire" shape can't drift between the four endpoints that return it. NOT a
-// `lib/` module (this task's explicit scope: no new lib/ modules) --
-// route-local, colocated under app/api/projects/, the same way
+// wire" shape can't drift between the four endpoints that return it.
+// Route-local, colocated under app/api/projects/, the same way
 // app/api/chat/route.ts keeps its own `formatSSE` helper local rather than
 // promoting a two-line function into lib/.
 //

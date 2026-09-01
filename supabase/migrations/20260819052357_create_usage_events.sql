@@ -17,9 +17,9 @@ create table public.usage_events (
   -- Which project this call was made for/through (the owner's own test
   -- chat, or an external channel session -- either way, billed against
   -- the project owner's user_id above; external participants have no
-  -- account of their own to bill). Added by the projects architecture
-  -- pivot so rate limiting/cost tracking can be scoped per-project
-  -- (lib/rate-limit/'s "layer 1" budget), not just per-account.
+  -- account of their own to bill). Lets rate limiting/cost tracking be
+  -- scoped per-project (lib/rate-limit/'s "layer 1" budget), not just
+  -- per-account.
   project_id uuid not null references public.projects (id) on delete cascade,
   event_type public.usage_event_type not null,
   provider text not null,

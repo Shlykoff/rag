@@ -1,10 +1,8 @@
 // lib/rate-limit/sliding-window.ts
 //
-// Generic in-memory sliding-window rate limiting, extracted from what used
-// to be FOUR independent, byte-for-byte-similar implementations of the
-// exact same "filter timestamps older than the window out, compare the
-// remaining count against a max, push-and-store a new one" logic against a
-// `Map<string, number[]>`:
+// Generic in-memory sliding-window rate limiting: filter timestamps older
+// than the window out of a `Map<string, number[]>`, compare the remaining
+// count against a max, push-and-store a new one. Shared by:
 //   - lib/rate-limit/channel-participant-rate-limiter.ts
 //   - lib/rate-limit/source-ingest-rate-limiter.ts
 //   - lib/rate-limit/ai-credentials-rate-limiter.ts
@@ -13,15 +11,12 @@
 //     reuses just the shared filtering step, not the full check-and-record
 //     API the other three call sites want)
 //
-// Each of the first three modules instantiates its OWN
-// createSlidingWindowLimiter() so their Map state stays fully
-// independent -- that independence is the one thing worth preserving from
-// the original duplication (e.g. a user hammering source ingestion must
-// never eat into their unrelated AI-credentials write budget; see each
-// module's own header for that reasoning, which this extraction doesn't
-// change). Every module keeps its own existing public function names and
-// result shapes -- this file is purely an internal implementation detail
-// each one delegates to.
+// Each of the first three modules instantiates its own
+// createSlidingWindowLimiter() so their Map state stays fully independent
+// (e.g. a user hammering source ingestion must never eat into their
+// unrelated AI-credentials write budget). Every module keeps its own
+// public function names and result shapes -- this file is purely an
+// internal implementation detail each one delegates to.
 
 /** Drops `key`'s recorded timestamps in `store` older than `windowMs` (relative to `now`), writing the filtered list back -- or removing the key entirely once it's empty, so the map never accumulates stale entries for keys that stop being used. Returns the post-purge list. Exported (not just used internally by createSlidingWindowLimiter below) specifically for lib/rate-limit/rate-limiter.ts's in-process reservation layer, whose "reserve a slot now, release it later by removing that EXACT timestamp value" shape doesn't fit createSlidingWindowLimiter's own record-immediately-and-return contract -- it still wants this exact filtering step against its own Map, just without the rest of the record/decide logic. */
 export function purgeExpired(

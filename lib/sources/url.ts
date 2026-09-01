@@ -1,14 +1,13 @@
 // lib/sources/url.ts
 //
 // Public-URL source: fetches a page via lib/sources/net/safe-fetch.ts's
-// SSRF-guarded client (see that module's header for the actual protection
-// logic -- deliberately not summarized/shortened here per the task
-// instructions) and extracts its main readable content, discarding
-// navigation/ads/footers so retrieval quality isn't degraded by
-// boilerplate HTML. This module owns none of the SSRF logic itself -- it
-// only calls safeFetch() and never reaches for `fetch`/`http`/`https`
-// directly, so there is exactly one place in the codebase that makes an
-// outbound request to a user-supplied host.
+// SSRF-guarded client (see that module's header for the protection logic)
+// and extracts its main readable content, discarding navigation/ads/footers
+// so retrieval quality isn't degraded by boilerplate HTML. This module owns
+// none of the SSRF logic itself -- it only calls safeFetch() and never
+// reaches for `fetch`/`http`/`https` directly, so there is exactly one
+// place in the codebase that makes an outbound request to a user-supplied
+// host.
 
 import "server-only";
 import { JSDOM } from "jsdom";

@@ -5,14 +5,11 @@
 // (validate + extract text) -> lib/sources/pipeline.ts (Storage + ingest).
 // See those modules for the actual logic.
 //
-// PROJECTS PIVOT: `projectId` is now a required form field (documents are
-// project-scoped, see the documents migration) -- it's read BEFORE the
-// project-ownership check and the (now project-keyed) rate limit, but
-// still strictly before any adapter/AI-provider work, preserving CLAUDE.md
-// rule 4's "checked before doing the billed work" intent even though the
-// exact ordering relative to "parse the request body" shifted (previously
-// the rate limit ran before even reading the multipart body at all, back
-// when it was keyed by the authenticated user id alone).
+// `projectId` is a required form field (documents are project-scoped) --
+// read before the project-ownership check and the project-keyed rate
+// limit, but still strictly before any adapter/AI-provider work,
+// preserving CLAUDE.md rule 4's "checked before doing the billed work"
+// intent.
 //
 // Request contract:
 //   POST /api/sources/upload

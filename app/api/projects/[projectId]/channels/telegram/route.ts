@@ -23,32 +23,27 @@
 // app/api/profile/ai-providers/route.ts already takes for provider API
 // keys (see that route's own header comment).
 //
-// WEBHOOK STATUS (`webhookStatus`, qa-reviewer follow-up fix): the
-// credential row is saved BEFORE setWebhook is even attempted (see the
-// NOTE below), so row-existence alone can't be trusted as "the bot is
-// live" -- reproduced live by qa-reviewer: submit an invalid token, the
-// POST correctly reports the 400 below, but a plain row-existence GET
-// would still say "connected" even though Telegram never registered
-// anything. Fixed WITHOUT a schema change: rather than caching a
-// "did setWebhook ever succeed" boolean (which can itself go stale --
-// revoked token, webhook cleared via BotFather, overwritten by something
-// outside this app -- so a cached flag could ALSO lie later), GET calls
-// Telegram's own `getWebhookInfo` live and compares the URL Telegram
-// currently has on file against this integration's own expected path
+// WEBHOOK STATUS (`webhookStatus`): the credential row is saved before
+// setWebhook is even attempted (see the NOTE below), so row-existence alone
+// can't be trusted as "the bot is live" -- a saved row with an invalid
+// token would otherwise still read back as "connected" even though
+// Telegram never registered anything. Fixed without a schema change:
+// rather than caching a "did setWebhook ever succeed" boolean (which can
+// itself go stale -- revoked token, webhook cleared via BotFather,
+// overwritten by something outside this app), GET calls Telegram's own
+// `getWebhookInfo` live and compares the URL Telegram currently has on file
+// against this integration's own expected path
 // (`/api/channels/telegram/{integrationId}` -- independent of whatever
 // base URL was used to register it, so a later base-URL rotation doesn't
-// require re-deriving anything stored). This is genuinely more correct
-// than a stored flag would be, not just schema-change-averse: it reflects
-// Telegram's CURRENT state at read time, not a snapshot from whenever
-// setWebhook last happened to succeed. See
-// lib/channels/telegram/client.ts's getTelegramWebhookInfo() for the raw
-// call. `webhookStatus` is only present when `connected: true`, with two
-// values: "confirmed" (Telegram has this exact integration's URL
+// require re-deriving anything stored). This reflects Telegram's current
+// state at read time, not a snapshot from whenever setWebhook last
+// succeeded. See lib/channels/telegram/client.ts's getTelegramWebhookInfo()
+// for the raw call. `webhookStatus` is only present when `connected: true`,
+// with two values: "confirmed" (Telegram has this exact integration's URL
 // registered right now) or "unconfirmed" (no webhook registered, a
-// mismatched one, or the live check itself failed -- e.g. a revoked
-// token -- treated the same as "can't confirm it's working" rather than a
-// hard 500, since the underlying saved-row state is still valid either
-// way).
+// mismatched one, or the live check itself failed -- e.g. a revoked token
+// -- treated the same as "can't confirm it's working" rather than a hard
+// 500, since the underlying saved-row state is still valid either way).
 //
 // WEBHOOK BASE URL: unlike scripts/telegram-set-webhook.ts (a CLI flag,
 // --url), there is no global "this deployment's public base URL" env var
@@ -107,20 +102,15 @@
 //   -> 404 { error: "not_found" }
 //   -> 429 { error: "rate_limited", message, retryAfterMs }
 //   -> 200 { status: "deleted" }
-//      NOTE: this only removes the DB row -- it deliberately does NOT also
-//      call a Telegram deleteWebhook API (lib/channels/telegram/client.ts
-//      exports no such function, and adding one is out of this task's
-//      explicit scope: "exactly these three route groups and nothing
-//      else"). A leftover webhook registration pointed at a now-deleted
-//      integration id is harmless: the inbound webhook route
-//      (app/api/channels/telegram/[integrationId]/route.ts) already treats
-//      an unknown integration id as a silent, logged no-op (still 200, per
-//      Telegram's own retry semantics) -- it just stops doing anything,
-//      forever, until the owner reconnects. A future "pause without
-//      losing config" toggle could use the existing
-//      channel_integrations.enabled column without any Telegram API call
-//      at all; not built here since the task only asked for
-//      create/update, status, and delete.
+//      NOTE: this only removes the DB row -- it does not also call a
+//      Telegram deleteWebhook API. A leftover webhook registration pointed
+//      at a now-deleted integration id is harmless: the inbound webhook
+//      route (app/api/channels/telegram/[integrationId]/route.ts) already
+//      treats an unknown integration id as a silent, logged no-op (still
+//      200, per Telegram's own retry semantics) -- it just stops doing
+//      anything, forever, until the owner reconnects. A future "pause
+//      without losing config" toggle could use the existing
+//      channel_integrations.enabled column without any Telegram API call.
 
 import "server-only";
 import { randomBytes } from "node:crypto";
@@ -155,23 +145,17 @@ const PostBodySchema = z.object({
 
 // Reuses lib/rate-limit/ai-credentials-rate-limiter.ts's generic
 // per-identity sliding window rather than adding a fourth, near-identical
-// limiter module for this task's small, explicitly-scoped surface ("no new
-// lib/ modules"). Namespaced with a "telegram:" prefix so this route's own
+// limiter module. Namespaced with a "telegram:" prefix so this route's own
 // write-request budget lives in its own map entry, independent of that
 // same user's POST/DELETE /api/profile/ai-providers calls -- that module's
 // own header explicitly warns against two unrelated write actions silently
-// sharing one counter, and a distinct map KEY (not a whole distinct
-// module) is enough to satisfy that here without adding new files.
+// sharing one counter, and a distinct map key (not a whole distinct
+// module) is enough to satisfy that here.
 //
-// Keyed by PROJECT id, not the account-wide user id: every other limiter
-// re-keyed by the projects architecture pivot protects a project-scoped
-// resource (source ingestion, chat) by keying on projectId, since a single
-// account can own several projects and one project's Telegram-connect
+// Keyed by project id, not the account-wide user id: this protects a
+// project-scoped resource (one project's channel_integrations row), and a
+// single account can own several projects -- one project's Telegram-connect
 // churn must not eat into a completely different project's own budget.
-// This limiter used to be the one straggler still keyed by `userId` alone
-// (account-wide) even though it protects exactly this same kind of
-// project-scoped resource (one project's channel_integrations row) --
-// fixed to match the pattern.
 function rateLimitKey(projectId: string): string {
   return `telegram:${projectId}`;
 }
@@ -209,10 +193,7 @@ export async function GET(
   { params }: { params: Promise<{ projectId: string }> }
 ): Promise<Response> {
   const { projectId } = await params;
-  // Shape-check BEFORE ever touching the DB -- see
-  // app/api/projects/[projectId]/route.ts's identical guard for why (a raw
-  // Postgres "invalid input syntax for type uuid" 500 instead of this
-  // route's own documented 404).
+  // Shape-check before touching the DB -- see app/api/projects/[projectId]/route.ts's identical guard.
   if (!isUuidShape(projectId)) {
     return Response.json({ error: "not_found" }, { status: 404 });
   }
@@ -249,10 +230,7 @@ export async function POST(
   { params }: { params: Promise<{ projectId: string }> }
 ): Promise<Response> {
   const { projectId } = await params;
-  // Shape-check BEFORE ever touching the DB -- see
-  // app/api/projects/[projectId]/route.ts's identical guard for why (a raw
-  // Postgres "invalid input syntax for type uuid" 500 instead of this
-  // route's own documented 404).
+  // Shape-check before touching the DB -- see app/api/projects/[projectId]/route.ts's identical guard.
   if (!isUuidShape(projectId)) {
     return Response.json({ error: "not_found" }, { status: 404 });
   }
@@ -351,10 +329,7 @@ export async function DELETE(
   { params }: { params: Promise<{ projectId: string }> }
 ): Promise<Response> {
   const { projectId } = await params;
-  // Shape-check BEFORE ever touching the DB -- see
-  // app/api/projects/[projectId]/route.ts's identical guard for why (a raw
-  // Postgres "invalid input syntax for type uuid" 500 instead of this
-  // route's own documented 404).
+  // Shape-check before touching the DB -- see app/api/projects/[projectId]/route.ts's identical guard.
   if (!isUuidShape(projectId)) {
     return Response.json({ error: "not_found" }, { status: 404 });
   }

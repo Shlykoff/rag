@@ -1,33 +1,26 @@
 // lib/rate-limit/rate-limiter.ts
 //
-// Per-PROJECT request rate limiting (projects architecture pivot -- this is
-// "layer 1", the aggregate budget shared by a project's owner test chat
-// AND every external channel session of that project, see
-// lib/gateway/answer.ts), backed by the append-only `usage_events` table
-// (db-architect's design -- see the migration's "Atomicity note": an event
-// log + COUNT(*) range query, not a counter column, so concurrent requests
-// never race on a shared UPDATE). Checked server-side, BEFORE calling the
-// AI provider, per CLAUDE.md rule 4.
+// Per-project request rate limiting -- "layer 1", the aggregate budget
+// shared by a project's owner test chat and every external channel session
+// of that project (see lib/gateway/answer.ts) -- backed by the append-only
+// `usage_events` table: an event log + COUNT(*) range query, not a counter
+// column, so concurrent requests never race on a shared UPDATE. Checked
+// server-side, before calling the AI provider, per CLAUDE.md rule 4.
 //
-// This is deliberately NOT Vercel KV/Upstash: the project already has a
-// Postgres table purpose-built for this by db-architect, with an index
-// (project_id, created_at desc) sized exactly for "count this project's
-// rows in the last N minutes". Adding a second stateful dependency
-// (Upstash) for the same job would be complexity without benefit for a
-// project already on Supabase Postgres. See README "Rate limiting" for
-// this tradeoff written out for reviewers.
+// Deliberately not Vercel KV/Upstash: the project already has a Postgres
+// table purpose-built for this, with an index (project_id, created_at desc)
+// sized exactly for "count this project's rows in the last N minutes".
+// Adding a second stateful dependency for the same job would be complexity
+// without benefit. See README "Rate limiting" for this tradeoff.
 //
-// KNOWN GAP closed by reserveChatRateLimitSlot() below (see its own
-// comment for the full story, and README "Rate limiting" for the
-// multi-instance caveat that fix does NOT close): `checkChatRateLimit`
-// alone only counts usage_events rows that have already been written --
-// but the chat_request row for a given request isn't written until AFTER
-// its full response has finished streaming (see
-// lib/chat/handle-chat-request.ts), which takes seconds. N requests fired
-// in parallel within that window would all see the same (too-low) COUNT(*)
-// and all pass, even though sequentially only the first would have. That's
-// a real burst-bypass on the exact control CLAUDE.md requires ("Проверка
-// лимита запросов ... на сервере, до вызова AI-провайдера").
+// Known gap closed by reserveChatRateLimitSlot() below: `checkChatRateLimit`
+// alone only counts usage_events rows that have already been written -- but
+// the chat_request row for a given request isn't written until after its
+// full response has finished streaming (see lib/chat/handle-chat-request.ts),
+// which takes seconds. N requests fired in parallel within that window
+// would all see the same (too-low) COUNT(*) and all pass, even though
+// sequentially only the first would have -- a real burst-bypass on the
+// server-side rate-limit control CLAUDE.md requires.
 
 import "server-only";
 import type { SupabaseClient } from "@supabase/supabase-js";
@@ -110,15 +103,12 @@ export async function checkChatRateLimit(
 //
 // Why in-memory instead of a DB-persisted "pending" row: usage_events is
 // intentionally append-only (service_role has SELECT+INSERT only, no
-// UPDATE/DELETE at all -- see the table migration's grants) specifically so
-// nothing can ever mutate/erase rate-limit history. Turning a reservation
-// into a real row (or clearing a failed one) would need UPDATE/DELETE, i.e.
-// a schema/grant change -- that's db-architect's call to make, not this
-// module's to route around silently. This in-memory layer is the
-// MVP-scoped fix called out as acceptable in the review: it fully closes
-// the race *within one Node process*, and does NOT protect against a burst
-// spread across multiple serverless instances (see README "Rate limiting"
-// for that explicit, written-down limitation).
+// UPDATE/DELETE -- see the table migration's grants) so nothing can ever
+// mutate/erase rate-limit history. Turning a reservation into a real row
+// (or clearing a failed one) would need UPDATE/DELETE, i.e. a schema/grant
+// change. This in-memory layer fully closes the race within one Node
+// process, and does not protect against a burst spread across multiple
+// serverless instances (see README "Rate limiting" for that limitation).
 const activeReservations = new Map<string, number[]>();
 
 /**

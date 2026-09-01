@@ -23,11 +23,9 @@ export default async function ProjectDocumentsPage({ params }: { params: Promise
       .select("id, title, source_type, source_ref, last_synced_at, processing_status, processing_error, created_at")
       .eq("project_id", projectId)
       .order("created_at", { ascending: false }),
-    // RLS (source_credentials_select_own) scopes this to the caller's own
-    // rows; source credentials stay account-level (not project-scoped),
-    // only the source_type column is read here -- never the
-    // ciphertext/nonce, per lib/sources/credentials.ts's own comment on
-    // keeping decryption server-side-only.
+    // RLS scopes this to the caller's own rows; credentials stay
+    // account-level (not project-scoped). Only source_type is read here,
+    // never the ciphertext/nonce.
     supabase.from("source_credentials").select("source_type").eq("user_id", user.id),
   ]);
 

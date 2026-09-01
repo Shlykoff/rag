@@ -95,11 +95,11 @@ function toAuthenticatedUser(user: User): AuthenticatedUser {
  * indistinguishable here (both resolve `data: null`), which is exactly
  * what callers want -- see their own 404-not-403 comments.
  *
- * This is the projects-pivot generalization of the "own vs. someone else's
- * row, respond identically" pattern already used by
- * app/api/sources/[documentId]/route.ts, which routes its own ownership
- * check through this exact helper (via app/api/sources/shared.ts's
- * loadOwnedDocument()). Every route that accepts a projectId (directly, or
+ * This is the same "own vs. someone else's row, respond identically"
+ * pattern used by app/api/sources/[documentId]/route.ts, which routes its
+ * own ownership check through this exact helper (via
+ * app/api/sources/shared.ts's loadOwnedDocument()). Every route that
+ * accepts a projectId (directly, or
  * derived from a document/conversation row) MUST call this -- or an
  * equivalent RLS-backed check -- before ever passing that projectId into a
  * service-role call (lib/ai/, lib/retrieval/, lib/rate-limit/,

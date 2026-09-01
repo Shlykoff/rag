@@ -3,21 +3,21 @@
 // Runs against a REAL local Supabase (see README "Running the integration
 // tests" / `npm run test:integration`). Verifies the one thing that cannot
 // be faked in a unit test: that match_document_chunks (db-architect's RPC)
-// actually enforces per-PROJECT isolation and ordering when called the way
+// actually enforces per-project isolation and ordering when called the way
 // lib/retrieval/search.ts calls it -- with fabricated, deterministic
 // vectors (see lib/testing/integration-helpers.ts) instead of real
-// embeddings, since no AI provider keys are available yet (see task
-// context / README "What hasn't been tested live").
+// embeddings, so this suite doesn't depend on any AI provider key being
+// configured.
 //
-// PROJECTS PIVOT: match_document_chunks scopes by p_project_id now (not
-// p_user_id) -- this file creates two separate PROJECTS (not just two
-// users) to prove isolation holds at the level runRetrieval() actually
-// calls the RPC at. The two projects are owned by two different users here
-// only incidentally (simplest way to get two independent projects); the
-// isolation guarantee being tested is project-level, and a same-user,
-// two-project cross-leak would be exactly as bad -- see the "same owner,
-// two projects" case below, which is the case that would NOT have been
-// caught by only testing two different owners.
+// match_document_chunks scopes by p_project_id (not p_user_id) -- this file
+// creates two separate projects (not just two users) to prove isolation
+// holds at the level runRetrieval() actually calls the RPC at. The two
+// projects are owned by two different users here only incidentally
+// (simplest way to get two independent projects); the isolation guarantee
+// being tested is project-level, and a same-user, two-project cross-leak
+// would be exactly as bad -- see the "same owner, two projects" case below,
+// which is the case that would not have been caught by only testing two
+// different owners.
 
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { SupabaseClient } from "@supabase/supabase-js";

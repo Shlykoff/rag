@@ -20,10 +20,9 @@
 -- from a client-supplied request body/query parameter as-is:
 --   - web test-chat: verified via the RLS-scoped session client
 --     (projects.user_id = auth.uid()), 404 not 403 on mismatch.
---   - gateway/channels path (Stage B): verified via the
---     channel_integrations row that received the inbound webhook --
---     project_id never comes from anything in the inbound platform
---     payload itself.
+--   - gateway/channels path: verified via the channel_integrations row
+--     that received the inbound webhook -- project_id never comes from
+--     anything in the inbound platform payload itself.
 create function public.match_document_chunks(
   query_embedding extensions.vector(1024),
   match_count int,

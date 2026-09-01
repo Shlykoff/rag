@@ -3,17 +3,13 @@
 // components/projects/DeleteProjectModal.tsx
 //
 // Real confirmation step in front of DELETE /api/projects/{projectId} --
-// this is deliberately stronger than DocumentCard.tsx's "Точно удалить?" /
-// "Да, удалить" two-click pattern, because a project delete is a much
-// bigger blast radius: per that route's own header comment, it wipes every
-// document + chunk + embedding, every Storage object under the project
-// (actually list()+remove()'d, not just cascaded DB rows -- see that
-// route's listProjectStorageObjectPaths()), every channel_integrations row
-// (Telegram config), and the project's own + every external channel
-// session's conversations/messages -- all irreversibly, in one request.
-// Typing the exact project name back is the same "type to confirm" pattern
-// used by most products for a delete this destructive; a plain
-// double-click confirm would not communicate the scope honestly.
+// deliberately stronger than DocumentCard.tsx's "Точно удалить?" /
+// "Да, удалить" two-click pattern, because a project delete has a much
+// bigger blast radius: every document, chunk, and embedding; every Storage
+// object under the project; the Telegram integration; and all chat history
+// (owner and external), all irreversibly, in one request. Typing the exact
+// project name back communicates that scope honestly, where a plain
+// double-click confirm would not.
 
 import { useEffect, useRef, useState } from "react";
 import { matchesConfirmationText } from "@/lib/ui/format";

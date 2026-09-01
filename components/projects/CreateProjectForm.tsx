@@ -2,17 +2,14 @@
 
 // components/projects/CreateProjectForm.tsx
 //
-// Creates a new project via POST /api/projects (see that route's own
-// header for the exact contract/validation -- name trimmed, 1..200 chars,
-// enforced server-side regardless of this form's own client-side check,
-// per CLAUDE.md "never trust client-only validation"). On success,
-// navigates straight into the new project's /model page rather than just
-// refreshing the /projects list in place -- a brand-new project has no
-// active_ai_provider yet (app/api/projects/route.ts's POST always returns
-// activeAiProvider: null), and picking one is the actual next required
-// step before the project's chat/documents pages are useful at all, so
-// this is a deliberate nudge in that direction rather than leaving the
-// user to discover /model on their own.
+// Creates a new project via POST /api/projects (name trimmed, 1..200
+// chars, validated server-side regardless of this form's own client-side
+// check). On success, navigates straight into the new project's /model
+// page rather than just refreshing the /projects list in place -- a
+// brand-new project has no active_ai_provider yet, and picking one is the
+// actual next required step before its chat/documents pages are useful at
+// all, so this is a deliberate nudge rather than leaving the user to
+// discover /model on their own.
 
 import { useState, type FormEvent } from "react";
 import { useRouter } from "next/navigation";

@@ -1,6 +1,6 @@
 -- conversations: chat history container, one per thread, scoped to a
--- project (projects architecture pivot). Two ownership shapes share this
--- one table rather than being split into two:
+-- project. Two ownership shapes share this one table rather than being
+-- split into two:
 --   - Owner test-chat: user_id is set (the project owner, via the app's
 --     own in-project chat UI), channel/external_participant_id are null.
 --   - External channel session: user_id is null (external participants,
@@ -9,14 +9,13 @@
 --     who's on the other end of that channel.
 -- Splitting these into two tables would fork the chat pipeline's
 -- persistence code path by caller type, defeating the point of it being
--- one shared code path (Stage B's handleChatRequest generator) -- so a
--- CHECK constraint enforces "exactly one shape" instead.
+-- one shared code path (the handleChatRequest generator) -- so a CHECK
+-- constraint enforces "exactly one shape" instead.
 create table public.conversations (
   id uuid primary key default gen_random_uuid(),
   project_id uuid not null references public.projects (id) on delete cascade,
   -- Nullable: null for every external-channel-shaped row (see table
-  -- comment). Still references auth.users for the owner test-chat shape,
-  -- same as before this table was project-scoped.
+  -- comment). References auth.users for the owner test-chat shape.
   user_id uuid references auth.users (id) on delete cascade,
   -- Null for the owner's own test chat; set (alongside
   -- external_participant_id) for an external channel session, e.g.
@@ -80,7 +79,7 @@ create trigger set_conversations_updated_at
 -- their own test-chat rows AND every external session. This is
 -- intentional: it's how the project owner gets visibility into what the
 -- bot told external channel participants (surfaced in a
--- /projects/[projectId]/channels-style UI, Stage C). But the owner can
+-- /projects/[projectId]/channels-style UI). But the owner can
 -- only INSERT/UPDATE/DELETE rows shaped as their own test chat
 -- (auth.uid() = user_id); an external-shaped row (user_id null) can never
 -- satisfy that check (see conversations_exactly_one_owner_shape comment),
@@ -126,14 +125,13 @@ create policy "conversations_delete_own"
 -- Table-level grants: required in addition to RLS on this Supabase/PG
 -- image (see the comment in the documents migration for why). service_role
 -- gets full CRUD -- it's the only role that ever writes external-channel
--- conversations (find-or-create from lib/gateway/, Stage B), and may also
--- update rows on the owner's behalf (e.g. auto-titling).
+-- conversations (find-or-create from lib/gateway/), and may also update
+-- rows on the owner's behalf (e.g. auto-titling).
 grant select, insert, update, delete on public.conversations to authenticated;
 grant select, insert, update, delete on public.conversations to service_role;
 
 -- messages: individual turns within a conversation. -----------------------
--- Shape unchanged by the projects pivot -- ownership is still derived
--- entirely through the parent conversation, which is itself now
+-- Ownership is derived entirely through the parent conversation, which is
 -- project-scoped and may be either owner-test-chat or external-channel
 -- shaped.
 create type public.message_role as enum ('user', 'assistant');

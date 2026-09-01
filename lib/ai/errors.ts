@@ -96,29 +96,13 @@ function extractMessage(err: unknown): string {
  * all): Node's fetch throws a TypeError wrapping a `cause` with an
  * `errno`/`code` for DNS/connection failures, and AbortError for timeouts.
  *
- * Also recognizes the Voyage SDK's (`voyageai` package) own error shape,
- * needed because AI_PROVIDER=anthropic always pairs with Voyage for
- * embeddings (Anthropic has no embeddings API of its own -- see
- * lib/ai/index.ts) and Voyage's real errors don't match ANY of the shapes
- * above. Checked live against node_modules/voyageai's actual source
- * (dist/esm/errors/*.mjs, dist/esm/core/fetcher/Fetcher.mjs):
- *   - A real Voyage API timeout throws `VoyageAITimeoutError`, a bare
- *     `Error` subclass with only `.name` set via `this.name =
- *     this.constructor.name` -- no `.errno`/`.code`/`.cause`/`.status` at
- *     all, so none of the checks above catch it.
- *   - A lower-level connection failure (DNS/ECONNREFUSED/"fetch failed",
- *     i.e. the request never got an HTTP response) is NOT rethrown as the
- *     underlying TypeError -- Voyage's Fetcher.mjs catches it, keeps only
- *     `.message` (discarding the real error's own `.cause`/`.code`), and
- *     rethrows as a bare `VoyageAIError` with `statusCode`/`body`/
- *     `rawResponse` all left undefined. That's indistinguishable from this
- *     function's other network-error shapes by `.errno`/`.code`/`.cause`,
- *     but IS distinguishable by name + the complete absence of a status:
- *     every OTHER real Voyage failure (a genuine 4xx/429/5xx from the API)
- *     always has `.statusCode` set, which normalizeProviderError() already
- *     classifies correctly via extractStatus() before this function is
- *     ever reached (see below) -- so a status-less `VoyageAIError` reaching
- *     here can only be this connection-failure case.
+ * Also recognizes the Voyage SDK's own error shapes, which match none of
+ * the above: `VoyageAITimeoutError` carries only `.name`, and a lower-level
+ * connection failure is rewrapped by Voyage's fetcher into a bare
+ * `VoyageAIError` with no `.statusCode`. A genuine Voyage API error
+ * (4xx/429/5xx) always has `.statusCode` set and is classified earlier via
+ * extractStatus(), so a status-less `VoyageAIError` reaching here can only
+ * be this connection-failure case.
  */
 function looksLikeNetworkError(err: unknown): boolean {
   if (typeof err !== "object" || err === null) return false;
@@ -127,10 +111,6 @@ function looksLikeNetworkError(err: unknown): boolean {
   if ("errno" in rec || "code" in rec) return true;
   if (rec.cause && typeof rec.cause === "object") return true;
   if (rec.name === "VoyageAITimeoutError") return true;
-  // extractStatus(err) === undefined is always true by the time
-  // normalizeProviderError() reaches this call (it already returned via an
-  // earlier branch for any err with a real status) -- re-checked here
-  // anyway so this function stays correct if ever called directly/reordered.
   if (rec.name === "VoyageAIError" && extractStatus(err) === undefined) return true;
   return false;
 }

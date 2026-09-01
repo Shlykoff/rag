@@ -1,51 +1,39 @@
 // lib/rate-limit/source-ingest-rate-limiter.ts
 //
-// Per-PROJECT request-rate limiting (projects architecture pivot --
-// documents are project-scoped now, see the documents migration) for the
-// source-ingestion endpoints
+// Per-project request-rate limiting for the source-ingestion endpoints
 // (app/api/sources/upload|notion|url|google-drive|[documentId]/refresh).
-// CLAUDE.md rule 4 ("проверка лимита запросов и стоимости -- на сервере,
-// до вызова AI-провайдера, не только в UI") applies here exactly as much
-// as it does to /api/chat: every one of those routes ends up calling
+// CLAUDE.md rule 4 applies here exactly as much as it does to /api/chat:
+// every one of those routes ends up calling
 // ingestDocumentWithDefaultProviders() (a real embeddings-provider call)
 // for every submission -- nothing previously stopped a caller from
-// hammering e.g. POST /api/sources/url with tiny pages in a tight loop,
-// each one a real, billed embeddings call, unbounded by request rate (only
-// by per-document chunk count, which does nothing to limit how often a
-// small document can be submitted).
+// hammering e.g. POST /api/sources/url in a tight loop, each one a real,
+// billed embeddings call, unbounded by request rate (only by per-document
+// chunk count, which does nothing to limit how often a small document can
+// be submitted).
 //
-// Deliberately NOT backed by `usage_events` (unlike
+// Deliberately not backed by `usage_events` (unlike
 // lib/rate-limit/rate-limiter.ts's chat limiter): `usage_events.event_type`
-// is a fixed Postgres enum -- currently `'chat_request' |
-// 'embedding_request'`, see
-// supabase/migrations/20260819052357_create_usage_events.sql -- with no
-// value for "source ingestion request". Two options were considered and
-// rejected in favor of this in-memory limiter:
+// is a fixed Postgres enum (currently `'chat_request' | 'embedding_request'`)
+// with no value for "source ingestion request". Two options were
+// considered and rejected in favor of this in-memory limiter:
 //
-//   1. Add a new enum value (e.g. `'source_ingest_request'`) and have
-//      ingestion write a row for it. That's a real schema migration
-//      (`ALTER TYPE ... ADD VALUE` + a new INSERT call site) -- this
-//      module's owner (document-sources-specialist) does not change the
-//      DB schema unilaterally per CLAUDE.md's division of responsibility;
-//      that's an explicit ask for db-architect if/when this needs to be
-//      DB-persisted (e.g. for multi-instance correctness -- see below).
-//   2. Reuse the existing `'embedding_request'` enum value as-is (no
-//      migration needed). Rejected as actively WRONG, not just imprecise:
-//      lib/chat/handle-chat-request.ts already writes an
-//      `embedding_request` row for every chat message's *query*
-//      embedding. Counting source-ingestion attempts against that same
-//      bucket would mean a user's chat activity eats into their
+//   1. Add a new enum value and have ingestion write a row for it -- a real
+//      schema migration, which is db-architect's call to make, not this
+//      module's to do unilaterally.
+//   2. Reuse the existing `'embedding_request'` enum value as-is. Rejected
+//      as actively wrong, not just imprecise: lib/chat/handle-chat-request.ts
+//      already writes an `embedding_request` row for every chat message's
+//      query embedding. Counting source-ingestion attempts against that
+//      same bucket would mean a user's chat activity eats into their
 //      source-ingestion allowance and vice versa -- two unrelated limits
-//      silently sharing one counter, which is a worse bug than having no
-//      limiter at all (confusing 429s with no correlation to what the user
-//      is actually doing).
+//      silently sharing one counter, worse than having no limiter at all.
 //
-// A simple in-memory sliding window, scoped to exactly this purpose, sidesteps
-// both problems without touching the DB schema. Same explicit tradeoff as
-// the chat rate limiter's own known gap (see that module's header and
-// README "Rate limiting"): this is per-Node-process state, so a deployment
-// with multiple warm serverless instances does not share counts across
-// them. Documented, not silently gapped -- see README.
+// A simple in-memory sliding window, scoped to exactly this purpose,
+// sidesteps both problems without touching the DB schema. Same tradeoff as
+// the chat rate limiter's own known gap: this is per-Node-process state, so
+// a deployment with multiple warm serverless instances does not share
+// counts across them. Documented, not silently gapped -- see README "Rate
+// limiting".
 
 import "server-only";
 import { createSlidingWindowLimiter } from "./sliding-window";

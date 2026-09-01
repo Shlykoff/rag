@@ -501,12 +501,10 @@ describe("DELETE /api/projects/{projectId}/channels/telegram", () => {
     expect(mockCheckAICredentialsRateLimit).toHaveBeenCalledWith("telegram:11111111-1111-4111-8111-111111111111");
   });
 
-  // Regression test for the re-keying fix: this limiter used to be keyed
-  // by the account-wide userId alone, so a single user's two DIFFERENT
-  // projects would silently share one Telegram-connect rate-limit budget
-  // -- exhausting one project's allowance would also block an unrelated
-  // project owned by the same user. Every other project-scoped limiter in
-  // this codebase already keys by projectId for exactly this reason.
+  // Keying by account-wide userId alone would let a single user's two
+  // different projects silently share one Telegram-connect rate-limit
+  // budget -- exhausting one project's allowance would also block an
+  // unrelated project owned by the same user.
   it("keys the rate limiter by PROJECT id, not the account-wide user id -- two different projects owned by the same user get independent budgets", async () => {
     mockGetRouteHandlerSupabaseClient.mockResolvedValue({});
     mockGetAuthenticatedUser.mockResolvedValue({ id: "user-1", email: "a@b.com" });

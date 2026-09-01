@@ -1,36 +1,31 @@
 // lib/crypto/secret-box.ts
 //
 // Domain-neutral AES-256-GCM encrypt/decrypt for any bearer secret this
-// project needs to store at rest (an AI-provider API key, a Notion
-// Internal Integration Secret / Google service-account JSON, a Telegram
-// Bot API token). Extracted from what used to be THREE byte-for-byte
-// identical implementations (lib/ai/crypto.ts, lib/sources/crypto.ts,
-// lib/channels/telegram/crypto.ts) -- same scheme, same
-// CREDENTIALS_ENCRYPTION_KEY env var, same threat model, just copy-pasted
-// three times as each domain was built. Those three files are now thin
-// re-exports of this module (see each file's own header) so every existing
-// caller/import/test keeps working unchanged.
+// project stores at rest (an AI-provider API key, a Notion Internal
+// Integration Secret / Google service-account JSON, a Telegram Bot API
+// token). Same scheme, same `CREDENTIALS_ENCRYPTION_KEY` env var, same
+// threat model across all of them. lib/ai/crypto.ts, lib/sources/crypto.ts,
+// and lib/channels/telegram/crypto.ts are thin re-exports of this module
+// (see each file's own header), not independent implementations --
+// duplicated as thin re-exports rather than imported directly by each
+// domain's own consumers, so each domain keeps its own naming
+// (`encryptCredential`, etc.) and doc comments stable for existing callers.
 //
-// Naming this module `lib/crypto/` (not `lib/ai/`, `lib/sources/`, or
-// `lib/channels/`) is deliberate: it's a NEUTRAL module none of those three
-// domains own, so all three importing it does not recreate the
-// cross-domain dependency the original duplication was specifically trying
-// to avoid (see the domain-specific files' own headers on why they were
-// kept separate before). This is doubly load-bearing for
-// lib/channels/telegram/crypto.ts specifically -- CLAUDE.md's enforced
-// import boundary (non-negotiable rule 8) only forbids lib/channels/**
-// from importing lib/chat/, lib/retrieval/, lib/ai/, or lib/rate-limit/;
-// lib/crypto/ is none of those, so this does not violate that boundary.
+// This module lives in a neutral `lib/crypto/` location, not under any one
+// of `lib/ai/`, `lib/sources/`, or `lib/channels/`, so all three importing
+// it doesn't create a cross-domain dependency between them. This matters
+// most for lib/channels/telegram/crypto.ts: CLAUDE.md rule 8 forbids
+// lib/channels/** from importing lib/chat/, lib/retrieval/, lib/ai/, or
+// lib/rate-limit/ -- lib/crypto/ is none of those, so importing it here
+// doesn't violate that boundary.
 //
-// AES-256-GCM: an AEAD cipher, so a ciphertext that's been tampered with
-// (bit-flipped, truncated, swapped with a different row) fails to decrypt
-// instead of silently producing garbage plaintext -- important since every
-// caller's "plaintext" is a bearer credential handed straight to an
-// external API.
+// AES-256-GCM: an AEAD cipher, so tampered ciphertext (bit-flipped,
+// truncated, swapped with a different row) fails to decrypt instead of
+// silently producing garbage plaintext -- every caller's "plaintext" is a
+// bearer credential handed straight to an external API.
 //
-// The key itself lives ONLY in the `CREDENTIALS_ENCRYPTION_KEY` env var,
-// never in the database (see .env.example for how to generate one) --
-// CLAUDE.md's threat model for this: a leaked DB dump/backup alone must not
+// The key lives only in the `CREDENTIALS_ENCRYPTION_KEY` env var, never in
+// the database (see .env.example) -- a leaked DB dump/backup alone must not
 // be enough to recover any stored secret.
 
 import "server-only";

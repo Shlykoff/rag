@@ -47,19 +47,17 @@ export interface DriveSyncResult {
  * Format-only check for a Google Drive credential BEFORE it's ever
  * encrypted/stored -- a service-account key is JSON, so this is worth
  * checking eagerly at save time rather than only discovering it's garbage
- * the next time syncGoogleDriveFolder tries to actually use it (see
- * buildDriveClient's own JSON.parse below, which still exists as a
- * defense-in-depth backstop for stored/decrypted corruption, not as the
- * only place this is ever checked).
+ * the next time syncGoogleDriveFolder tries to use it (buildDriveClient's
+ * own JSON.parse below still exists as a defense-in-depth backstop for
+ * stored/decrypted corruption, not as the only place this is checked).
  *
- * app/api/sources/credentials/route.ts calls this instead of special-
- * casing `sourceType === "google_drive"` and parsing JSON inline itself --
- * this is the "per-source validateCredentialFormat hook" this project's
- * source-agnostic route boundary calls for: the route knows THAT some
- * sources have a format worth validating, never the specifics of what
- * that format is. Notion's Internal Integration Secret has no equivalent
- * hook -- it's just an opaque bearer string, nothing to structurally
- * validate before actually calling the Notion API with it.
+ * app/api/sources/credentials/route.ts calls this as a per-source
+ * validateCredentialFormat hook instead of special-casing
+ * `sourceType === "google_drive"` and parsing JSON inline itself -- the
+ * route knows THAT some sources have a format worth validating, never the
+ * specifics of what that format is. Notion's Internal Integration Secret
+ * has no equivalent hook: it's an opaque bearer string, nothing to
+ * structurally validate before calling the Notion API with it.
  */
 export function isValidGoogleDriveCredentialFormat(credential: string): boolean {
   try {
@@ -85,8 +83,8 @@ async function buildDriveClient(supabase: SupabaseClient, userId: string): Promi
   try {
     credentials = JSON.parse(credentialJson);
   } catch {
-    // Should be unreachable in practice -- app/api/sources/credentials/route.ts
-    // validates JSON.parse() succeeds before ever storing it -- but decrypt
+    // Should be unreachable in practice (app/api/sources/credentials/route.ts
+    // validates JSON.parse() succeeds before storing it), but decrypt
     // failures/corruption are still handled here rather than crashing.
     throw new SourceError({
       source: "google_drive",
@@ -255,12 +253,9 @@ export async function syncGoogleDriveFolder(
       imported.push({ title: name, text: text.trim(), sourceType: "google_drive", sourceRef: fileId });
     } catch (err) {
       // One file's extraction failure must not abort the whole folder sync
-      // -- log and continue (see the CLAUDE.md quote in the doc comment
-      // above). Logged via safeErrorForLog(), never the raw `err` -- a
-      // Drive API failure here wraps a gaxios error as `.cause`, which
-      // carries the full outgoing request (including the service
-      // account's live OAuth Authorization header) -- see that function's
-      // doc comment.
+      // -- log and continue. Logged via safeErrorForLog(), never the raw
+      // `err` (see that function's doc comment for why: a Drive failure's
+      // `.cause` can carry a live OAuth token).
       console.error(`syncGoogleDriveFolder: failed to process file ${fileId} (${name}):`, safeErrorForLog(err));
       const reason = err instanceof SourceError ? err.userMessage : "Не удалось обработать файл.";
       skipped.push({ fileId, name, mimeType, reason });

@@ -10,13 +10,11 @@
 // "/api/sources/{documentId}/refresh" are two distinct route trees, each
 // gets its own route.ts.
 //
-// PROJECTS PIVOT: `documents` no longer carries a `user_id` column (see
-// the documents migration) -- ownership is derived one hop through its
-// parent project, so this route now fetches the document's `project_id`
-// first and then verifies that project's ownership via the RLS-scoped
-// session client (lib/supabase/server-client.ts's
-// verifyProjectOwnership()), instead of the old single `.eq("user_id",
-// userId)` filter baked straight into the SELECT/DELETE.
+// `documents` has no `user_id` column -- ownership is derived one hop
+// through its parent project, so this route fetches the document's
+// `project_id` first and then verifies that project's ownership via the
+// RLS-scoped session client (lib/supabase/server-client.ts's
+// verifyProjectOwnership()).
 //
 // Request contract:
 //   DELETE /api/sources/{documentId}
@@ -33,7 +31,7 @@
 //
 // No rate limiting here (unlike upload/notion/url/google-drive/refresh):
 // this route never calls an AI provider or an external source, so there's
-// no per-request cost to bound (CLAUDE.md rule 4 / the task's own note).
+// no per-request cost to bound (CLAUDE.md rule 4).
 
 import "server-only";
 import { getServiceRoleClient } from "@/lib/supabase/service-client";
@@ -55,12 +53,11 @@ export async function DELETE(
   { params }: { params: Promise<{ documentId: string }> }
 ): Promise<Response> {
   const { documentId } = await params;
-  // Shape-check BEFORE ever touching the DB -- a syntactically-invalid uuid
-  // here used to reach `.eq("id", documentId)` and come back as an
-  // uncaught Postgres "invalid input syntax for type uuid" (a raw 500),
-  // instead of this route's own documented 404. See lib/validation/uuid.ts's
-  // header for why this is a shape check (matching what Postgres's `uuid`
-  // column type itself accepts), not the stricter `z.string().uuid()`.
+  // Shape-check before touching the DB: a syntactically-invalid uuid
+  // reaching `.eq("id", documentId)` would come back as an uncaught
+  // Postgres "invalid input syntax for type uuid" (a raw 500) instead of
+  // this route's own documented 404. See lib/validation/uuid.ts's header
+  // for why this is a shape check, not the stricter `z.string().uuid()`.
   if (!isUuidShape(documentId)) {
     return Response.json({ error: "not_found" }, { status: 404 });
   }
@@ -104,15 +101,10 @@ export async function DELETE(
   // tabs): the ownership check above already passed for both by the time
   // either reaches this DELETE, so without `.select()` both would fall
   // through to the 200 below even though only one of them actually removed
-  // a row -- confirmed empirically against a real local Postgres with two
-  // concurrent `Promise.all` deletes: the "loser" gets back `data: []` (an
-  // empty array, NOT null) with `error: null`, not a 404/409/anything
-  // distinguishable without checking `data.length`. See
-  // __tests__/route.integration.test.ts's "parallel DELETE" case, which
-  // reproduces this against real Postgres. (Ownership is already verified
-  // above via the project, so this DELETE only needs to target `id` --
-  // unlike the pre-pivot version, it can no longer also filter on a
-  // `user_id` column that doesn't exist on `documents` anymore.)
+  // a row -- the "loser" gets back `data: []` (an empty array, not null)
+  // with `error: null`, not a 404/409/anything distinguishable without
+  // checking `data.length`. See __tests__/route.integration.test.ts's
+  // "parallel DELETE" case, which reproduces this against real Postgres.
   const { data: deletedRows, error: deleteError } = await supabase
     .from("documents")
     .delete()

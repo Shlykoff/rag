@@ -26,20 +26,16 @@ function truncate(text: string, max: number): string {
   return singleLine.length > max ? `${singleLine.slice(0, max - 1)}…` : singleLine;
 }
 
-// Read-only view into this project's external-channel sessions -- "see
-// what the bot told people" (see CLAUDE.md Stage C item 5 / the projects
-// pivot plan's conversations RLS comment: the owner can SELECT every
-// conversation under a project they own, including external-channel ones,
-// but can never write one -- only service_role does, via
-// lib/gateway/answer.ts). A direct Server Component Supabase query (RLS
-// already allows it), not a new API route -- same "Server Components MAY
-// query Supabase directly" convention as every other page in this stage.
+// Read-only view into this project's external-channel sessions -- the
+// owner can see what the bot told people, but can never reply from here;
+// only service_role writes these rows, via lib/gateway/answer.ts. A direct
+// Server Component Supabase query, since RLS already scopes it to this
+// project's own conversations.
 //
-// Lives under the `(list)` route group purely so its sibling loading.tsx
-// doesn't also wrap ../[conversationId]/page.tsx's own notFound() call --
-// see app/(app)/projects/not-found.tsx's header comment (bug 3) and
-// ../../chat/layout.tsx's identical rationale. This file's URL is
-// unaffected ("/channels"), route groups add no path segment.
+// Lives under the `(list)` route group so its sibling loading.tsx doesn't
+// also wrap ../[conversationId]/page.tsx's own notFound() call -- see
+// app/(app)/projects/not-found.tsx for why. This file's URL is unaffected
+// ("/channels"), route groups add no path segment.
 export default async function ProjectChannelsPage({ params }: { params: Promise<{ projectId: string }> }) {
   const { projectId } = await params;
   const supabase = await getRouteHandlerSupabaseClient();
@@ -56,15 +52,11 @@ export default async function ProjectChannelsPage({ params }: { params: Promise<
   }
   const sessions = (sessionRows ?? []) as ConversationRow[];
 
-  // Single query for every session's most recent message, instead of one
-  // round-trip per session (previously up to MAX_SESSIONS separate
-  // queries). `.in("conversation_id", sessionIds)` ordered by created_at
-  // desc pulls every message for these sessions in one go; grouping by
-  // conversation_id here (in the Server Component, before rendering) and
-  // keeping only the first (= most recent, since we're already sorted
-  // desc) row per conversation reproduces the exact same "one preview per
-  // session" result the N+1 version produced, at a fixed query count
-  // regardless of MAX_SESSIONS.
+  // One query for every session's most recent message, not one round-trip
+  // per session: pull all messages for these conversations ordered by
+  // created_at desc, then keep only the first (= most recent) row per
+  // conversation_id -- same "one preview per session" result at a fixed
+  // query count regardless of MAX_SESSIONS.
   const sessionIds = sessions.map((session) => session.id);
   const previewByConversationId = new Map<string, LastMessageRow>();
   if (sessionIds.length > 0) {

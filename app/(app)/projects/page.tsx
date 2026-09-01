@@ -20,33 +20,18 @@ interface TelegramIntegrationRow {
 
 // /projects -- the landing page after login (see app/(app)/page.tsx's
 // redirect here). Server Component doing a direct RLS-scoped Supabase read
-// for its initial data, same "Server Components MAY query Supabase
-// directly" convention the old app/(app)/sources/page.tsx already
-// established (see CLAUDE.md's "Established conventions" for this stage) --
-// mutations (create/rename/delete) go through app/api/projects/** from the
-// client components below, which then router.refresh() this page.
+// for its initial data; mutations (create/rename/delete) go through
+// app/api/projects/** from the client components below, which then
+// router.refresh() this page.
 //
-// LOADING STATE, DELIBERATELY NOT A loading.tsx FILE (bug fix, see
-// app/(app)/projects/not-found.tsx's header + git history for the full
-// story): a `loading.tsx` at this segment (or at app/(app)/, one level up)
-// creates an ANCESTOR React Suspense boundary that also wraps the sibling
-// app/(app)/projects/[projectId]/** route tree -- and Next.js may flush
-// that ancestor boundary's fallback (locking the HTTP response status at
-// 200) BEFORE [projectId]/layout.tsx's own async ownership check has even
-// run, making a real 404 status impossible for its notFound() call.
-// Reproduced live: with app/(app)/loading.tsx and/or this segment's own
-// loading.tsx present, a cross-user/nonexistent project id under
-// /projects/{id}/** rendered the correct branded 404 UI but with a bare
-// 200 status, in both `next dev` and a production build -- removing BOTH
-// ancestor loading.tsx files (and this page's own) fixed the status code;
-// keeping app/(app)/projects/[projectId]/loading.tsx itself (same segment
-// as the layout that throws notFound(), wraps only ITS children, not the
-// layout's own top-level logic) is fine and was verified compatible with a
-// real 404. The fix here: get the same loading-skeleton UX back via a
-// Suspense boundary declared INSIDE this page's own JSX instead of the
-// loading.tsx file convention -- this is scoped to ProjectsPage's own
-// subtree only, never applies to the sibling [projectId] route tree, so it
-// can't reintroduce the same bug.
+// Loading state is deliberately a Suspense boundary declared inside this
+// page's own JSX, not a loading.tsx file: a loading.tsx at this segment
+// (or at app/(app)/, one level up) would create an ancestor Suspense
+// boundary that also wraps the sibling app/(app)/projects/[projectId]/**
+// route tree, which can break the HTTP status of that tree's own
+// notFound() calls -- see app/(app)/projects/not-found.tsx for the full
+// mechanism. A Suspense boundary declared here is scoped to this page's
+// own subtree only, so it can't reintroduce that bug.
 export default async function ProjectsPage() {
   const supabase = await getRouteHandlerSupabaseClient();
   const user = await getAuthenticatedUser(supabase);

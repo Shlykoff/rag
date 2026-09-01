@@ -7,21 +7,17 @@
 // then renders one section per provider slot (OpenAI, "Anthropic (+
 // Voyage)" -- one section, two key fields, since that pairing is fixed --
 // and Gemini) plus a read-only summary of which providers are fully
-// configured (see ActiveProviderSection.tsx's own PROJECTS PIVOT DAMAGE
-// CONTROL header comment for why that's no longer an interactive picker).
+// configured (see ActiveProviderSection.tsx).
 //
-// Deliberately goes through app/api/profile/ai-providers/route.ts for
-// everything, never lib/ai/credentials.ts directly -- same
-// nextjs-frontend/rag-pipeline-specialist boundary as
-// components/sources/* only ever calling app/api/sources/* routes, never
+// Goes through app/api/profile/ai-providers/route.ts for everything, never
+// lib/ai/credentials.ts directly -- same boundary as components/sources/*
+// only ever calling app/api/sources/* routes, never
 // lib/sources/credentials.ts.
 //
-// GET fetch + status-code branching goes through
-// components/sources/request-helpers.ts's getJson() (shared with
-// ModelPicker.tsx/TelegramChannelPanel.tsx) rather than hand-rolling its
-// own fetch/401/429/!ok handling; per-provider display labels come from
-// lib/ui/provider-metadata.ts's PROVIDER_DISPLAY_INFO (shared with
-// ModelPicker.tsx/ActiveProviderSection.tsx) rather than being duplicated
+// Uses components/sources/request-helpers.ts's getJson() (shared with
+// ModelPicker.tsx/TelegramChannelPanel.tsx) for fetch + status-code
+// branching; per-provider display labels come from
+// lib/ui/provider-metadata.ts (also shared) rather than being duplicated
 // here as plain JSX text.
 
 import { useEffect, useState } from "react";
@@ -43,15 +39,13 @@ type LoadState =
 
 /**
  * Pure request -> LoadState mapping, no setState of its own -- callers
- * (the mount effect below and the "Попробовать снова" retry button) are
- * the only ones that call setState, and only ever from a `.then()`
- * callback / event handler, never synchronously inside a `useEffect` body
- * (react-hooks/set-state-in-effect: calling setState directly, synchronously,
- * within an effect risks a cascading extra render -- see Sidebar.tsx's own
- * comment on the same rule for the other place this project already works
- * around it. Returning a value from an awaited async function and letting
- * the effect's `.then()` apply it keeps the actual state write outside the
- * effect's synchronous call stack).
+ * (the mount effect below and the "Попробовать снова" retry button) only
+ * ever call setState from a `.then()` callback or event handler, never
+ * synchronously inside a `useEffect` body (calling setState directly,
+ * synchronously, within an effect risks a cascading extra render).
+ * Returning a value from an awaited async function and letting the
+ * effect's `.then()` apply it keeps the actual state write outside the
+ * effect's synchronous call stack.
  */
 async function fetchProviderState(): Promise<LoadState> {
   const result = await getJson<GetResponseBody>("/api/profile/ai-providers");

@@ -6,10 +6,8 @@
 // (`projects.active_ai_provider`) -- the project-level half of the split
 // CLAUDE.md documents explicitly: "connect a provider" is an account-level
 // action, "which connected provider a given project uses" is a
-// project-level selection (see lib/ai/credentials.ts's own header and
-// app/api/profile/ai-providers/route.ts's "PROJECTS PIVOT NOTE" for why
-// that account-level route no longer has this concern at all). Thin HTTP
-// wrapper around lib/ai/credentials.ts's already-existing
+// project-level selection (see lib/ai/credentials.ts's own header). Thin
+// HTTP wrapper around lib/ai/credentials.ts's already-existing
 // getActiveProvider()/setActiveProvider() -- this route adds nothing
 // beyond auth, ownership verification, and mapping their outcomes onto
 // HTTP status codes.
@@ -75,10 +73,7 @@ export async function GET(
   { params }: { params: Promise<{ projectId: string }> }
 ): Promise<Response> {
   const { projectId } = await params;
-  // Shape-check BEFORE ever touching the DB -- see
-  // app/api/projects/[projectId]/route.ts's identical guard for why (a raw
-  // Postgres "invalid input syntax for type uuid" 500 instead of this
-  // route's own documented 404).
+  // Shape-check before touching the DB -- see app/api/projects/[projectId]/route.ts's identical guard.
   if (!isUuidShape(projectId)) {
     return Response.json({ error: "not_found" }, { status: 404 });
   }
@@ -108,10 +103,7 @@ export async function PUT(
   { params }: { params: Promise<{ projectId: string }> }
 ): Promise<Response> {
   const { projectId } = await params;
-  // Shape-check BEFORE ever touching the DB -- see
-  // app/api/projects/[projectId]/route.ts's identical guard for why (a raw
-  // Postgres "invalid input syntax for type uuid" 500 instead of this
-  // route's own documented 404).
+  // Shape-check before touching the DB -- see app/api/projects/[projectId]/route.ts's identical guard.
   if (!isUuidShape(projectId)) {
     return Response.json({ error: "not_found" }, { status: 404 });
   }

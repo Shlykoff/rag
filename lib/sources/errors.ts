@@ -30,11 +30,9 @@ export interface SourceErrorInit {
   /**
    * Short, user-facing message (Russian, matching the rest of the product
    * copy) that explains *what to do*, not just that something failed --
-   * especially for "not_shared", the single most common real-world failure
-   * mode for both Notion and Google Drive (user forgot to click
-   * Share/Invite on the integration or service account). See CLAUDE.md:
-   * "понятная ошибка, если страница не расшарена... а не глухой 403 без
-   * объяснения".
+   * especially for "not_shared", the most common real-world failure mode
+   * for both Notion and Google Drive (user forgot to click Share/Invite on
+   * the integration or service account).
    */
   userMessage: string;
   status?: number;
@@ -69,22 +67,20 @@ function extractStatusForLog(err: Error): number | string | undefined {
 
 /**
  * Redacts an error before it is ever handed to `console.error`/a future
- * structured logger. This exists because of a real leak: `googleapis`/
- * `gaxios` errors carry the FULL outgoing HTTP request as `err.config`
- * (headers included) -- and `google-auth-library` sets
- * `Authorization: Bearer <access-token>` on that request itself, so a raw
- * Drive API error object logged as-is puts a live OAuth access token in
+ * structured logger. `googleapis`/`gaxios` errors carry the FULL outgoing
+ * HTTP request as `err.config` (headers included), and `google-auth-library`
+ * sets `Authorization: Bearer <access-token>` on that request itself, so a
+ * raw Drive API error object logged as-is puts a live OAuth access token in
  * the logs. `SourceError.cause` wraps exactly that raw vendor error for
  * every source adapter (Notion SDK errors, googleapis errors, ...), so the
  * risk isn't specific to Google -- any adapter's vendor SDK could attach
- * similarly sensitive request/response data to a thrown error in the
- * future.
+ * similarly sensitive request/response data to a thrown error.
  *
  * `console.error(err)` on such an object only "looks" safe today because
  * Node's default `util.inspect` depth (2) happens to truncate before
- * reaching `err.cause.config.headers` -- that is NOT a safety guarantee:
- * a structured/JSON logger, `console.dir(err, { depth: null })`, or a
- * future `JSON.stringify(err)` would print the token in plaintext. Every
+ * reaching `err.cause.config.headers` -- that is NOT a safety guarantee: a
+ * structured/JSON logger, `console.dir(err, { depth: null })`, or a future
+ * `JSON.stringify(err)` would print the token in plaintext. Every
  * `console.error` call in lib/sources/ and app/api/sources/ that logs a
  * caught error (SourceError or not) MUST pass it through this function
  * first -- never the raw object, and never `.cause`.

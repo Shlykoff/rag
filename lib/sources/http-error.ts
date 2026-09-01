@@ -34,16 +34,14 @@ const STATUS_BY_KIND: Record<SourceError["kind"], number> = {
  * AIProviderError{kind:"no_credentials"} (never a SourceError; see
  * lib/ai/index.ts's getAIProviders()) when the signed-in user has no active
  * AI provider configured yet, or their active provider's stored
- * credential(s) are missing. That's a per-user "hasn't finished setup" state,
- * not a source-adapter failure or a server fault, so it gets its own branch
- * here -- same 422 { error: "no_credentials", message } contract and the
- * same "don't console.error this" treatment as app/api/chat/route.ts (see
- * that route's header comment for the full rationale: every not-yet-
- * configured user's first upload would otherwise spam logs with "errors"
- * that are really just "this user hasn't visited /profile yet"). Handled
- * centrally here, once, rather than duplicated in every route's catch block,
- * since all five routes (upload/notion/url/google-drive/refresh) already
- * funnel their catch through this same function.
+ * credential(s) are missing. That's a per-user "hasn't finished setup"
+ * state, not a source-adapter failure or a server fault, so it gets its own
+ * branch here -- same 422 `{ error: "no_credentials", message }` contract
+ * and the same "don't console.error this" treatment as
+ * app/api/chat/route.ts (see that route's header comment for the full
+ * rationale). Handled centrally here, once, since all five routes
+ * (upload/notion/url/google-drive/refresh) already funnel their catch
+ * through this same function.
  */
 export function sourceErrorResponse(err: unknown): Response {
   if (err instanceof AIProviderError && err.kind === "no_credentials") {

@@ -1,9 +1,8 @@
 // lib/channels/telegram/client.ts
 //
 // Raw `fetch` wrapper over the Telegram Bot API (https://api.telegram.org/bot<token>/...)
-// -- no SDK dependency, per the task's explicit preference for this
-// module. Three calls: sendMessage (outbound replies), setWebhook (used by
-// scripts/telegram-set-webhook.ts and
+// -- deliberately no SDK dependency. Three calls: sendMessage (outbound
+// replies), setWebhook (used by scripts/telegram-set-webhook.ts and
 // app/api/projects/[projectId]/channels/telegram/route.ts's POST -- not
 // called on every request), and getWebhookInfo (used by that same route's
 // GET, to report Telegram's OWN live view of whether a webhook is actually

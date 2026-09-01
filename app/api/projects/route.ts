@@ -1,13 +1,11 @@
 // app/api/projects/route.ts
 //
 // List/create the signed-in user's own projects ("бот1", "бот2", ...) --
-// the top-level scoping entity introduced by the projects architecture
-// pivot (see supabase/migrations/20260819052349_create_projects_table.sql
-// and CLAUDE.md "Как организована работа агентов"). Until this route
-// exists, nextjs-frontend's upcoming `/projects` list/create screen has
-// nothing to call -- this file (plus ./[projectId]/route.ts,
-// ./[projectId]/model/route.ts, ./[projectId]/channels/telegram/route.ts)
-// is exactly that gap.
+// the top-level scoping entity for this app (see
+// supabase/migrations/20260819052349_create_projects_table.sql). Backs
+// nextjs-frontend's `/projects` list/create screen, alongside
+// ./[projectId]/route.ts, ./[projectId]/model/route.ts, and
+// ./[projectId]/channels/telegram/route.ts.
 //
 // Every read/write below goes through the service-role client with an
 // explicit `.eq("user_id", user.id)` filter, never the RLS-scoped session

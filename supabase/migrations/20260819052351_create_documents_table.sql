@@ -3,16 +3,15 @@
 -- Source-agnostic by design: `source_type` distinguishes where the document
 -- came from, `source_ref` carries whatever identifier that source needs to
 -- re-sync (a Notion page URL/ID, a public URL, a Google Drive file ID), and
--- `storage_path` always points at Supabase Storage — either the original
+-- `storage_path` always points at Supabase Storage -- either the original
 -- upload (manual_upload) or a cached extraction of the text (notion/url/
--- google_drive) — so chunking can be redone without re-fetching from the
+-- google_drive) -- so chunking can be redone without re-fetching from the
 -- external source. See CLAUDE.md "Источники документов".
 --
--- Scoped to `projects`, not directly to a user (projects architecture
--- pivot): documents belong to a project ("бот1"), and a user can own
--- several projects, each with its own document set/AI provider/chat
--- history. Ownership is still ultimately a user (projects.user_id), just
--- one join away — see the RLS policies below.
+-- Scoped to `projects`, not directly to a user: documents belong to a
+-- project, and a user can own several projects, each with its own document
+-- set/AI provider/chat history. Ownership is still ultimately a user
+-- (projects.user_id), just one join away -- see the RLS policies below.
 
 create type public.document_source_type as enum (
   'manual_upload',
@@ -60,32 +59,26 @@ create table public.documents (
   constraint documents_source_ref_required_unless_manual check (
     source_type = 'manual_upload' or source_ref is not null
   ),
-  -- DB-level enforcement of the "<project_id>/..." Storage path convention
-  -- described above (previously "<user_id>/...", rescoped by the projects
-  -- pivot). Allows NULL (see storage_path comment: the row may exist
-  -- before the object is uploaded); only validates the prefix once a path
-  -- is set, so it can never diverge from what the storage.objects RLS
-  -- policies (documents_bucket_*_own, see the storage bucket migration)
-  -- expect -- both read the same "${project_id}/..." convention off the
-  -- same project_id. The app layer additionally namespaces by document_id
-  -- under that prefix (see lib/sources/pipeline.ts), but only the leading
-  -- project_id segment is what the RLS join actually needs to be sound, so
-  -- that's all this CHECK validates.
+  -- DB-level enforcement of the "<project_id>/..." Storage path
+  -- convention. Allows NULL (see storage_path comment above); only
+  -- validates the prefix once a path is set, so it can never diverge from
+  -- what the storage.objects RLS policies (documents_bucket_*_own, see the
+  -- storage bucket migration) expect. The app layer additionally
+  -- namespaces by document_id under that prefix (see
+  -- lib/sources/pipeline.ts), but only the leading project_id segment is
+  -- what the RLS join needs, so that's all this CHECK validates.
   constraint documents_storage_path_prefixed_with_project_id check (
     storage_path is null or storage_path like (project_id::text || '/%')
   ),
   -- A 'ready' document must not carry a stale error from a previous failed
-  -- attempt -- otherwise the UI/API could show a document as successfully
-  -- ingested while processing_error still holds old failure text.
-  -- The reverse (processing_error required when status = 'error') is
-  -- deliberately NOT enforced: the ingestion pipeline may set 'error' from
-  -- a generic catch-all path (e.g. an unexpected exception, a timeout, a
-  -- crash before a message was captured) where there is genuinely no
-  -- message to record yet, and forcing a non-null placeholder string there
-  -- would just trade one lie ("no error") for another ("(unknown error)").
-  -- rag-pipeline-specialist should still populate processing_error
-  -- whenever a message is available, but the schema does not need to
-  -- force that.
+  -- attempt -- otherwise the UI could show a document as successfully
+  -- ingested while processing_error still holds old failure text. The
+  -- reverse (processing_error required when status = 'error') is
+  -- deliberately NOT enforced: 'error' may be set from a generic
+  -- catch-all path with no message captured yet, and a forced placeholder
+  -- string would just trade one lie for another. rag-pipeline-specialist
+  -- should still populate processing_error whenever a message is
+  -- available, but the schema does not need to force that.
   constraint documents_ready_has_no_error check (
     processing_status <> 'ready' or processing_error is null
   )
@@ -114,12 +107,10 @@ create trigger set_documents_updated_at
 -- Deny by default: RLS is enabled and every operation gets its own
 -- explicit policy. Ownership is derived one join away through the parent
 -- project (projects.user_id = auth.uid()) rather than a denormalized
--- user_id column on documents itself -- documents belongs to a project,
--- not directly to a user, so this is the "derive via join, don't
--- denormalize" pattern already used by document_chunks -> documents,
--- applied one level up. The server also writes to this table using the
--- service_role key (e.g. flipping processing_status), which bypasses RLS
--- by design — these policies only govern direct client access.
+-- user_id column on documents itself -- the same "derive via join, don't
+-- denormalize" pattern used by document_chunks -> documents, one level up.
+-- The server also writes to this table via the service_role key (e.g.
+-- flipping processing_status), which bypasses RLS by design.
 
 alter table public.documents enable row level security;
 

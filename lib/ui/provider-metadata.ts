@@ -1,24 +1,19 @@
 // lib/ui/provider-metadata.ts
 //
-// Single frontend source of truth for the two facts about each
-// ActiveAIProvider that used to be hardcoded independently in three
-// different client components (components/projects/ModelPicker.tsx,
-// components/profile/ActiveProviderSection.tsx, and
-// components/profile/ProfileForm.tsx as plain JSX text): its display
-// label, and which credential(s) an account needs configured before that
-// provider is usable ('anthropic' uniquely also needs 'voyage', since
-// Anthropic has no embeddings API of its own -- see lib/ai/index.ts's
-// PROVIDER_REGISTRY).
+// Single frontend source of truth for two facts about each
+// ActiveAIProvider: its display label, and which credential(s) an account
+// needs configured before that provider is usable ('anthropic' uniquely
+// also needs 'voyage', since Anthropic has no embeddings API of its own --
+// see lib/ai/index.ts's PROVIDER_REGISTRY). Shared by
+// components/projects/ModelPicker.tsx, components/profile/
+// ActiveProviderSection.tsx, and components/profile/ProfileForm.tsx so
+// they can't drift from each other.
 //
-// The real canonical source for this is lib/ai/index.ts's
-// PROVIDER_REGISTRY (server-only -- it holds the actual adapter
-// constructors, not just labels), so this file does not eliminate
-// duplication end-to-end. What it does do: make sure the three *frontend*
-// surfaces above read from one place instead of three, so they can no
-// longer silently drift from each other. Only a type-only import from
-// "@/lib/ai" (erased at compile time, same pattern ModelPicker.tsx already
-// used before this file existed) -- no runtime/value import, so nothing
-// server-only ever reaches a "use client" bundle through this module.
+// The canonical source is still lib/ai/index.ts's PROVIDER_REGISTRY
+// (server-only -- it holds the actual adapter constructors, not just
+// labels). Only a type-only import from "@/lib/ai" here (erased at compile
+// time) -- no runtime/value import, so nothing server-only reaches a "use
+// client" bundle through this module.
 
 import type { ActiveAIProvider, AIProviderCredentialType } from "@/lib/ai";
 

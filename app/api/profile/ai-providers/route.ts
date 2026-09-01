@@ -9,20 +9,15 @@
 // on top of lib/sources/credentials.ts -- nextjs-frontend's /profile page
 // only ever calls this route, never lib/ai/credentials.ts directly.
 //
-// PROJECTS PIVOT NOTE: this route used to also expose "pick the active
-// provider" (a PUT method + an `activeProvider` field on GET/POST), back
-// when `active_ai_provider` was a per-USER setting (`user_settings`). That
-// column has moved to `projects.active_ai_provider` (per-PROJECT now, see
-// the projects migration's header) -- CLAUDE.md's explicit split is
-// "connect a provider" is an ACCOUNT-level action (this route, unchanged
-// role), "which connected provider a given PROJECT uses" is a PROJECT-level
-// selection, which belongs on a project-scoped route/screen
-// (`/projects/[projectId]/model`, nextjs-frontend's Stage C) that has an
-// actual `projectId` + `ownerUserId` pair to hand to
-// lib/ai/credentials.ts's now project-scoped `getActiveProvider`/
-// `setActiveProvider`. This account-level route has neither, so the PUT
-// method and every `activeProvider`/auto-activation concern are removed
-// here rather than faked against a made-up project id.
+// This route only manages account-level credentials, never
+// `active_ai_provider` selection: CLAUDE.md's explicit split is "connect a
+// provider" is an account-level action (this route), "which connected
+// provider a given project uses" is a project-level selection, which lives
+// on the project-scoped `/projects/[projectId]/model` route/screen (which
+// has the `projectId` + `ownerUserId` pair lib/ai/credentials.ts's
+// project-scoped `getActiveProvider`/`setActiveProvider` need). This
+// account-level route has neither, so it has no PUT method and no
+// `activeProvider` field.
 //
 // The plaintext API key is never echoed back in any response, logged, or
 // exposed to the client after a save -- GET only returns booleans ("is

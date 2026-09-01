@@ -194,19 +194,16 @@ describe.skipIf(!hasIntegrationEnv())("answerExternalMessage (integration, real 
     ]);
   });
 
-  // Regression test for the exact scenario qa-reviewer reproduced live
-  // against a real Gemini free-tier 429 (6 concurrent real
-  // answerExternalMessage() calls, 5 of 6 threw a raw, unnormalized
-  // AI_NoOutputGeneratedError instead of returning a graceful result).
-  // Unlike the other tests in this file, `handleChatRequest` itself is
-  // NOT mocked here -- this deliberately exercises the REAL (now fixed)
-  // lib/chat/handle-chat-request.ts, so this is true end-to-end coverage
-  // of the fix on the Telegram-gateway path specifically. See
-  // lib/chat/__tests__/handle-chat-request.test.ts for the equivalent
-  // direct unit test of the underlying fix itself, and
-  // lib/gateway/__tests__/answer.test.ts (pure unit, handleChatRequest
-  // mocked) for the separate defense-in-depth catch this bug also
-  // motivated, tested in isolation.
+  // A completion that streams zero deltas and then rejects its usage
+  // promise (e.g. AI_NoOutputGeneratedError from a provider after a retry
+  // budget is exhausted) must surface as a graceful { kind: "error" }, never
+  // an unnormalized exception. Unlike the other tests in this file,
+  // `handleChatRequest` itself is not mocked here -- this exercises the
+  // real lib/chat/handle-chat-request.ts end-to-end on the Telegram-gateway
+  // path. See lib/chat/__tests__/handle-chat-request.test.ts for the direct
+  // unit test of the same behavior, and lib/gateway/__tests__/answer.test.ts
+  // (pure unit, handleChatRequest mocked) for the separate
+  // defense-in-depth catch tested in isolation.
   it("returns { kind: 'error' } (never throws) when the completion streams ZERO deltas and its usage promise rejects afterward (e.g. AI_NoOutputGeneratedError)", async () => {
     const zeroOutputError = Object.assign(new Error("No output generated."), {
       name: "AI_NoOutputGeneratedError",

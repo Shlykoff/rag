@@ -6,11 +6,11 @@
 -- in the database, not process memory.
 --
 -- Claimed via `insert ... on conflict (integration_id, update_id) do
--- nothing` before processing starts (Stage B) -- the composite primary key
--- itself is what makes two concurrent retries of the same update_id
--- race-safe without an extra advisory lock: at most one of two concurrent
--- inserts for the same key can win, and the loser's "0 rows inserted"
--- result is exactly the "already processed/processing, skip" signal.
+-- nothing` before processing starts -- the composite primary key itself
+-- is what makes two concurrent retries of the same update_id race-safe
+-- without an extra advisory lock: at most one of two concurrent inserts
+-- for the same key can win, and the loser's "0 rows inserted" result is
+-- exactly the "already processed/processing, skip" signal.
 create table public.channel_processed_updates (
   integration_id uuid not null references public.channel_integrations (id) on delete cascade,
   update_id bigint not null,

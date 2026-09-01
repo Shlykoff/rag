@@ -57,12 +57,11 @@ export async function GET(
   { params }: { params: Promise<{ projectId: string }> }
 ): Promise<Response> {
   const { projectId } = await params;
-  // Shape-check BEFORE ever touching the DB -- a syntactically-invalid uuid
-  // here used to reach `.eq("id", projectId)` and come back as an uncaught
-  // Postgres "invalid input syntax for type uuid" (a raw 500), instead of
-  // this route's own documented 404. See lib/validation/uuid.ts's header
-  // for why this is a shape check (matching what Postgres's `uuid` column
-  // type itself accepts), not the stricter `z.string().uuid()`.
+  // Shape-check before ever touching the DB: a syntactically-invalid uuid
+  // reaching `.eq("id", projectId)` would come back as an uncaught Postgres
+  // "invalid input syntax for type uuid" (a raw 500) instead of this
+  // route's own documented 404. See lib/validation/uuid.ts's header for why
+  // this is a shape check, not the stricter `z.string().uuid()`.
   if (!isUuidShape(projectId)) {
     return Response.json({ error: "not_found" }, { status: 404 });
   }
@@ -96,12 +95,7 @@ export async function PATCH(
   { params }: { params: Promise<{ projectId: string }> }
 ): Promise<Response> {
   const { projectId } = await params;
-  // Shape-check BEFORE ever touching the DB -- a syntactically-invalid uuid
-  // here used to reach `.eq("id", projectId)` and come back as an uncaught
-  // Postgres "invalid input syntax for type uuid" (a raw 500), instead of
-  // this route's own documented 404. See lib/validation/uuid.ts's header
-  // for why this is a shape check (matching what Postgres's `uuid` column
-  // type itself accepts), not the stricter `z.string().uuid()`.
+  // Shape-check before touching the DB -- see the GET handler above.
   if (!isUuidShape(projectId)) {
     return Response.json({ error: "not_found" }, { status: 404 });
   }
@@ -207,12 +201,7 @@ export async function DELETE(
   { params }: { params: Promise<{ projectId: string }> }
 ): Promise<Response> {
   const { projectId } = await params;
-  // Shape-check BEFORE ever touching the DB -- a syntactically-invalid uuid
-  // here used to reach `.eq("id", projectId)` and come back as an uncaught
-  // Postgres "invalid input syntax for type uuid" (a raw 500), instead of
-  // this route's own documented 404. See lib/validation/uuid.ts's header
-  // for why this is a shape check (matching what Postgres's `uuid` column
-  // type itself accepts), not the stricter `z.string().uuid()`.
+  // Shape-check before touching the DB -- see the GET handler above.
   if (!isUuidShape(projectId)) {
     return Response.json({ error: "not_found" }, { status: 404 });
   }
@@ -226,21 +215,18 @@ export async function DELETE(
 
   const supabase = getServiceRoleClient();
 
-  // Storage cleanup happens BEFORE the DB delete, and the DB delete is
-  // skipped entirely if this fails -- deliberately the OPPOSITE order/
-  // posture from the single-document delete route's "DB delete first,
-  // Storage cleanup best-effort after" (see that route's own comment for
-  // its reasoning). The difference: once a PROJECT row is gone,
-  // documents/document_chunks cascade away with it (see the projects
-  // migration), so there is no longer any row anywhere in this app that
+  // Storage cleanup happens before the DB delete, and the DB delete is
+  // skipped entirely if this fails -- the opposite order from the
+  // single-document delete route's "DB delete first, Storage cleanup
+  // best-effort after" (see that route's own comment). The difference:
+  // once a project row is gone, documents/document_chunks cascade away
+  // with it, so there is no longer any row anywhere in this app that
   // remembers what Storage objects used to belong to it -- a failed
-  // cleanup AFTER that point would orphan those objects PERMANENTLY, with
-  // no route left that could ever rediscover and retry removing them.
-  // Keeping the project row alive on a cleanup failure means the ownership
-  // check above still passes on a retried DELETE, making this naturally
-  // retryable instead of a silent permanent leak -- exactly the "real gap"
-  // this route was built to close (see this file's header + the projects
-  // migration's own table comment).
+  // cleanup after that point would orphan those objects permanently, with
+  // nothing left to rediscover and retry removing them. Keeping the
+  // project row alive on a cleanup failure means the ownership check above
+  // still passes on a retried DELETE, making this naturally retryable
+  // instead of a silent permanent leak.
   let paths: string[];
   try {
     paths = await listProjectStorageObjectPaths(supabase, projectId);
@@ -264,13 +250,11 @@ export async function DELETE(
   }
 
   // Same zero-rows-affected race guard as the single-document delete route
-  // (see its own comment for the full explanation, including the empirical
-  // note that PostgREST returns `data: []`, `error: null` for a DELETE
-  // matching nothing -- not any kind of error status): two concurrent
-  // DELETEs for the same project both pass the ownership check above
-  // before either reaches this statement, so `.select("id")` is what lets
-  // the loser tell "matched nothing" apart from "matched and deleted one
-  // row".
+  // (PostgREST returns `data: []`, `error: null` for a DELETE matching
+  // nothing, not an error status): two concurrent DELETEs for the same
+  // project both pass the ownership check above before either reaches this
+  // statement, so `.select("id")` is what lets the loser tell "matched
+  // nothing" apart from "matched and deleted one row".
   const { data: deletedRows, error: deleteError } = await supabase.from("projects").delete().eq("id", projectId).select("id");
   if (deleteError) {
     console.error(`DELETE /api/projects/${projectId}: failed to delete project row:`, deleteError);

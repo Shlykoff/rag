@@ -7,14 +7,10 @@
 // "Ре-синхронизация... по кнопке Refresh вручную"). manual_upload
 // documents have nothing external to refresh (400).
 //
-// PROJECTS PIVOT: `documents` no longer carries a `user_id` column (see
-// the documents migration) -- this route fetches the document's
+// `documents` has no `user_id` column -- this route fetches the document's
 // `project_id` first, then verifies that project's ownership via the
-// RLS-scoped session client (verifyProjectOwnership()), and only THEN
-// checks the (now project-keyed) rate limit -- a deliberate reordering
-// from the pre-pivot version (which rate-limited before the DB lookup,
-// back when the limiter was keyed by the authenticated user id alone and
-// didn't need the document row first). Still strictly before any
+// RLS-scoped session client (verifyProjectOwnership()), and only then
+// checks the project-keyed rate limit. Still strictly before any
 // network/AI-provider work, preserving CLAUDE.md rule 4's intent.
 //
 // Request contract:
@@ -60,10 +56,8 @@ export async function POST(
   { params }: { params: Promise<{ documentId: string }> }
 ): Promise<Response> {
   const { documentId } = await params;
-  // Shape-check BEFORE ever touching the DB -- see
-  // app/api/sources/[documentId]/route.ts's identical guard for why (a raw
-  // Postgres "invalid input syntax for type uuid" 500 instead of this
-  // route's own documented 404).
+  // Shape-check before touching the DB -- see
+  // app/api/sources/[documentId]/route.ts's identical guard.
   if (!isUuidShape(documentId)) {
     return Response.json({ error: "not_found" }, { status: 404 });
   }

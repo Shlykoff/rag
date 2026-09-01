@@ -1,23 +1,11 @@
 // components/profile/ActiveProviderSection.tsx
 //
-// PROJECTS PIVOT DAMAGE CONTROL (see app/api/profile/ai-providers/route.ts's
-// own PROJECTS PIVOT NOTE for the full story): this used to be an
-// interactive radio picker for `user_settings.active_ai_provider`, calling
-// `PUT /api/profile/ai-providers`. That endpoint is gone -- "which provider
-// is active" moved to a per-PROJECT selection (`projects.active_ai_provider`),
-// which needs an actual `projectId` this account-level page doesn't have.
-// Live-reproduced regression this fixes: with the old interactive version
-// left in place, clicking a radio option hit the now-405'd `PUT` and showed
-// a raw `"Не удалось выполнить запрос (405)."` banner, and the radio group
-// always rendered with nothing selected anyway (the old `GET`'s
-// `activeProvider` field is gone too, see ProfileForm.tsx).
-//
-// Downgraded to a READ-ONLY summary of which providers are fully configured
-// at the account level -- no PUT call, no interactivity, no
-// `activeProvider` prop. Per-project picking now lives on each project's
-// own /projects/[projectId]/model screen (components/projects/ModelPicker.tsx)
-// -- not bolted onto this account-level page, which has no single project
-// id to act on.
+// Read-only summary of which AI providers are fully configured at the
+// account level -- no PUT call, no interactivity. Per-project picking
+// (which provider a given project actually uses) lives on that project's
+// own /projects/[projectId]/model screen
+// (components/projects/ModelPicker.tsx) instead, since this account-level
+// page has no single project id to act on.
 
 import { PROVIDER_DISPLAY_INFO, PROVIDER_DISPLAY_ORDER } from "@/lib/ui/provider-metadata";
 import type { ConfiguredFlags } from "./types";

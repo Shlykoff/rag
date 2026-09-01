@@ -1,22 +1,18 @@
 // lib/ingestion/__tests__/ingest-default-providers.test.ts
 //
-// Regression test for the bug qa-reviewer reproduced live: getEmbeddingsProvider()
-// (via getAIProviders(), see lib/ai/index.ts) rejects when the document's
-// project has no active AI provider configured, or its owner's credential(s)
-// are missing. Before the fix, ingestDocumentWithDefaultProviders() computed
-// that call as an eagerly-evaluated argument to ingestDocument(...) -- so
-// the throw happened BEFORE ingestDocument()'s own try/catch (which flips
-// documents.processing_status to 'error') ever started running, leaving
-// the document stuck in 'pending' forever with processing_error: null.
+// Guards ingestDocumentWithDefaultProviders()'s own try/catch around
+// resolving the embeddings provider: getEmbeddingsProvider() (via
+// getAIProviders(), see lib/ai/index.ts) rejects when the document's
+// project has no active AI provider configured, or its owner's
+// credential(s) are missing, and that failure must still flip
+// documents.processing_status to 'error' -- not leave the document stuck in
+// 'pending' with processing_error: null.
 //
 // This file exercises ingestDocumentWithDefaultProviders() itself (not
 // ingestDocument(), which is already covered end-to-end by ingest.test.ts)
-// by mocking its two module-level dependencies -- getServiceRoleClient()
-// and getEmbeddingsProvider() -- exactly the two calls the bug report
-// pointed at. getEmbeddingsProvider() is project-scoped now
-// ({projectId, ownerUserId}, supabase) -- see lib/ai/index.ts -- rather
-// than the old zero-arg, AI_PROVIDER-env-driven call, or the earlier
-// per-user (userId, supabase) call.
+// by mocking its two module-level dependencies: getServiceRoleClient() and
+// getEmbeddingsProvider() (project-scoped: {projectId, ownerUserId},
+// supabase -- see lib/ai/index.ts).
 
 import { describe, expect, it, vi, beforeEach } from "vitest";
 import type { SupabaseClient } from "@supabase/supabase-js";

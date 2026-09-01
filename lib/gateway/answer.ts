@@ -194,18 +194,14 @@ export async function answerExternalMessage(req: GatewayAnswerRequest): Promise<
       // participant, and handleChatRequest itself never persists a partial
       // assistant message on this path either.
       //
-      // Defense-in-depth: this function is documented to NEVER throw (see
-      // its own doc comment) -- handleChatRequest is documented to yield a
+      // Defense-in-depth: this function is documented to never throw (see
+      // its own doc comment). handleChatRequest is documented to yield a
       // `type: "error"` event for every known failure mode rather than
-      // throw, but a raw exception escaping it anyway (a live bug once
-      // already found this way: an AI_NoOutputGeneratedError from a
-      // zero-output completion used to escape past handleChatRequest's own
-      // try/catch entirely -- see that module's fix) must still never
-      // propagate out of THIS function and past lib/channels/'s import
-      // boundary as an uncaught exception. The try/catch below is what
-      // makes that hold even if handleChatRequest's own "never throws for
-      // known failure modes" contract is ever violated again by a future
-      // change.
+      // throw, but a raw exception escaping it anyway must still never
+      // propagate out of this function and past lib/channels/'s import
+      // boundary as an uncaught exception. The try/catch below holds that
+      // guarantee even if handleChatRequest's own contract is ever violated
+      // by a future change.
       let text = "";
       try {
         for await (const event of events) {

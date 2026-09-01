@@ -12,14 +12,14 @@
 // load-bearing (a shrinking document must not leave orphaned trailing
 // chunks behind).
 //
-// PROJECTS PIVOT: documents belong to a project, not directly to a user
-// (see the documents migration) -- `projectId` is what's verified against
-// the document row below and what Storage paths/RPCs key off. `ownerUserId`
-// (the project's owner) is carried alongside it purely so this module can
-// hand it to lib/ai/index.ts's getEmbeddingsProvider({projectId,
-// ownerUserId}, supabase) -- AI-provider credentials stay account-level
-// (lib/ai/credentials.ts), so building an embeddings provider for this
-// project still needs to know whose stored key to decrypt.
+// Documents belong to a project, not directly to a user -- `projectId` is
+// what's verified against the document row below and what Storage
+// paths/RPCs key off. `ownerUserId` (the project's owner) is carried
+// alongside it so this module can hand it to lib/ai/index.ts's
+// getEmbeddingsProvider({projectId, ownerUserId}, supabase): AI-provider
+// credentials stay account-level (lib/ai/credentials.ts), so building an
+// embeddings provider for this project still needs to know whose stored
+// key to decrypt.
 
 import "server-only";
 import type { SupabaseClient } from "@supabase/supabase-js";
@@ -142,29 +142,19 @@ export async function ingestDocument(
       );
     }
 
-    // Delete-before-insert: REQUIRED for idempotent re-sync, per the
-    // document_chunks migration's table comment. Runs AFTER a successful
-    // embed, not concurrently with it -- deliberately, even though the
-    // delete has no data dependency on the embedding vectors and hiding
-    // its latency behind the (usually slower) embed call is tempting.
-    // Reverted from a concurrent Promise.all version (see git history):
-    // running the delete unconditionally alongside the embed attempt meant
-    // ANY embed failure (expired key, transient network blip, provider
-    // rate limit -- all realistic right at the moment of a manual
-    // "Refresh") instantly wiped the existing, still-servable chunk set,
-    // making the document unsearchable until the next successful sync
-    // instead of leaving it stale-but-searchable. That's a real regression
-    // in the safety-over-latency direction this project otherwise commits
-    // to (e.g. the project-delete route's Storage sweep runs BEFORE the DB
-    // delete and aborts the whole operation on failure rather than risk
-    // orphaning data) -- not worth a small latency win. Doing the delete
-    // and insert as two separate statements (not a single transaction) is
-    // still a deliberate, acceptable tradeoff here: Supabase's
-    // PostgREST-based client doesn't expose multi-statement transactions,
-    // and the realistic failure mode (delete succeeds, insert fails)
-    // already leaves the document correctly marked 'error' by the catch
-    // block below with zero (not stale) chunks -- which is safe for
-    // match_document_chunks (nothing to return) even if not the ideal UX.
+    // Delete-before-insert: required for idempotent re-sync, per the
+    // document_chunks migration's table comment. Runs after a successful
+    // embed, not concurrently with it: running the delete alongside the
+    // embed attempt would mean any embed failure (expired key, transient
+    // network blip, provider rate limit) instantly wipes the existing,
+    // still-servable chunk set, making the document unsearchable instead of
+    // leaving it stale-but-searchable. Delete and insert are two separate
+    // statements, not one transaction -- Supabase's PostgREST-based client
+    // doesn't expose multi-statement transactions, and the realistic
+    // failure mode (delete succeeds, insert fails) already leaves the
+    // document correctly marked 'error' by the catch block below with zero
+    // (not stale) chunks, which is safe for match_document_chunks even if
+    // not the ideal UX.
     const { error: deleteError } = await supabase
       .from("document_chunks")
       .delete()
@@ -178,11 +168,10 @@ export async function ingestDocument(
       chunk_index: chunk.index,
       content: chunk.content,
       // page_number is left null: the normalized-document contract this
-      // pipeline receives ({ documentId, projectId, ownerUserId, title,
-      // text }) is a flat string with no page markers (see CLAUDE.md's DocumentSource
-      // interface) -- only chunk_position (ordinal) is available for
-      // citation until/unless document-sources-specialist starts passing
-      // page boundaries through for PDF sources.
+      // pipeline receives is a flat string with no page markers (see
+      // CLAUDE.md's DocumentSource interface) -- only chunk_position
+      // (ordinal) is available for citation until document-sources-
+      // specialist starts passing page boundaries through for PDF sources.
       page_number: null as number | null,
       chunk_position: chunk.index,
       embedding: vectors[i],
@@ -244,39 +233,28 @@ export async function ingestDocumentWithDefaultProviders(
   // getServiceRoleClient() throwing here (missing Supabase env vars) is a
   // deeper misconfiguration than a missing/invalid AI provider credential:
   // without a DB client there is no row we could even flip to 'error', so
-  // there's nothing to catch this into -- let it surface as-is, same as
-  // before.
+  // let it surface as-is.
   const supabase = getServiceRoleClient();
 
   let embeddingsProvider: EmbeddingsProvider;
   try {
-    // Bring-your-own-key, project-scoped (see lib/ai/index.ts): doc.projectId
-    // / doc.ownerUserId are already part of this function's
-    // NormalizedDocument contract, so they're threaded straight through --
-    // there is no more process-global "the" embeddings provider.
+    // doc.projectId / doc.ownerUserId are part of this function's
+    // NormalizedDocument contract and threaded straight through -- there is
+    // no process-global "the" embeddings provider.
     embeddingsProvider = await getEmbeddingsProvider({ projectId: doc.projectId, ownerUserId: doc.ownerUserId }, supabase);
   } catch (err) {
     // getEmbeddingsProvider() (via getAIProviders()) rejects when
     // doc.projectId has no active AI provider configured, or its owner's
     // credential(s) for that provider are missing
-    // (AIProviderError{kind:"no_credentials"} -- see lib/ai/index.ts) --
-    // or, less commonly, on any other AI-provider
-    // failure. Before an earlier fix (back when this was the global-env
-    // AI_PROVIDER path), an equivalent throw happened while evaluating an
-    // eagerly-computed argument to ingestDocument(doc, { ...
-    // embeddingsProvider: getEmbeddingsProvider() }, ...) -- i.e. BEFORE
-    // ingestDocument()'s own try/catch (which flips
-    // documents.processing_status to 'error') ever started running. The
-    // document row was left stuck in 'pending' forever with
-    // processing_error: null, invisible to both the UI and the user
-    // (reproduced live by qa-reviewer against POST /api/sources/upload).
-    // Fix: get the provider inside a try of our own, and on failure perform
-    // the exact same status transition ingestDocument()'s catch block would
-    // have performed, before rethrowing so the caller (document-sources-
-    // specialist's route handlers) still sees the failure -- e.g. a user
-    // with no AI provider configured yet who tries to upload a document
-    // sees a clear processing_error message instead of a document stuck in
-    // 'pending' forever.
+    // (AIProviderError{kind:"no_credentials"} -- see lib/ai/index.ts), or
+    // on any other AI-provider failure. This has to be caught here, in a
+    // try of our own, rather than left to ingestDocument()'s try/catch:
+    // that catch only starts running once ingestDocument() is called, so a
+    // rejection while resolving the embeddings provider argument would
+    // otherwise never flip documents.processing_status to 'error' at all,
+    // leaving the document stuck in 'pending' with no visible error. This
+    // performs the same status transition ingestDocument()'s catch block
+    // would, then rethrows so the caller still sees the failure.
     const message = err instanceof Error ? err.message : String(err);
     await setProcessingStatus(supabase, doc.documentId, {
       processing_status: "error",

@@ -8,11 +8,11 @@
 // (proper 401/429 status codes) and turns this generator into an SSE
 // Response; lib/gateway/answer.ts is a second, non-streaming caller for
 // external channel messages (Telegram etc, see that module). Keeping this
-// split is what makes the pipeline unit-testable with fakes (see
-// __tests__/handle-chat-request.test.ts) instead of needing a running
-// Next.js server, and is what lets ONE persistence code path serve both the
-// owner's own test chat and every external channel session of a project
-// (projects architecture pivot) without forking by caller type.
+// split makes the pipeline unit-testable with fakes (see
+// __tests__/handle-chat-request.test.ts) without a running Next.js server,
+// and lets one persistence code path serve both the owner's own test chat
+// and every external channel session of a project without forking by
+// caller type.
 //
 // SECURITY: `projectId`/`ownerUserId` must come from an already
 // independently-verified source -- see app/api/chat/route.ts (RLS-scoped
@@ -28,7 +28,7 @@
 // ownerUserId, channel/external_participant_id null) and an EXTERNAL
 // channel participant's session (`input.externalParticipant` set --
 // conversations.user_id = null, channel/external_participant_id set, found
-// via upsert against the (project_id, channel, external_participant_id)
+// via find-or-create against the (project_id, channel, external_participant_id)
 // partial unique index rather than a client-supplied conversationId, since
 // an inbound Telegram update carries none). `usage_events.user_id` is
 // always `input.ownerUserId` for BOTH shapes -- external participants have
@@ -99,37 +99,30 @@ function deriveConversationTitle(message: string): string {
  * index `conversations_external_participant_unique` (`where channel is not
  * null`, see the conversations migration).
  *
- * NOT implemented as `supabase.from("conversations").upsert(..., {
- * onConflict: "..." })`, even though that's the idiomatic
- * supabase-js shape for find-or-create elsewhere in this codebase (e.g.
- * lib/ai/credentials.ts's saveAIProviderCredential) -- deliberately, after
- * hitting this live against real Postgres: PostgREST's `on_conflict` query
- * param only ever emits a plain `ON CONFLICT (col1, col2, ...)` column-list
- * target, with no way to also pass the index's `WHERE channel IS NOT NULL`
+ * Not implemented as `supabase.from("conversations").upsert(..., {
+ * onConflict: "..." })`, the idiomatic supabase-js find-or-create shape
+ * used elsewhere in this codebase: PostgREST's `on_conflict` query param
+ * only emits a plain `ON CONFLICT (col1, col2, ...)` column-list target,
+ * with no way to also pass the index's `WHERE channel IS NOT NULL`
  * predicate. Postgres requires an ON CONFLICT target to match a unique
- * index/constraint EXACTLY, including any partial predicate, to infer it --
- * a bare column-list target cannot match a partial unique index at all, and
- * the query fails with "there is no unique or exclusion constraint
- * matching the ON CONFLICT specification" (reproduced live, not a
- * theoretical concern). A non-partial unique index would work with
- * `upsert()`, but the partial index is deliberate on db-architect's side
- * (see the conversations migration: the owner's own test-chat rows have no
- * such natural dedup key and can legitimately have many
- * channel/external_participant_id-both-null rows).
+ * index/constraint exactly, including any partial predicate -- a bare
+ * column-list target can't match a partial unique index, and the query
+ * fails with "there is no unique or exclusion constraint matching the ON
+ * CONFLICT specification". A non-partial unique index would work with
+ * `upsert()`, but the partial index is deliberate (the owner's own
+ * test-chat rows have no such natural dedup key and can legitimately have
+ * many channel/external_participant_id-both-null rows).
  *
- * Instead: SELECT first (this is the fast path on every message after the
- * first -- a repeat Telegram sender's conversation already exists), and
- * only INSERT on a miss. A concurrent double-insert race (two overlapping
- * webhook deliveries for a brand-new participant, both missing the SELECT)
- * is closed by catching Postgres's unique-violation error code (23505) on
- * the INSERT and re-SELECTing -- the losing request ends up with the
- * winner's row, not a duplicate. This is a real, not just theoretical,
- * race window this module's caller (lib/gateway/answer.ts) additionally
- * narrows with its own per-conversation lock (layer 3) -- see that
- * module's header -- but the DB-level catch here is what makes this
- * function correct even without that lock (e.g. if the lock is ever
- * bypassed or this function is reused by a future caller that doesn't
- * have one).
+ * Instead: SELECT first (the fast path on every message after the first --
+ * a repeat sender's conversation already exists), and only INSERT on a
+ * miss. A concurrent double-insert race (two overlapping webhook
+ * deliveries for a brand-new participant, both missing the SELECT) is
+ * closed by catching Postgres's unique-violation error code (23505) on the
+ * INSERT and re-SELECTing -- the losing request ends up with the winner's
+ * row, not a duplicate. This module's caller (lib/gateway/answer.ts)
+ * additionally narrows this race with its own per-conversation lock (layer
+ * 3), but the DB-level catch here is what makes this function correct even
+ * without that lock.
  */
 async function resolveExternalConversation(
   supabase: SupabaseClient,
@@ -221,23 +214,20 @@ interface PriorMessageRow {
 }
 
 // Hard cap on how much prior conversation history gets loaded into context
-// for a turn -- every OTHER size-sensitive piece of this pipeline is
+// for a turn -- every other size-sensitive piece of this pipeline is
 // bounded (retrieval's assembled context by maxContextTokens, a single
-// incoming message by app/api/chat/route.ts's own schema), but a
-// long-running conversation's history had no limit at all: every prior
-// message was fetched and resent to the chat provider on every subsequent
-// turn. 20 messages (~10 user/assistant turn pairs) is picked to land in
-// the same rough order of magnitude as lib/retrieval/search.ts's own
-// DEFAULT_MAX_CONTEXT_TOKENS (3000 tokens) -- ordinary chat turns are much
-// shorter than a retrieved chunk, so this many of them is comparable
-// context weight, not an arbitrarily different budget.
+// incoming message by app/api/chat/route.ts's own schema); without this,
+// a long-running conversation would resend its entire history on every
+// turn. 20 messages (~10 turn pairs) lands in the same rough order of
+// magnitude as lib/retrieval/search.ts's DEFAULT_MAX_CONTEXT_TOKENS (3000
+// tokens), since ordinary chat turns are much shorter than a retrieved
+// chunk.
 //
-// Trade-off, worth stating plainly rather than leaving implicit: once a
-// conversation exceeds this many messages, OLDER turns are silently
-// dropped from what the model sees on later messages. Nothing is deleted
-// -- the full history still exists in `messages` and is still returned to
-// the frontend for display -- this only bounds what gets RE-SENT to the
-// chat provider as conversational context on each new turn.
+// Trade-off worth stating plainly: once a conversation exceeds this many
+// messages, older turns are silently dropped from what the model sees on
+// later messages. Nothing is deleted -- the full history still exists in
+// `messages` and is still returned to the frontend for display -- this
+// only bounds what gets re-sent to the chat provider as context.
 const MAX_HISTORY_MESSAGES = 20;
 
 async function fetchHistory(
@@ -271,39 +261,29 @@ function buildSystemPromptWithContext(contextText: string): string {
 }
 
 // Code-level backstop for the "never hallucinate, only answer from
-// documents" promise (CLAUDE.md) -- qa-reviewer reproduced live that the
-// system prompt's own instruction (rule 4: say "У меня нет информации об
-// этом." when the context doesn't contain the answer) is occasionally NOT
-// followed by the underlying LLM on an empty-context turn: one phrasing of
-// a question against a project with zero relevant documents got a
-// confidently fabricated answer, while a reworded resubmission of the same
-// question correctly produced the canned "no information" reply. This is
-// the model not following instructions, not a logic bug in this pipeline
-// -- but since it directly undermines the core anti-hallucination promise,
-// this module now enforces it in CODE for the clearest case (no
-// meaningfully relevant chunk was retrieved at all) rather than relying
-// purely on prompt compliance: when retrieval finds nothing (or nothing
-// above a low relevance bar), the LLM is never called at all, and this
-// exact canned reply -- matching the system prompt's own rule 4 wording,
-// so the two paths are indistinguishable to the end user -- is returned
-// directly.
+// documents" promise (CLAUDE.md): the system prompt's own instruction
+// (rule 4: say "У меня нет информации об этом." when the context doesn't
+// contain the answer) is not reliably followed by the underlying LLM on an
+// empty-context turn. That's a model instruction-following gap, not a
+// logic bug in this pipeline -- but since it undermines the core
+// anti-hallucination promise, the clearest case (no meaningfully relevant
+// chunk retrieved at all) is enforced in code rather than left to prompt
+// compliance alone: when retrieval finds nothing above a low relevance bar,
+// the LLM is never called, and this exact canned reply -- matching the
+// system prompt's own rule 4 wording, so the two paths are
+// indistinguishable to the end user -- is returned directly.
 //
 // MIN_RELEVANT_SIMILARITY is a deliberately conservative (low) heuristic
 // cutoff, not a precisely-tuned relevance classifier: match_document_chunks'
 // `similarity` is `1 - cosine_distance` (roughly [-1, 1], 1 = identical),
 // and unrelated text pairs from real embedding models often still land
 // well above 0 (embedding spaces aren't perfectly discriminative at the
-// extremes) -- see README "Chunking + retrieval quality" for this
-// project's own live-measured similarity numbers for genuinely relevant
-// vs. irrelevant chunks (0.68-0.71 vs. 0.39-0.46 for the correct vs. wrong
-// document on the SAME question, both of which are real, on-topic
-// documents). Set too high, this guard would risk short-circuiting
-// genuinely relevant-but-imperfect matches (a false "I don't know" is
-// arguably worse for the demo than an occasional missed catch of a truly
-// irrelevant query, since the system prompt's own instruction-following
-// still exists as a second line of defense for borderline cases) -- so
-// this is tuned to only catch the clear-cut case: no sources at all, or a
-// top match so weak it's essentially noise.
+// extremes). Set too high, this guard risks short-circuiting genuinely
+// relevant-but-imperfect matches -- a false "I don't know" is worse than an
+// occasional missed catch of a truly irrelevant query, since the system
+// prompt's own instruction-following is still a second line of defense for
+// borderline cases -- so this only catches the clear-cut case: no sources
+// at all, or a top match so weak it's essentially noise.
 const MIN_RELEVANT_SIMILARITY = 0.15;
 
 // Exact wording of the system prompt's own rule 4 canned reply (see
@@ -380,21 +360,17 @@ export async function* handleChatRequest(
 
   // Same normalize-error-and-yield pattern as the chatProvider.streamChat
   // try/catch below: runRetrieval calls deps.embeddingsProvider.embed(),
-  // which (per lib/ai/types.ts's EmbeddingsProvider contract) always
-  // rejects with an already-normalized AIProviderError, never a raw vendor
-  // error -- so its retryable/userMessage are just as trustworthy as a
-  // chat-completion failure's and deserve the same graceful `error`
-  // event instead of falling through to the caller's generic catch-all
-  // (which always hardcodes retryable: false regardless of whether the
-  // underlying failure -- e.g. a 429 from the embeddings provider -- was
-  // actually retryable).
+  // which always rejects with an already-normalized AIProviderError, never
+  // a raw vendor error, so its retryable/userMessage deserve the same
+  // graceful `error` event as a chat-completion failure rather than
+  // falling through to the caller's generic catch-all (which hardcodes
+  // retryable: false regardless of the underlying failure).
   //
-  // A non-AIProviderError here (e.g. the plain Error that
-  // lib/retrieval/search.ts throws when the match_document_chunks RPC call
-  // itself fails) is a genuinely unexpected failure, not a
-  // classified/retryable AI-provider condition -- left to propagate and be
-  // caught by the caller's own catch-all, per this module's "Error
-  // handling" doc comment above.
+  // A non-AIProviderError here (e.g. the plain Error lib/retrieval/search.ts
+  // throws when the match_document_chunks RPC call itself fails) is a
+  // genuinely unexpected failure, not a classified AI-provider condition --
+  // left to propagate to the caller's own catch-all, per this module's
+  // "Error handling" doc comment above.
   let retrieval;
   try {
     retrieval = await runRetrieval(
@@ -420,12 +396,10 @@ export async function* handleChatRequest(
   // not a billing-accurate figure. user_id stays the project OWNER for
   // both ownership shapes -- see the module header.
   //
-  // Fire-and-forget (NOT awaited inline): its result is only ever logged,
-  // never acted on, so there is no reason to block the anti-hallucination
-  // check (or any subsequent yield) on this write completing -- a slow or
-  // stalled usage_events insert used to add its full latency to every
-  // turn for no benefit downstream. Errors are still caught and logged,
-  // same as before.
+  // Fire-and-forget (not awaited inline): its result is only ever logged,
+  // never acted on, so there's no reason to block the anti-hallucination
+  // check (or any subsequent yield) on this write completing. Errors are
+  // still caught and logged.
   void (async () => {
     const { error: embeddingUsageError } = await deps.supabase.from("usage_events").insert({
       project_id: input.projectId,
@@ -454,19 +428,16 @@ export async function* handleChatRequest(
     yield { type: "sources", sources: [] };
     yield { type: "delta", text: NO_RELEVANT_CONTEXT_REPLY };
 
-    // A chat_request usage_events row IS still written here even though no
+    // A chat_request usage_events row is still written here even though no
     // real chat-completion call happened (prompt/completion/total_tokens
-    // are all 0, reflecting zero real LLM cost) -- this is deliberately
-    // NOT the same thing as "no usage to log". checkChatRateLimit's
-    // persistent, DB-backed per-project rate limit (see
-    // lib/rate-limit/rate-limiter.ts) works by COUNT(*)-ing chat_request
-    // rows in a trailing window; without a row here, a caller could send
-    // unlimited no-relevant-context turns (each still triggering a real,
-    // billed embeddings call above) without ever tripping that persistent
-    // budget -- only the transient in-memory reservation
-    // (reserveChatRateLimitSlot) would ever see them. Run alongside the
-    // assistant-message insert via Promise.all -- neither result feeds the
-    // other, so there's no reason to serialize them.
+    // are all 0). This is not "no usage to log": checkChatRateLimit's
+    // persistent, DB-backed per-project rate limit (lib/rate-limit/rate-limiter.ts)
+    // works by COUNT(*)-ing chat_request rows in a trailing window --
+    // without a row here, a caller could send unlimited no-relevant-context
+    // turns (each still triggering a real, billed embeddings call above)
+    // without ever tripping that persistent budget. Run alongside the
+    // assistant-message insert via Promise.all since neither result feeds
+    // the other.
     const [{ error: insertNoContextMessageError }, { error: noContextUsageError }] = await Promise.all([
       deps.supabase.from("messages").insert({
         conversation_id: conversation.id,
@@ -506,24 +477,15 @@ export async function* handleChatRequest(
 
   const stream = deps.chatProvider.streamChat({ systemPrompt, messages });
 
-  // NOTE (bug found live, see git history): `stream.usage` used to be
-  // awaited OUTSIDE this try, after the delta loop. That's an easy trap --
-  // a completion that streams zero deltas (e.g. wrapAiSdkStream's
-  // "empty-but-successful stream" branch, lib/ai/stream-utils.ts) exits the
-  // `for await` loop normally, without throwing, so nothing in the old
-  // try/catch ever fired; the underlying AI SDK's `usage`/`text` promises
-  // can *still* reject on their own afterward (reproduced live: a real
-  // AI_NoOutputGeneratedError from Gemini after wrapAiSdkStream's retry
-  // budget was exhausted against a 429) -- and that rejection, awaited with
-  // no try/catch around it, escaped this generator as a raw, unnormalized
-  // exception instead of a graceful `error` event. `stream.usage` is now
-  // awaited INSIDE the same try, so a failure at that point gets the exact
-  // same normalize-and-yield treatment as a failure during streaming
-  // itself (same catch body, deliberately -- normalizeProviderError() is
-  // idempotent on an already-normalized AIProviderError, and unconditional
-  // normalization here, not gated on `instanceof AIProviderError` the way
-  // the retrieval catch above is, matches this block's pre-existing
-  // delta-loop catch, which never gated on that either).
+  // `stream.usage` is awaited INSIDE this same try, not after it: a
+  // completion that streams zero deltas (e.g. wrapAiSdkStream's
+  // "empty-but-successful stream" branch) exits the `for await` loop
+  // normally without throwing, but the underlying AI SDK's `usage`/`text`
+  // promises can still reject afterward (e.g. AI_NoOutputGeneratedError
+  // after a retry budget is exhausted). Awaiting it in the same try gives
+  // that failure the same normalize-and-yield treatment as a failure during
+  // streaming itself, instead of escaping this generator as a raw,
+  // unnormalized exception.
   let fullText = "";
   let usage: TokenUsage;
   try {
@@ -540,14 +502,12 @@ export async function* handleChatRequest(
 
   // A completion that resolves successfully -- the delta loop finished and
   // `stream.usage` resolved, neither one throwing -- but streamed literally
-  // ZERO deltas is not actually a success: the model produced no text at
-  // all. Left unchecked, this silently persisted a blank assistant message
-  // with no error anywhere. Verified live: on Telegram specifically,
-  // `splitTelegramMessage("")` (lib/channels/telegram/client.ts) returns
-  // `[]`, so `sendTelegramMessage` makes zero outbound API calls -- the
-  // participant gets literally nothing back, with no error surfaced to
-  // them, to the caller, or to server logs. Treated the same as any other
-  // known chat-provider failure mode: a graceful `error` event, no
+  // zero deltas is not actually a success: the model produced no text at
+  // all. Left unchecked this would silently persist a blank assistant
+  // message with no error anywhere (and on Telegram specifically,
+  // `splitTelegramMessage("")` returns `[]`, so the participant would get
+  // nothing back with no error surfaced anywhere). Treated the same as any
+  // other known chat-provider failure mode: a graceful `error` event, no
   // assistant message / usage_events row persisted for this turn.
   if (fullText.trim().length === 0) {
     const emptyOutputErr = new AIProviderError({

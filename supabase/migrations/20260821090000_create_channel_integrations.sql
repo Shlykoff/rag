@@ -5,8 +5,8 @@
 --
 -- Encrypted credentials mirror ai_provider_credentials'/source_credentials'
 -- exact column shape (ciphertext + nonce + key version) -- same
--- application-level AES-256-GCM plan, via a new domain-isolated
--- lib/channels/crypto.ts (Stage B), same CREDENTIALS_ENCRYPTION_KEY env
+-- application-level AES-256-GCM plan, via a domain-isolated
+-- lib/channels/telegram/crypto.ts, same CREDENTIALS_ENCRYPTION_KEY env
 -- var, same local-vs-hosted-KMS reasoning already recorded on
 -- source_credentials/ai_provider_credentials. This migration only
 -- guarantees the column shape cannot be mistaken for a plaintext-friendly
@@ -66,10 +66,10 @@ create trigger set_channel_integrations_updated_at
 -- don't denormalize" pattern documents/document_chunks already use. This
 -- protects the config UI only: the webhook path itself has no Supabase
 -- session and always reads/writes this table via service_role -- the real
--- trust boundary for inbound webhooks is a per-integration secret token
--- (Stage B), not RLS. RLS here is still enabled and still explicit per
--- CLAUDE.md rule 3 (deny by default on every table with user data), it
--- just isn't what's standing between an attacker and the webhook.
+-- trust boundary for inbound webhooks is a per-integration secret token,
+-- not RLS. RLS here is still enabled and explicit per CLAUDE.md rule 3
+-- (deny by default on every table with user data), it just isn't what's
+-- standing between an attacker and the webhook.
 
 alter table public.channel_integrations enable row level security;
 
@@ -126,7 +126,7 @@ create policy "channel_integrations_delete_own"
 
 -- Table-level grants: required in addition to RLS on this Supabase/PG
 -- image (see the comment in the documents migration for why).
--- service_role gets full CRUD -- the webhook route (Stage B) looks up the
+-- service_role gets full CRUD -- the webhook route looks up the
 -- integration by id and may update it (e.g. disabling on repeated auth
 -- failures from the channel platform).
 grant select, insert, update, delete on public.channel_integrations to authenticated;

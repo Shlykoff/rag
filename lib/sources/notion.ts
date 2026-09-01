@@ -90,9 +90,8 @@ function translateNotionError(err: unknown): SourceError {
     // but isn't shared with this integration" (so a token can't be used to
     // probe for pages it can't see) -- there is no way to tell these apart
     // from the API response alone. The message below covers the
-    // actually-common real case explicitly, per CLAUDE.md's "понятная
-    // ошибка... а не глухой 403 без объяснения" requirement, rather than
-    // surfacing a bare, unexplained 404.
+    // actually-common real case explicitly, rather than surfacing a bare,
+    // unexplained 404.
     return new SourceError({
       source: "notion",
       kind: "not_shared",
@@ -265,15 +264,13 @@ async function importNotionDatabase(client: Client, databaseId: string): Promise
   const title = richTextToPlainText(database.title) || "Untitled database";
 
   // As of Notion API version 2025-09-03, a "database" no longer holds rows
-  // directly -- rows live in one or more "data sources" attached to it
-  // (the multi-source-database feature), and `databases.query` was removed
-  // from the SDK entirely in favor of `dataSources.query({data_source_id})`.
-  // This adapter only supports the common case (a single data source per
-  // database, true for every database created the traditional way / not
-  // opted into multi-source) -- it queries the FIRST data source only. A
-  // database with multiple data sources would silently only import the
-  // first one's rows; flagged here rather than fully implementing
-  // multi-data-source fan-out, which is a rare, newer Notion feature.
+  // directly -- rows live in one or more "data sources" attached to it (the
+  // multi-source-database feature), and `databases.query` was removed from
+  // the SDK in favor of `dataSources.query({data_source_id})`. This adapter
+  // only supports the common case (a single data source per database, true
+  // unless a database opted into the newer multi-source feature) and
+  // queries the FIRST data source only -- a database with multiple data
+  // sources would silently only import the first one's rows.
   const dataSourceId = database.data_sources[0]?.id;
   if (!dataSourceId) {
     throw new SourceError({

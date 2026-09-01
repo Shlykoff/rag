@@ -2,22 +2,19 @@
 //
 // The generic adapter contract every channel under lib/channels/ (Telegram
 // today, Slack/others later) implements. Deliberately provider-agnostic --
-// nothing here mentions Telegram, so a future Slack adapter (or anything
-// else) implements the exact same shape. (An earlier lib/channels/index.ts
-// speculatively registered adapters by string key for a hypothetical
-// future generic-dispatch caller that never materialized -- deleted as
-// dead code; the one real caller,
-// app/api/channels/telegram/[integrationId]/route.ts, imports
-// lib/channels/telegram/adapter.ts directly, since Next.js's own URL
-// routing is already channel-specific.)
+// nothing here mentions Telegram, so a future Slack adapter implements the
+// exact same shape. There's no generic-dispatch-by-channel-name registry:
+// Next.js's own URL routing is already channel-specific, so the one real
+// caller (app/api/channels/telegram/[integrationId]/route.ts) imports
+// lib/channels/telegram/adapter.ts directly.
 //
-// IMPORT BOUNDARY (CLAUDE.md non-negotiable rule 8): this file, and
-// everything else under lib/channels/**, may import lib/gateway/answer.ts
-// and generic Supabase client helpers (e.g. lib/supabase/service-client.ts)
-// -- and NOTHING else from lib/chat/, lib/retrieval/, lib/ai/, or
-// lib/rate-limit/ directly. This mirrors the existing lib/ai/ / lib/sources/
-// "pluggable module behind a narrow interface" convention, applied one
-// layer further out: lib/gateway/answer.ts is the one seam.
+// IMPORT BOUNDARY (CLAUDE.md rule 8): this file, and everything else under
+// lib/channels/**, may import lib/gateway/answer.ts and generic Supabase
+// client helpers (e.g. lib/supabase/service-client.ts) -- nothing else
+// from lib/chat/, lib/retrieval/, lib/ai/, or lib/rate-limit/ directly.
+// This mirrors the lib/ai/ / lib/sources/ "pluggable module behind a
+// narrow interface" convention, applied one layer further out:
+// lib/gateway/answer.ts is the one seam.
 
 /**
  * One inbound message from an external channel, already normalized away

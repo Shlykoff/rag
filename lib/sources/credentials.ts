@@ -4,8 +4,7 @@
 // (`source_credentials`), encrypting/decrypting via lib/sources/crypto.ts.
 // notion.ts / google-drive.ts call getSourceCredential() to obtain the
 // plaintext token/JSON right before using it against the Notion/Google
-// API, and never store or log it beyond that call -- see each adapter's
-// own comments.
+// API, and never store or log it beyond that call.
 //
 // bytea encoding note: PostgREST (what supabase-js talks to) represents
 // Postgres `bytea` columns as a hex string prefixed "\x" on both read and

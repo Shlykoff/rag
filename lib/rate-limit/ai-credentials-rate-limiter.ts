@@ -2,28 +2,22 @@
 //
 // Per-user request-rate limiting for the state-changing calls on
 // app/api/profile/ai-providers/route.ts (POST save-a-key, DELETE
-// remove-a-key, PUT set-active-provider). CLAUDE.md rule 4 ("проверка
-// лимита запросов -- на сервере, до вызова AI-провайдера") doesn't apply
-// here in the "billed AI call" sense this route never calls a vendor SDK
-// at all -- but an unbounded write endpoint is still worth capping: each
-// call does a real encrypt (lib/ai/crypto.ts) + a real DB upsert/delete,
-// and there's no reason a legitimate user needs more than a handful of
-// these in a minute (they're editing a handful of provider slots by hand,
-// not scripting bulk writes).
+// remove-a-key, PUT set-active-provider). This route never calls a vendor
+// SDK, so CLAUDE.md rule 4 doesn't apply in the "billed AI call" sense --
+// but an unbounded write endpoint is still worth capping: each call does a
+// real encrypt (lib/ai/crypto.ts) + a real DB upsert/delete, and a
+// legitimate user has no reason to need more than a handful of these in a
+// minute.
 //
-// Deliberately mirrors lib/rate-limit/source-ingest-rate-limiter.ts's
-// design almost exactly -- see that file's header for the full reasoning
-// this repeats: NOT backed by `usage_events` (its event_type enum has no
-// value for "credentials write", and this isn't a billed-AI-call event
-// anyway, unlike chat_request/embedding_request), a simple in-memory
-// sliding window instead, same documented multi-instance limitation (only
-// closes the burst race within one warm Node process/serverless instance).
-// Kept as its own small module (not a re-export of
-// source-ingest-rate-limiter.ts's implementation) so the two limiters'
+// Mirrors lib/rate-limit/source-ingest-rate-limiter.ts's design almost
+// exactly -- see that file's header for the full reasoning: not backed by
+// `usage_events` (its event_type enum has no value for "credentials
+// write"), a simple in-memory sliding window instead, same documented
+// multi-instance limitation. Kept as its own small module (not a re-export
+// of source-ingest-rate-limiter.ts's implementation) so the two limiters'
 // state maps stay independent -- a user hammering POST /api/sources/url
 // must not eat into their POST /api/profile/ai-providers allowance or vice
-// versa, same reasoning as source-ingest-rate-limiter.ts's own "don't share
-// a bucket with an unrelated action" argument.
+// versa.
 
 import "server-only";
 import { createSlidingWindowLimiter } from "./sliding-window";

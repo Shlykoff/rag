@@ -11,29 +11,19 @@ interface ConversationRow {
 // Wraps both chat/(list)/page.tsx (new conversation) and
 // chat/[conversationId]/page.tsx (existing one) with the project's own
 // conversation history panel. Project ownership was already verified by
-// the parent app/(app)/projects/[projectId]/layout.tsx (notFound() there
-// short-circuits rendering before this ever runs), so this only needs the
-// RLS-scoped session client for its own conversations read -- RLS
-// (conversations_select_own) still independently scopes this to the
-// caller's own projects regardless.
+// the parent app/(app)/projects/[projectId]/layout.tsx.
 //
-// `(list)` IS A ROUTE GROUP (parentheses -- adds no URL segment; "/chat"
-// still resolves to chat/(list)/page.tsx), not a naming accident. It
-// exists specifically to give chat/(list)/loading.tsx a Suspense boundary
-// that wraps ONLY the new-conversation page, never the sibling
-// chat/[conversationId]/page.tsx -- see
-// app/(app)/projects/not-found.tsx's header comment (bug 3) for why a
-// `loading.tsx` directly in this chat/ folder used to wrap BOTH siblings
-// and broke chat/[conversationId]/page.tsx's own notFound()'s HTTP status
-// (branded 404 UI rendered, but the response was a bare 200) -- verified
-// live, not by inspection, in both `next dev` and a production build.
+// `(list)` is a route group (parentheses -- adds no URL segment; "/chat"
+// still resolves to chat/(list)/page.tsx). It exists so
+// chat/(list)/loading.tsx's Suspense boundary wraps only the
+// new-conversation page, never the sibling chat/[conversationId]/page.tsx
+// -- see app/(app)/projects/not-found.tsx for why that matters.
 //
-// `.is("channel", null)` is load-bearing, not decoration: the owner can
-// SELECT every conversation under a project they own, including external
-// channel sessions (see the conversations migration's RLS comment) -- this
-// history panel is specifically the owner's OWN test-chat threads; external
-// sessions get their own read-only view under
-// /projects/[projectId]/channels (see CLAUDE.md Stage C item 2).
+// `.is("channel", null)` is load-bearing: the owner can SELECT every
+// conversation under a project they own, including external-channel
+// sessions, but this history panel is specifically the owner's own
+// test-chat threads -- external sessions get their own read-only view
+// under /projects/[projectId]/channels.
 export default async function ProjectChatLayout({
   children,
   params,

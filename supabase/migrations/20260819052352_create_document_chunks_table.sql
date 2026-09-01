@@ -2,20 +2,18 @@
 -- each with its own embedding.
 --
 -- embedding is fixed at vector(1024) regardless of which AI provider is
--- active (OpenAI / Anthropic+Voyage / Gemini) — every provider is
--- configured by rag-pipeline-specialist to output 1024 dimensions via its
--- `dimensions`/`output_dimension`/`output_dimensionality` parameter, so the
--- schema never needs to change on provider switch. 1024 (not 1536) is the
--- only value that works natively across all three: Voyage's
--- `output_dimension` accepts only {256, 512, 1024, 2048} (1024 is its
--- default) and does not support 1536 at all, while OpenAI's `dimensions`
--- and Gemini's `output_dimensionality` both support arbitrary truncation
--- down to 1024 (Matryoshka-style). embedding_provider and
--- embedding_model record which provider/model actually produced *this*
--- row's vector, so stale rows (from a previous AI_PROVIDER) can be found
--- and re-embedded after a switch — different models produce incompatible
--- vector spaces even at the same dimensionality, so mixing them in one
--- similarity search would silently return garbage.
+-- active (OpenAI / Anthropic+Voyage / Gemini): each is configured to
+-- output 1024 dimensions via its own `dimensions`/`output_dimension`/
+-- `output_dimensionality` parameter, so the schema never changes on
+-- provider switch. 1024 (not 1536) is the only value that works natively
+-- across all three: Voyage's `output_dimension` accepts only {256, 512,
+-- 1024, 2048} (1024 is its default) and does not support 1536, while
+-- OpenAI's `dimensions` and Gemini's `output_dimensionality` both support
+-- arbitrary truncation down to 1024. embedding_provider/embedding_model
+-- record which provider/model produced *this* row's vector, so stale rows
+-- (from a previous AI_PROVIDER) can be found and re-embedded after a
+-- switch -- different models produce incompatible vector spaces even at
+-- the same dimensionality, so mixing them in one search returns garbage.
 create table public.document_chunks (
   id uuid primary key default gen_random_uuid(),
   document_id uuid not null references public.documents (id) on delete cascade,
@@ -60,21 +58,18 @@ comment on column public.document_chunks.chunk_position is
 create index document_chunks_document_id_idx on public.document_chunks (document_id);
 
 -- Vector index for approximate nearest-neighbor search -------------------
--- HNSW, not IVFFlat: this is a portfolio/demo project with a small,
--- slowly-growing corpus (a handful of documents, at most low thousands of
--- chunks). IVFFlat's `lists` parameter has to be sized against the
--- expected row count (roughly rows/1000, or sqrt(rows)) and gives poor
--- recall until the table is actually populated close to that estimate —
--- exactly wrong for a demo that starts at 2 seed documents and grows
--- unpredictably as a client uploads their own files. HNSW has no such
--- row-count-dependent tuning parameter, gives better recall/speed at these
--- data sizes, and the local Postgres image ships pgvector 0.8.2 which
--- supports it. Trade-off (more expensive index build, more memory) is
+-- HNSW, not IVFFlat: this is a small, slowly-growing corpus (a handful of
+-- documents, at most low thousands of chunks). IVFFlat's `lists` parameter
+-- has to be sized against the expected row count and gives poor recall
+-- until the table is populated close to that estimate -- wrong fit for a
+-- demo that starts at 2 seed documents and grows unpredictably. HNSW has
+-- no such row-count-dependent tuning, gives better recall/speed at this
+-- scale, and the local Postgres image ships pgvector 0.8.2, which supports
+-- it. The trade-off (more expensive index build, more memory) is
 -- irrelevant at this scale.
--- Cosine distance (vector_cosine_ops) is used because embeddings from all
--- three supported providers are compared for direction/similarity, not
--- magnitude, and cosine is what OpenAI/Voyage/Gemini embeddings are tuned
--- for.
+-- Cosine distance (vector_cosine_ops): embeddings from all three supported
+-- providers are compared for direction/similarity, not magnitude, and
+-- cosine is what OpenAI/Voyage/Gemini embeddings are tuned for.
 create index document_chunks_embedding_hnsw_idx
   on public.document_chunks
   using hnsw (embedding extensions.vector_cosine_ops);
@@ -87,11 +82,9 @@ create index document_chunks_embedding_hnsw_idx
 -- project the caller owns. No insert/update/delete policies exist for
 -- authenticated users at all (deny by default covers those operations).
 --
--- Two-hop join (document_chunks -> documents -> projects), same "derive
--- via join, don't denormalize" pattern this table already used before the
--- projects pivot (previously a one-hop join straight to documents.user_id;
--- now documents itself has no user_id column, so the join goes one level
--- further to projects.user_id).
+-- Two-hop join (document_chunks -> documents -> projects): documents has
+-- no user_id column of its own, so ownership is derived one level further,
+-- through projects.user_id.
 
 alter table public.document_chunks enable row level security;
 

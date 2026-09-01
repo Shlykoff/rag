@@ -16,16 +16,6 @@
 import { normalizeProviderError } from "./errors";
 import type { ChatStreamResult, TokenUsage } from "./types";
 
-/**
- * Structural subset of the Vercel AI SDK's StreamTextResult that this
- * wrapper needs -- kept minimal and duck-typed so provider adapters don't
- * have to fight generic type params when calling this. `usage`/`text` are
- * typed as `PromiseLike` (not `Promise`) because that's what
- * StreamTextResult itself exposes them as -- `PromiseLike` is the weaker
- * type (every `Promise` is a `PromiseLike`, not vice versa), so this still
- * accepts a real StreamTextResult unchanged while remaining fully usable
- * with plain `Promise`s (including in tests, see stream-utils.test.ts).
- */
 /** Raw usage shape this project accepts from either AI SDK v4-style (`promptTokens`/`completionTokens`) or v5-style (`inputTokens`/`outputTokens`) provider results -- see normalizeUsage below. */
 export interface RawStreamUsage {
   inputTokens?: number;
@@ -35,6 +25,15 @@ export interface RawStreamUsage {
   completionTokens?: number;
 }
 
+/**
+ * Structural subset of the Vercel AI SDK's StreamTextResult that this
+ * wrapper needs -- kept minimal and duck-typed so provider adapters don't
+ * fight generic type params when calling this. `usage`/`text` are typed as
+ * `PromiseLike` (the weaker of the two, since every `Promise` is a
+ * `PromiseLike`) because that's what StreamTextResult itself exposes, so
+ * this accepts a real StreamTextResult unchanged while also working with
+ * plain `Promise`s in tests.
+ */
 export interface AiSdkStreamLike {
   textStream: AsyncIterable<string>;
   usage: PromiseLike<RawStreamUsage>;
@@ -126,25 +125,15 @@ export function wrapAiSdkStream(
 
   const text: Promise<string> = committed.then((result) => result.text);
 
-  // `usage`/`text` reject whenever `committed` rejects (i.e. the stream
-  // failed before/at commit -- see `run()` above). Callers that only care
-  // about the streamed text (the common case: lib/chat/handle-chat-request.ts
-  // yields an SSE error event and returns without ever touching
-  // `.usage`/`.text` on the failure path) legitimately never attach a
-  // handler to these promises. Node's `--unhandled-rejections=throw`
-  // (default since Node 15) crashes the whole process for ANY rejected
-  // promise nobody ever handled, which would take down every in-flight
-  // request for every user over one AI-provider error.
-  //
-  // Attaching `.catch(() => {})` here registers a handler directly on the
-  // `usage`/`text` promises themselves -- calling `.catch()` never mutates
-  // or replaces the original promise, it just adds one more independent
-  // listener (the same way `await`-ing a promise twice, or passing it to
-  // two different callers, works fine and each caller still observes the
-  // real rejection). So this line exists purely to mark `usage`/`text` as
-  // "handled" for Node's unhandled-rejection tracking; the caller-facing
-  // `usage`/`text` returned below are untouched and still reject with the
-  // real AIProviderError if a caller does `await stream.usage`.
+  // `usage`/`text` reject whenever `committed` rejects (stream failed
+  // before/at commit). Callers that only care about the streamed text
+  // (e.g. lib/chat/handle-chat-request.ts on its error path) legitimately
+  // never attach a handler to these, and Node's `--unhandled-rejections=throw`
+  // would crash the whole process for an unhandled rejection. `.catch(() =>
+  // {})` here just registers an extra listener to mark the promise
+  // "handled" -- it doesn't mutate or replace it, so the `usage`/`text`
+  // returned below still reject with the real AIProviderError for any
+  // caller that does `await stream.usage`.
   usage.catch(() => {});
   text.catch(() => {});
 

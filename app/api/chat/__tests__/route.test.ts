@@ -1,19 +1,11 @@
 // app/api/chat/__tests__/route.test.ts
 //
-// Regression test for the bug qa-reviewer reproduced live via curl:
-// getAIProviders() (see lib/ai/index.ts) rejects when the project has no
-// active AI provider configured (or its owner's stored credential(s) are
-// missing). Before an earlier, env-var-driven version of this fix, an
-// equivalent throw sat outside any try/catch in POST(), so it propagated
-// all the way out of the route handler -> a bare HTTP 500 with no body and
-// no Content-Type, which is not one of the response shapes documented in
-// this route's own header contract (401/400/404/422/429/200-SSE). This
-// file also covers the newer split this route makes on top of that fix: a
-// no_credentials failure -> 422 (no console.error), anything else -> 500
-// (with console.error) -- see route.ts's module header for the full wire
-// contract nextjs-frontend's "add a key" modal depends on. Also covers the
-// projects-pivot ownership check (verifyProjectOwnership -> 404, not 403,
-// on mismatch) added by this route.
+// Covers route.ts's getAIProviders() error handling: a no_credentials
+// failure -> 422 (no console.error), anything else -> 500 (with
+// console.error) -- neither should ever escape as a bare, undocumented 500.
+// See route.ts's module header for the full wire contract nextjs-frontend's
+// "add a key" modal depends on. Also covers the ownership check
+// (verifyProjectOwnership -> 404, not 403, on mismatch).
 //
 // Every dependency route.ts imports is mocked here so this test exercises
 // only route.ts's own control flow (auth passes, ownership passes, rate

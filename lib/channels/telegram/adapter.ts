@@ -1,12 +1,11 @@
 // lib/channels/telegram/adapter.ts
 //
 // Implements the generic ChannelAdapter contract (lib/channels/types.ts)
-// for Telegram, PLUS `handleTelegramWebhook()` -- the concrete,
+// for Telegram, plus `handleTelegramWebhook()` -- the concrete,
 // Telegram-specific orchestration app/api/channels/telegram/[integrationId]/route.ts
-// actually calls directly (Next.js routing is already channel-specific per
-// the URL path, so the route has no need for -- and this project has no --
-// a generic-dispatch-by-channel-name registry; see lib/channels/types.ts's
-// header for why an earlier speculative one was deleted as dead code).
+// calls directly (Next.js routing is already channel-specific per the URL
+// path, so there's no generic-dispatch-by-channel-name registry -- see
+// lib/channels/types.ts's header).
 //
 // IMPORT BOUNDARY (CLAUDE.md rule 8): the only import from the core RAG
 // stack anywhere in this file is `answerExternalMessage` from

@@ -3,14 +3,12 @@ import { ProfileForm } from "@/components/profile/ProfileForm";
 
 export const dynamic = "force-dynamic";
 
-// Gated the same way app/(app)/projects/[projectId]/documents/page.tsx is:
-// app/(app)/layout.tsx already redirects an unauthenticated visitor before
-// this ever renders, this is defense-in-depth consistent with every other
-// page in this route group. Unlike that documents page, this page does no
-// server-side data fetch of its own -- all provider state is loaded
-// client-side by ProfileForm via GET /api/profile/ai-providers, per this
-// stage's boundary rule (nextjs-frontend calls that route, never
-// lib/ai/credentials.ts directly -- see ProfileForm.tsx's own comment).
+// app/(app)/layout.tsx already redirects unauthenticated visitors before
+// this renders; the check here is defense-in-depth, consistent with every
+// other page in this route group. Unlike the documents page, this page
+// does no server-side data fetch of its own -- provider state is loaded
+// client-side by ProfileForm via GET /api/profile/ai-providers, never via
+// lib/ai/credentials.ts directly (see ProfileForm.tsx).
 export default async function ProfilePage() {
   const supabase = await getRouteHandlerSupabaseClient();
   const user = await getAuthenticatedUser(supabase);

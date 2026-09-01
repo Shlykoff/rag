@@ -1,27 +1,23 @@
 // lib/ai/credentials.ts
 //
 // Server-side read/write of per-user AI-provider credentials
-// (`ai_provider_credentials`, account-level -- unchanged by the projects
-// pivot) and the per-PROJECT active-provider selection
-// (`projects.active_ai_provider` -- moved off the now-dropped
-// `user_settings` table by that pivot, see the projects migration's
-// header). lib/ai/index.ts's getAIProviders() calls
+// (`ai_provider_credentials`, account-level) and the per-project
+// active-provider selection (`projects.active_ai_provider`).
+// lib/ai/index.ts's getAIProviders() calls
 // getActiveProvider()/getAIProviderCredential() to build the active
-// ChatProvider/EmbeddingsProvider pair for one request, and
-// app/api/profile/ai-providers/route.ts calls the account-level credential
-// CRUD exports here directly (it no longer touches
-// getActiveProvider/setActiveProvider -- picking which connected provider a
-// PROJECT uses is project-scoped now, out of that account-level route's
-// remit; see that route's own header comment).
-// Deliberately mirrors lib/sources/credentials.ts's shape (including the
-// bytea hex-encoding helpers, duplicated rather than imported -- see
+// ChatProvider/EmbeddingsProvider pair for one request.
+// app/api/profile/ai-providers/route.ts uses only the account-level
+// credential CRUD exports here -- picking which connected provider a
+// project uses is project-scoped, handled elsewhere.
+// Mirrors lib/sources/credentials.ts's shape (including the bytea
+// hex-encoding helpers), duplicated rather than imported -- see
 // lib/ai/crypto.ts's header for why lib/ai/ and lib/sources/ stay
-// domain-isolated) -- not extracted into a shared module.
+// domain-isolated.
 //
 // bytea encoding note: PostgREST (what supabase-js talks to) represents
 // Postgres `bytea` columns as a hex string prefixed "\x" on both read and
-// write by default (Postgres's own `bytea_output = 'hex'` default) -- NOT
-// base64 and NOT a raw Buffer over the JSON wire. bufferToBytea/byteaToBuffer
+// write by default (Postgres's `bytea_output = 'hex'` default) -- not
+// base64, not a raw Buffer over the JSON wire. bufferToBytea/byteaToBuffer
 // below are the only place that encoding is handled, so a future change to
 // the column type or output format only needs updating here.
 
@@ -33,17 +29,14 @@ import { encryptCredential, decryptCredential } from "./crypto";
 export type AIProviderCredentialType = "openai" | "anthropic" | "gemini" | "voyage";
 
 /**
- * Every value AIProviderCredentialType can take, as a concrete array --
- * used to be independently redeclared (byte-for-byte identical) in both
- * app/api/profile/ai-providers/route.ts and
- * app/api/projects/[projectId]/model/route.ts. Deliberately hardcoded here
- * too (not derived from lib/ai/index.ts's SUPPORTED_AI_PROVIDERS, which
- * excludes 'voyage' -- see that constant's own comment) since this list
- * specifically needs to include 'voyage', unlike SUPPORTED_AI_PROVIDERS.
+ * Every value AIProviderCredentialType can take, as a concrete array.
+ * Hardcoded here rather than derived from lib/ai/index.ts's
+ * SUPPORTED_AI_PROVIDERS, which excludes 'voyage' -- this list needs to
+ * include 'voyage', unlike SUPPORTED_AI_PROVIDERS.
  */
 export const ALL_CREDENTIAL_PROVIDERS: AIProviderCredentialType[] = ["openai", "anthropic", "gemini", "voyage"];
 
-/** The subset of AIProviderCredentialType that can actually be `user_settings.active_ai_provider` -- excludes 'voyage', enforced both by the DB CHECK constraint (user_settings_active_provider_not_voyage) and by this narrower type, so a caller can't even attempt to pass 'voyage' to setActiveProvider() without a compile error. */
+/** The subset of AIProviderCredentialType that can actually be `projects.active_ai_provider` -- excludes 'voyage', enforced both by the DB CHECK constraint (projects_active_provider_not_voyage) and by this narrower type, so a caller can't pass 'voyage' to setActiveProvider() without a compile error. */
 export type ActiveAIProvider = Exclude<AIProviderCredentialType, "voyage">;
 
 interface AIProviderCredentialRow {
@@ -140,17 +133,12 @@ export async function hasAIProviderCredential(
 }
 
 /**
- * Returns which of EVERY credential provider (ALL_CREDENTIAL_PROVIDERS) is
+ * Returns which of every credential provider (ALL_CREDENTIAL_PROVIDERS) is
  * currently configured for `userId`, as a `{ openai: boolean, ... }` map --
- * one round trip (all four `hasAIProviderCredential` checks run
- * concurrently via Promise.all, not sequentially). Used to be
- * independently re-implemented (identical `Promise.all(...).map` +
- * `Object.fromEntries` logic) in both
- * app/api/profile/ai-providers/route.ts's GET and
- * app/api/projects/[projectId]/model/route.ts's GET, which use this
- * exact same "is X configured" shape for two different purposes (the
- * former: what to show as connected on the account-level profile screen;
- * the latter: which options a project's "pick a model" screen can offer).
+ * all `hasAIProviderCredential` checks run concurrently via Promise.all.
+ * Shared by app/api/profile/ai-providers/route.ts's GET (what's connected
+ * on the profile screen) and app/api/projects/[projectId]/model/route.ts's
+ * GET (which options a project's "pick a model" screen can offer).
  */
 export async function getConfiguredProvidersMap(
   supabase: SupabaseClient,
@@ -165,14 +153,13 @@ export async function getConfiguredProvidersMap(
 
 /**
  * Deletes the stored credential for (userId, provider), if any -- a no-op
- * (not an error) if none was stored. Deliberately does NOT touch
- * `user_settings.active_ai_provider` even if the deleted provider was the
- * active one: lib/ai/index.ts's getAIProviders() already handles "active
- * provider set, but its credential is missing" by throwing the same
- * AIProviderError{kind:"no_credentials"} as "no active provider at all" --
- * so the user sees the same "add a key" prompt either way, without this
- * function needing a second write (and a second failure mode to handle) on
- * every delete.
+ * if none was stored. Deliberately does not touch
+ * `projects.active_ai_provider` even if the deleted provider was active:
+ * lib/ai/index.ts's getAIProviders() already handles "active provider set
+ * but credential missing" by throwing the same
+ * AIProviderError{kind:"no_credentials"} as "no active provider at all",
+ * so the user sees the same "add a key" prompt either way without this
+ * function needing a second write on every delete.
  */
 export async function deleteAIProviderCredential(
   supabase: SupabaseClient,
@@ -194,18 +181,13 @@ interface ProjectActiveProviderRow {
 }
 
 /**
- * Reads `projects.active_ai_provider` for `projectId`. Unlike the old
- * `user_settings` row (which was lazily created, so "no row" and "row with
- * a null column" both meant "not configured"), a `projects` row always
- * exists by the time this is called -- every project is created with a
- * (possibly null) `active_ai_provider` column, never lazily. A genuinely
- * missing project is therefore a real error (a stale/bogus projectId
- * reaching this far is a caller bug -- the caller must have already
- * verified project ownership before calling anything in lib/ai/, per
- * CLAUDE.md/the match_document_chunks RPC's security comment), not just
- * "not configured yet" -- that distinction is why this throws on a missing
- * row instead of quietly returning null the way the old lazy-row lookup
- * did.
+ * Reads `projects.active_ai_provider` for `projectId`. A `projects` row
+ * always exists by the time this is called -- every project is created
+ * with a (possibly null) `active_ai_provider` column. A missing project is
+ * therefore a real error, not "not configured yet": the caller must
+ * already have verified project ownership before calling anything in
+ * lib/ai/ (see CLAUDE.md / the match_document_chunks RPC's security
+ * comment), so a stale/bogus projectId reaching this far is a caller bug.
  */
 export async function getActiveProvider(
   supabase: SupabaseClient,
@@ -253,27 +235,23 @@ export class MissingProviderCredentialsError extends Error {
 /**
  * Sets `projects.active_ai_provider` for `projectId`.
  *
- * `ownerUserId` (new, from the projects pivot) is the caller's already
- * server-validated notion of who owns this project (e.g. the signed-in
- * user, verified via the RLS-scoped session client before this is ever
- * called -- see app/api/chat/route.ts's/the sources routes' ownership-check
- * pattern). Two things are checked against it before the write, both
- * app-level (not DB constraints, same tradeoff this project already made
- * for the old user_settings.active_ai_provider -- see the projects
- * migration's column comment):
+ * `ownerUserId` is the caller's already server-validated notion of who owns
+ * this project (verified via the RLS-scoped session client before this is
+ * ever called). Two things are checked against it before the write, both
+ * app-level rather than DB constraints (see the projects migration's
+ * column comment):
  *   1. `projectId` actually belongs to `ownerUserId` -- defense in depth
  *      against a caller-side scoping bug (mirrors the
  *      `documentRow.project_id !== doc.projectId` guard in
  *      lib/ingestion/ingest.ts), not the primary enforcement boundary.
- *   2. `ownerUserId` (not some other account) actually holds the
- *      credential(s) `provider` needs -- 'anthropic' specifically requires
- *      BOTH an 'anthropic' row (the chat model) AND a 'voyage' row
- *      (Anthropic has no embeddings API of its own -- see
- *      lib/ai/index.ts's PROVIDER_REGISTRY); every other provider just
- *      needs its own single row.
- * Both checks run BEFORE the write, so a rejected call never leaves
+ *   2. `ownerUserId` actually holds the credential(s) `provider` needs --
+ *      'anthropic' requires both an 'anthropic' row (chat) and a 'voyage'
+ *      row (Anthropic has no embeddings API of its own -- see
+ *      lib/ai/index.ts's PROVIDER_REGISTRY); every other provider needs
+ *      just its own row.
+ * Both checks run before the write, so a rejected call never leaves
  * `projects.active_ai_provider` pointing at a provider with no usable
- * credential (or at a provider chosen by/for the wrong account).
+ * credential.
  */
 export async function setActiveProvider(
   supabase: SupabaseClient,

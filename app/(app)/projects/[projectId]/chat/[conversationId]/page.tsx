@@ -6,15 +6,11 @@ import type { ChatMessageVM, ContextSource } from "@/components/chat/types";
 export const dynamic = "force-dynamic";
 
 // DELIBERATELY NO loading.tsx anywhere above this page (this segment, its
-// ../layout.tsx, or ../../[projectId]/) -- a `loading.tsx` ancestor's
+// ../layout.tsx, or ../../[projectId]/) -- an ancestor loading.tsx's
 // Suspense boundary can flush a 200 status before this page's own
 // notFound() below ever runs, making a real 404 impossible regardless of
-// where not-found.tsx lives. This is exactly why chat/'s own loading.tsx
-// moved into the sibling `(list)` route group instead of living directly
-// in chat/ (see ../layout.tsx's header comment) and why
-// ../../[projectId]/loading.tsx was deleted entirely (see
-// app/(app)/projects/not-found.tsx's header comment, bug 3, for the full
-// story) -- both verified live, not by inspection.
+// where not-found.tsx lives. See app/(app)/projects/not-found.tsx for the
+// full mechanism.
 interface MessageRow {
   id: string;
   role: "user" | "assistant";
@@ -30,22 +26,14 @@ export default async function ProjectExistingChatPage({
   const { projectId, conversationId } = await params;
   const supabase = await getRouteHandlerSupabaseClient();
 
-  // RLS (conversations_select_own) already scopes this to conversations
-  // under a project the caller owns -- a conversationId belonging to
-  // another project (even one of this same user's OTHER projects) or that
-  // doesn't exist simply returns no row, not a leak of its existence,
-  // which is exactly what notFound() below surfaces. `.eq("project_id",
-  // projectId)` is an explicit belt-and-suspenders scope on top of that
-  // (this URL's own projectId must match, not just "some project this user
-  // owns"). `.is("channel", null)` excludes external-channel sessions --
-  // opening one of THOSE is what
+  // RLS already scopes this to conversations under a project the caller
+  // owns; a conversationId belonging to another project or that doesn't
+  // exist just returns no row, which notFound() below surfaces (not a leak
+  // of its existence). `.eq("project_id", projectId)` is an explicit
+  // belt-and-suspenders scope on top of that. `.is("channel", null)`
+  // excludes external-channel sessions -- those belong on
   // /projects/[projectId]/channels/[conversationId]'s read-only transcript
-  // view is for, not this owner test-chat page (which would otherwise let
-  // the owner "continue" an external session from here; the chat API
-  // itself would reject that -- see lib/chat/handle-chat-request.ts's
-  // resolveConversationId, `.eq("user_id", ownerUserId)` can never match an
-  // external-shaped row -- but there's no reason to let the UI dead-end
-  // into that in the first place).
+  // view instead, not this owner test-chat page.
   const { data: conversation, error: conversationError } = await supabase
     .from("conversations")
     .select("id")
@@ -76,10 +64,9 @@ export default async function ProjectExistingChatPage({
     sources: row.sources ?? [],
   }));
 
-  // Same "any ready document" check as .../chat/(list)/page.tsx -- kept in sync
-  // rather than hardcoded, even though this prop only affects the empty
-  // state rendered at messages.length === 0, which an existing thread with
-  // messages already loaded practically never hits.
+  // Same "any ready document" check as .../chat/(list)/page.tsx -- only
+  // affects the empty state at messages.length === 0, which an existing
+  // thread practically never hits, but kept in sync rather than hardcoded.
   const { count: readyDocumentCount, error: documentsError } = await supabase
     .from("documents")
     .select("id", { count: "exact", head: true })

@@ -4,20 +4,14 @@
 //
 // Per-project conversation history, rendered by
 // app/(app)/projects/[projectId]/chat/layout.tsx alongside the active chat
-// page. Replaces the old global, account-wide history list
-// (components/layout/Sidebar.tsx's "sidebar-history" section, removed by
-// the projects pivot) -- conversations are project-scoped now (and the
-// list passed in here is already filtered to `channel is null`, i.e. the
-// owner's own test-chat threads only, never external-channel sessions --
-// see the layout's own query comment; those get their own read-only view
-// under /projects/[projectId]/channels).
+// page. The list passed in is already filtered to `channel is null` --
+// the owner's own test-chat threads only, never external-channel sessions
+// (those get their own read-only view under
+// /projects/[projectId]/channels).
 //
-// "use client" for the same reason the old Sidebar was: usePathname()-based
-// active-conversation highlighting. On narrow screens this collapses into
-// a native <details> disclosure (no extra JS needed for the open/close
-// behavior itself) instead of the old sidebar's fixed-overlay drawer +
-// backdrop -- simpler, and appropriate for a much smaller panel that's no
-// longer the app's only navigation.
+// "use client" for usePathname()-based active-conversation highlighting.
+// On narrow screens this collapses into a native <details> disclosure, no
+// extra JS needed for the open/close behavior itself.
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";

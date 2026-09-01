@@ -5,10 +5,10 @@
 // One project's card on /projects: name (links into its chat), at-a-glance
 // badges (document count, active model, Telegram connection), rename
 // (inline, PATCH), delete (DeleteProjectModal.tsx's typed confirmation,
-// DELETE). Mirrors components/sources/DocumentCard.tsx's shape (a "use
+// DELETE). Mirrors components/sources/DocumentCard.tsx's shape: a "use
 // client" leaf that owns its own mutation state and calls router.refresh()
-// on success so the Server Component parent -- app/(app)/projects/page.tsx
-// -- re-fetches fresh data) rather than the list holding its own client
+// on success so the Server Component parent (app/(app)/projects/page.tsx)
+// re-fetches fresh data, rather than the list holding its own client
 // state.
 
 import { useState, type FormEvent } from "react";

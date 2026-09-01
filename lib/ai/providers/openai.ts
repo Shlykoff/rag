@@ -23,7 +23,7 @@ import type {
 import { embedInBatches } from "../embed-batch";
 import { wrapAiSdkStream } from "../stream-utils";
 
-/** Fixed project-wide so pgvector's `vector(1024)` column works unchanged across providers -- see CLAUDE.md and document_chunks migration. 1024 (not 1536) because Voyage AI -- used for AI_PROVIDER=anthropic embeddings -- only supports output_dimension in {256, 512, 1024, 2048}; 1024 is Voyage's own default and the common denominator across all three providers. */
+/** Fixed project-wide so pgvector's `vector(1024)` column works unchanged across providers (see CLAUDE.md) -- 1024 is Voyage's own default and the common denominator across all three providers' supported dimensions. */
 export const OPENAI_EMBEDDING_DIMENSIONS = 1024;
 
 /** OpenAI accepts up to 2048 inputs per embeddings call; we batch well under that so a single bad chunk (see embed-batch.ts bisection) doesn't force retrying a huge batch. */
@@ -41,32 +41,20 @@ export interface OpenAICompatibleConfig {
 
 /**
  * Internal implementation shared by the chat-role and embeddings-role views
- * returned by createOpenAICompatiblePair() below. Deliberately NOT exported
- * and deliberately does NOT `implements ChatProvider, EmbeddingsProvider`
- * itself.
+ * returned by createOpenAICompatiblePair() below. Deliberately not exported
+ * and does not `implements ChatProvider, EmbeddingsProvider` itself.
  *
  * Why: ChatProvider.modelName and EmbeddingsProvider.modelName are two
- * *semantically different* fields (chat model vs. embedding model) that
+ * semantically different fields (chat model vs. embedding model) that
  * happen to share the same `string` type -- TypeScript's structural typing
- * has no way to say "this field means X when read through interface A and Y
- * when read through interface B" on ONE object. A previous version of this
- * file had this class implement both interfaces directly with a single
- * `modelName` field (= chatModel), and lib/ai/index.ts handed the exact
- * same object out as both `chatProvider` and `embeddingsProvider`. That
- * compiled fine (both interfaces are satisfied by a `string` field) but was
- * wrong at runtime: `embeddingsProvider.modelName` returned the CHAT model,
- * which lib/ingestion/ingest.ts writes into
- * document_chunks.embedding_model -- silently mislabeling every ingested
- * row's embedding model as e.g. "gemini-3.6-flash" instead of
- * "gemini-embedding-001" (reproduced live against a real Google Drive
- * document under AI_PROVIDER=gemini). The actual embed() API call always
- * used the correct `embeddingModelName` -- vectors were never wrong, only
- * the metadata describing them. Fixed by never handing out a dual-interface
- * object: createOpenAICompatiblePair() is the only supported way to get a
- * provider pair out of this file, and it returns two distinct thin views
- * (see below), each with its own correct `modelName`, both delegating to
- * one shared instance of this class so there's still exactly one HTTP
- * client / API key / baseURL per process.
+ * can't say "this field means X through interface A and Y through
+ * interface B" on one object. A single object implementing both interfaces
+ * would let `embeddingsProvider.modelName` silently read back the chat
+ * model (e.g. into document_chunks.embedding_model). This class is never
+ * handed out directly: createOpenAICompatiblePair() returns two distinct
+ * thin views, each with its own correct `modelName`, both delegating to one
+ * shared instance of this class so there's still exactly one HTTP client /
+ * API key / baseURL per process.
  */
 class OpenAICompatibleCore {
   readonly providerName: string;
@@ -122,15 +110,11 @@ class OpenAICompatibleCore {
       batchSize: EMBEDDING_BATCH_SIZE,
       dimensions: this.dimensions,
       callBatch: async (batch) => {
-        // `dimensions` is what pins every provider to the same 1024-wide
-        // vector space (see CLAUDE.md). For the real OpenAI API this is the
-        // native `dimensions` request field (text-embedding-3-small
-        // supports shortening its output via this param). When this class
-        // is reused by providers/gemini.ts against Google's OpenAI-
-        // compatible endpoint, Google maps this same `dimensions` field to
-        // Gemini's native `output_dimensionality` parameter -- one code
-        // path, two providers, per the compatibility guarantee documented
-        // in providers/gemini.ts.
+        // `dimensions` pins every provider to the same 1024-wide vector
+        // space (see CLAUDE.md). For real OpenAI this is the native
+        // `dimensions` request field; when this class is reused by
+        // providers/gemini.ts, Google maps the same field to Gemini's
+        // native `output_dimensionality` parameter.
         const response = await this.rawClient.embeddings.create({
           model: this.embeddingModelName,
           input: batch,

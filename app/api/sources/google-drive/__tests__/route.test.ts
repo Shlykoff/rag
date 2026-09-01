@@ -125,9 +125,8 @@ describe("POST /api/sources/google-drive", () => {
     consoleErrorSpy.mockRestore();
   });
 
-  // Regression test for the concurrency fix: files used to be ingested
-  // strictly one at a time; this proves more than one is genuinely in
-  // flight at once (bounded, not unbounded -- see the next test).
+  // Proves files are ingested with genuine (bounded, not unbounded --
+  // see the next test) concurrency, not strictly one at a time.
   it("ingests multiple files concurrently rather than strictly sequentially", async () => {
     mockGetRouteHandlerSupabaseClient.mockResolvedValue({});
     mockGetAuthenticatedUser.mockResolvedValue({ id: "user-1", email: "a@b.com" });

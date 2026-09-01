@@ -5,30 +5,13 @@
 // see integration-store.ts).
 //
 // Thin re-export of lib/crypto/secret-box.ts's domain-neutral AES-256-GCM
-// implementation -- this file, lib/ai/crypto.ts, and lib/sources/crypto.ts
-// used to be three byte-for-byte identical copies of this same scheme; see
-// that module's own header for why the shared implementation lives in a
-// neutral `lib/crypto/` location instead of any one domain importing
-// another. This is doubly deliberate here specifically because
-// lib/channels/** has an ENFORCED import boundary (CLAUDE.md rule 8): it
-// may not import lib/ai/ (or lib/chat/, lib/retrieval/, lib/rate-limit/) at
-// all -- `lib/crypto/` is none of those, so re-exporting from it here does
-// not violate that boundary. Kept as its own file (rather than having
-// integration-store.ts import lib/crypto/secret-box.ts directly) so this
-// domain's own naming
-// (`encryptChannelCredential`/`decryptChannelCredential`,
-// `EncryptedChannelCredential`) and doc comments stay put for every
-// existing caller/test.
-//
-// Reusing the SAME env var as lib/ai/crypto.ts / lib/sources/crypto.ts
-// (not a third one) is intentional -- all three tables store the same
-// *kind* of secret (a bearer credential handed to an external API) under
-// the same threat model, so provisioning a third encryption key for no
-// functional difference would only be an extra thing to lose/rotate/
-// document.
-//
-// The key itself lives ONLY in the `CREDENTIALS_ENCRYPTION_KEY` env var,
-// never in the database (see .env.example for how to generate one).
+// implementation -- see that module's header for why it's shared rather
+// than domains importing each other, and why this file re-exports under
+// its own naming instead of integration-store.ts importing
+// lib/crypto/secret-box.ts directly. Importing lib/crypto/ here specifically
+// does not violate lib/channels/**'s enforced import boundary (CLAUDE.md
+// rule 8, which forbids lib/ai/, lib/chat/, lib/retrieval/, lib/rate-limit/)
+// since lib/crypto/ is none of those.
 
 import "server-only";
 import { encryptSecret, decryptSecret, type EncryptedSecret } from "../../crypto/secret-box";

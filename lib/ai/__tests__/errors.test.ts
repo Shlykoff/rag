@@ -54,12 +54,10 @@ describe("normalizeProviderError", () => {
     expect(dns.retryable).toBe(true);
   });
 
-  // Regression test: Voyage (paired with anthropic for embeddings, see
-  // lib/ai/index.ts) throws error shapes that don't match any generic
-  // errno/code/cause/AbortError check -- verified live against
-  // node_modules/voyageai's actual error classes (dist/esm/errors/*.mjs).
-  // Constructed here exactly as those classes actually shape their
-  // instances (a bare Error subclass with only `.name` set), not a
+  // Voyage (paired with anthropic for embeddings, see lib/ai/index.ts)
+  // throws error shapes that don't match any generic errno/code/cause/
+  // AbortError check. Constructed here matching the voyageai SDK's actual
+  // error classes (a bare Error subclass with only `.name` set), not a
   // hypothetical/simplified stand-in.
   it("classifies a real-shaped VoyageAITimeoutError as a retryable network error", () => {
     const timeoutErr = Object.assign(new Error("Timeout exceeded when calling POST /v1/embeddings."), {

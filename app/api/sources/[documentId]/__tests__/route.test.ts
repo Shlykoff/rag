@@ -5,15 +5,14 @@
 // check -> DB delete-before-Storage-remove ordering -> response shape)
 // against a mocked Supabase client, mirroring
 // app/api/chat/__tests__/route.test.ts's style. The live end-to-end path
-// (real DB row + real document_chunks cascade + real Storage object) is
-// verified manually against local Supabase -- see this task's report, not
+// (real DB row + real document_chunks cascade + real Storage object) is not
 // re-asserted here since it'd require a live Docker Supabase to run in CI.
 //
-// PROJECTS PIVOT: `documents` has no `user_id` column anymore -- ownership
-// is derived through `project_id`, verified via a SEPARATE mocked
-// `authClient` (RLS-scoped session client) rather than baked into the
-// service-role query filter. `mockVerifyProjectOwnership` below stands in
-// for lib/supabase/server-client.ts's real RLS-backed check.
+// `documents` has no `user_id` column -- ownership is derived through
+// `project_id`, verified via a separate mocked `authClient` (RLS-scoped
+// session client) rather than baked into the service-role query filter.
+// `mockVerifyProjectOwnership` below stands in for
+// lib/supabase/server-client.ts's real RLS-backed check.
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 

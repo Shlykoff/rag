@@ -3,11 +3,9 @@
 // components/projects/ModelPicker.tsx
 //
 // Reads/sets THIS project's `active_ai_provider` via
-// GET/PUT /api/projects/{projectId}/model (see that route's own header for
-// the exact contract) -- never lib/ai/credentials.ts directly, per this
-// stage's boundary rule ("use client" components fetch from a dedicated
-// /api/* route on mount, same as components/profile/ProfileForm.tsx's own
-// header comment states explicitly).
+// GET/PUT /api/projects/{projectId}/model -- never lib/ai/credentials.ts
+// directly ("use client" components fetch from a dedicated /api/* route on
+// mount, same as components/profile/ProfileForm.tsx).
 //
 // Three states worth calling out:
 //   1. Nothing connected at the ACCOUNT level at all (every `configured`
@@ -18,8 +16,7 @@
 //   2. Some providers connected, none usable for a specific pick (e.g. only
 //      an 'anthropic' key without the paired 'voyage' one) -- that option
 //      renders visibly but disabled, with its own short "чего не хватает"
-//      hint (mirrors ActiveProviderSection.tsx's pre-pivot styling
-//      conventions, .model-option-unavailable/.badge-neutral).
+//      hint.
 //   3. PUT's `400 { error: "missing_credentials" }` race (e.g. the owner
 //      deleted a credential in another tab between this page's load and the
 //      click) -- surfaced as a real inline error with the server's own
@@ -34,10 +31,9 @@ import { PROVIDER_DISPLAY_INFO, PROVIDER_DISPLAY_ORDER } from "@/lib/ui/provider
 // lib/ai/credentials.ts, which is `import "server-only"`-tagged; a runtime
 // (value) import of anything from "@/lib/ai" here would pull that into
 // this "use client" bundle and fail the build. Type-only imports are
-// erased at compile time (same pattern components/profile/types.ts already
-// documents for itself). Display labels/required-credentials themselves now
-// live in lib/ui/provider-metadata.ts (client-safe, imported above) rather
-// than being duplicated locally.
+// erased at compile time. Display labels/required-credentials live in
+// lib/ui/provider-metadata.ts (client-safe, imported above) instead of
+// being duplicated locally.
 import type { ActiveAIProvider, AIProviderCredentialType } from "@/lib/ai";
 
 type ConfiguredFlags = Record<AIProviderCredentialType, boolean>;
@@ -120,11 +116,9 @@ export function ModelPicker({ projectId }: { projectId: string }) {
       }
       // Covers the `400 { error: "missing_credentials" }` race (e.g. the
       // owner deleted a credential in another tab between this page's load
-      // and the click) the same way the pre-refactor inline handling did --
-      // normalizeResponse's describeErrorBody() already prefers the
-      // server's own `message` when present (which this route's contract
-      // always sets for missing_credentials -- see this file's own header
-      // comment), so no separate branch on `result.code` is needed here.
+      // and the click) -- normalizeResponse's describeErrorBody() already
+      // prefers the server's own `message` when present, so no separate
+      // branch on `result.code` is needed here.
       setSaveError(result.message);
       return;
     }

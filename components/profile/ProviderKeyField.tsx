@@ -13,14 +13,6 @@
 // The plaintext key never round-trips back from the server after a save --
 // `configured` (a boolean) is the only thing this component ever receives
 // about an already-stored key; the input always starts empty.
-//
-// PROJECTS PIVOT DAMAGE CONTROL (see app/api/profile/ai-providers/route.ts's
-// own PROJECTS PIVOT NOTE): this used to also propagate an
-// `activeProvider` field the save response carried (auto-activation --
-// "which provider is active" was a per-user setting). That field is gone
-// from the response now (active_ai_provider moved to a per-project
-// selection this account-level route no longer manages) -- this component
-// only ever touches `configured` (yes/no) again.
 
 import { useState, type FormEvent } from "react";
 import { postJson, deleteJson, retryAfterSuffix } from "@/components/sources/request-helpers";

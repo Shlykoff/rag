@@ -9,7 +9,7 @@ import type { EmbeddingsProvider } from "../types";
 import { embedInBatches } from "../embed-batch";
 import { AIProviderError } from "../errors";
 
-/** Fixed project-wide, matches pgvector's vector(1024) column -- see CLAUDE.md and document_chunks migration. Voyage does NOT support arbitrary output_dimension: voyage-3-large/voyage-4 only accept output_dimension in {256, 512, 1024, 2048} (no 1536), so 1024 -- Voyage's own default -- is the value every other provider is shortened down to as well. */
+/** Fixed project-wide, matches pgvector's vector(1024) column (see CLAUDE.md). Voyage's output_dimension only accepts {256, 512, 1024, 2048} (no 1536), so 1024 -- Voyage's own default -- is the value every other provider is shortened down to as well. */
 export const VOYAGE_EMBEDDING_DIMENSIONS = 1024;
 
 /** Voyage's embed endpoint caps the input list at 128 items per request. */

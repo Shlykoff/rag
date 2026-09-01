@@ -3,18 +3,15 @@
 // components/auth/GoogleSignInButton.tsx
 //
 // Additive alongside the existing demo/manual email+password flow in
-// app/login/LoginForm.tsx -- this button does not replace it. Kicks off
-// Supabase's OAuth redirect flow (`signInWithOAuth`); the actual code
-// exchange happens server-side in app/auth/callback/route.ts once Google
-// redirects back. This component itself never sees a token/code -- the
-// browser just gets redirected to Google, then to the callback route, then
-// (via that route's own redirect) back into the app.
+// app/login/LoginForm.tsx. Kicks off Supabase's OAuth redirect flow
+// (`signInWithOAuth`); the actual code exchange happens server-side in
+// app/auth/callback/route.ts once Google redirects back -- this component
+// never sees a token/code itself.
 //
 // If supabase/config.toml's [auth.external.google] client_id/secret are
-// still empty placeholders (see .env.example's own comment on this), the
-// click still works architecturally -- the browser is sent to Google,
-// which then rejects the request -- that failure surfaces on Google's own
-// page, not as a crash here.
+// still empty placeholders, the click still works architecturally: the
+// browser is sent to Google, which then rejects the request there, not as
+// a crash here.
 
 import { useState } from "react";
 import { getBrowserSupabaseClient } from "@/lib/supabase/browser-client";
@@ -39,10 +36,9 @@ export function GoogleSignInButton() {
         setPending(false);
         return;
       }
-      // Success here means the browser is about to navigate away to
-      // Google's consent screen -- no further client-side state to manage;
-      // this component unmounts as part of that navigation, so `pending`
-      // is deliberately never reset to false on the success path.
+      // Browser is about to navigate to Google's consent screen; this
+      // component unmounts along with it, so `pending` is deliberately
+      // never reset on the success path.
     } catch {
       setError("Не удалось связаться с сервером авторизации. Проверьте, что Supabase запущен.");
       setPending(false);

@@ -6,11 +6,11 @@
 // column, not just a fake client that could agree with a wrong assumption
 // on both the write and read side).
 //
-// PROJECTS PIVOT: getActiveProvider()/setActiveProvider() are project-scoped
-// now (`projects.active_ai_provider`, see credentials.ts's header) --
-// every test below creates a real `projects` row via
+// getActiveProvider()/setActiveProvider() are project-scoped
+// (`projects.active_ai_provider`, see credentials.ts's header) -- every
+// test below creates a real `projects` row via
 // lib/testing/integration-helpers.ts's createTestProject() and exercises
-// the pair through that, including the new ownerUserId ownership check on
+// the pair through that, including the ownerUserId ownership check on
 // setActiveProvider().
 
 import { afterAll, beforeAll, describe, expect, it } from "vitest";

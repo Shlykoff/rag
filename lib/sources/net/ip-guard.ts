@@ -1,34 +1,31 @@
 // lib/sources/net/ip-guard.ts
 //
-// Pure IP-range classification, no I/O -- this is what makes the SSRF
-// protection unit-testable without any real network/DNS calls (see
+// Pure IP-range classification, no I/O -- keeps the SSRF protection
+// unit-testable without any real network/DNS calls (see
 // lib/sources/net/__tests__/ip-guard.test.ts). Built on Node's built-in
 // `net.BlockList` (available since Node 15) rather than a hand-rolled
-// CIDR bit-mask implementation: BlockList is maintained by Node core,
-// exercised by Node's own test suite, and gets IPv4/IPv6 parsing edge
-// cases (leading zeros, compressed "::" forms, etc.) right without adding
-// a third-party dependency for something this security-sensitive.
+// CIDR bit-mask implementation: BlockList is maintained by Node core and
+// gets IPv4/IPv6 parsing edge cases (leading zeros, compressed "::" forms,
+// etc.) right without adding a third-party dependency for something this
+// security-sensitive.
 //
-// This module is the single source of truth for "is this address safe to
-// connect to" -- lib/sources/net/safe-fetch.ts calls it from inside the
-// `lookup` function it hands to Node's http/https client, so the exact
-// same check that decides "allowed" is also what resolves the address the
-// socket actually connects to (see that module's header for why that
-// matters).
+// Single source of truth for "is this address safe to connect to" --
+// lib/sources/net/safe-fetch.ts calls it from inside the `lookup` function
+// it hands to Node's http/https client, so the same check that decides
+// "allowed" is also what resolves the address the socket actually connects
+// to (see that module's header for why that matters).
 
 import { BlockList, isIPv4, isIPv6 } from "node:net";
 
 /**
  * Every range CLAUDE.md requires blocking (127.0.0.0/8, 10.0.0.0/8,
  * 172.16.0.0/12, 192.168.0.0/16, 169.254.0.0/16 -- which includes
- * 169.254.169.254, the AWS/GCP/Azure metadata address), plus two
- * additional ranges that are the same *category* of risk and are standard
- * SSRF-guard hygiene even though the spec didn't enumerate them by number:
- *   - 0.0.0.0/8 ("this network" / unspecified address -- some services
- *     bind here and it's routable to "localhost" on many stacks)
- *   - 100.64.0.0/10 (carrier-grade NAT / "shared address space", RFC 6598
- *     -- used internally by some cloud providers, same risk profile as the
- *     RFC1918 ranges above)
+ * 169.254.169.254, the AWS/GCP/Azure metadata address), plus two more
+ * ranges of the same risk category that are standard SSRF-guard hygiene:
+ *   - 0.0.0.0/8 ("this network" / unspecified -- some services bind here
+ *     and it's routable to "localhost" on many stacks)
+ *   - 100.64.0.0/10 (carrier-grade NAT / shared address space, RFC 6598 --
+ *     used internally by some cloud providers, same risk as RFC1918 above)
  */
 const BLOCKED_IPV4_RANGES: ReadonlyArray<{ address: string; prefix: number }> = [
   { address: "127.0.0.0", prefix: 8 }, // loopback
@@ -41,9 +38,9 @@ const BLOCKED_IPV4_RANGES: ReadonlyArray<{ address: string; prefix: number }> = 
 ];
 
 /**
- * IPv6 equivalents -- a hostname the user pastes can resolve to an AAAA
- * record even for an otherwise-ordinary-looking domain, and checking only
- * the IPv4 ranges above would miss that path entirely.
+ * IPv6 equivalents -- a hostname can resolve to an AAAA record even for an
+ * otherwise ordinary-looking domain, so checking only the IPv4 ranges above
+ * would miss that path entirely.
  */
 const BLOCKED_IPV6_RANGES: ReadonlyArray<{ address: string; prefix: number }> = [
   { address: "::1", prefix: 128 }, // loopback
@@ -56,13 +53,12 @@ function buildBlockList(): BlockList {
   const list = new BlockList();
   for (const range of BLOCKED_IPV4_RANGES) {
     list.addSubnet(range.address, range.prefix, "ipv4");
-    // Also block the IPv4-mapped IPv6 form of the same range
-    // (::ffff:a.b.c.d). BlockList treats "ipv4" and "ipv6" subnets as
-    // entirely separate checks -- it does NOT unwrap an IPv4-mapped IPv6
-    // address into its IPv4 form before matching. Without this, a
-    // resolver/socket that hands back "::ffff:169.254.169.254" instead of
-    // plain "169.254.169.254" (which happens in dual-stack environments)
-    // would sail straight through every rule above.
+    // Also block the IPv4-mapped IPv6 form (::ffff:a.b.c.d). BlockList
+    // treats "ipv4" and "ipv6" subnets as separate checks and does NOT
+    // unwrap a mapped address before matching -- without this, a
+    // resolver/socket handing back "::ffff:169.254.169.254" instead of
+    // plain "169.254.169.254" (common in dual-stack environments) would
+    // bypass every rule above.
     list.addSubnet(`::ffff:${range.address}`, 96 + range.prefix, "ipv6");
   }
   for (const range of BLOCKED_IPV6_RANGES) {
@@ -88,23 +84,21 @@ export function isBlockedAddress(address: string): boolean {
 /**
  * Strips the square brackets WHATWG `URL` always wraps around an IPv6
  * literal host, e.g. `new URL("http://[::1]/").hostname === "[::1]"` (NOT
- * `"::1"`). This matters everywhere in this module and in safe-fetch.ts
- * that a hostname is handed to something IP-literal-aware:
+ * `"::1"`). Required before handing a hostname to anything IP-literal-aware:
  *
  *   - `node:net`'s `isIP()`/`isIPv6()` do NOT recognize a bracketed string
- *     as an IP at all (`isIP("[::1]") === 0`), so `isBlockedAddress()`
- *     above would silently fall through its "not a valid literal" branch
- *     for every IPv6 host unless the brackets are stripped first.
+ *     as an IP (`isIP("[::1]") === 0`), so `isBlockedAddress()` above would
+ *     fall through its "not a valid literal" branch for every IPv6 host
+ *     unless brackets are stripped first.
  *   - `node:dns`'s `dns.lookup()` cannot parse a bracketed string either
- *     and fails with ENOTFOUND -- which used to accidentally "block" every
- *     IPv6 literal (private AND public) by DNS failure rather than by
- *     actual classification. That's the bug this helper fixes.
+ *     and fails with ENOTFOUND -- which would block every IPv6 literal
+ *     (private AND public) by DNS failure rather than by classification.
  *
- * Per the WHATWG URL spec, `[` and `]` can only ever be the first and last
- * characters of an IPv6 hostname (never appear elsewhere, never appear for
- * an IPv4 literal or a domain name), so unconditionally stripping a
- * leading `[`/trailing `]` is safe for every hostname shape this function
- * will ever see -- it is a no-op for IPv4 literals and domain names.
+ * Per the WHATWG URL spec, `[`/`]` can only be the first/last characters of
+ * an IPv6 hostname (never elsewhere, never for an IPv4 literal or a domain
+ * name), so unconditionally stripping a leading `[`/trailing `]` is safe
+ * for every hostname shape this function will see -- a no-op for IPv4
+ * literals and domain names.
  */
 export function stripIpv6Brackets(hostname: string): string {
   return hostname.replace(/^\[|\]$/g, "");

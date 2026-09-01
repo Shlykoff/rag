@@ -16,8 +16,7 @@ export type DocumentSourceType = "manual_upload" | "notion" | "url" | "google_dr
  * }` shape from CLAUDE.md. `storagePath` is optional and, in this
  * implementation, always left undefined by adapters: the Storage object
  * path is "<project_id>/<document_id>/..." (see the documents table
- * migration, rescoped from "<user_id>/..." by the projects architecture
- * pivot), and document_id doesn't exist yet at the point an adapter
+ * migration), and document_id doesn't exist yet at the point an adapter
  * runs -- lib/sources/pipeline.ts computes and fills it in once the
  * `documents` row has been inserted. The field is kept on this interface
  * for contract-compatibility (an adapter that already knows its own
@@ -41,24 +40,20 @@ export interface NormalizedDocument {
 
 /**
  * The `DocumentSource` interface CLAUDE.md's "Источники документов" design
- * section calls for: "интерфейс DocumentSource в lib/sources/ с методом,
- * возвращающим нормализованный документ". This is that contract, named
- * explicitly (rather than left purely as a shape convention every adapter
- * happens to follow) so it's checkable in code, not just in comments.
+ * section calls for, named explicitly (rather than left as an implicit
+ * convention every adapter happens to follow) so it's checkable in code.
  *
- * Deliberately expressed as ONE shared method signature per adapter's
- * *output*, not a single unified method signature across all four
- * adapters' full call shape -- each adapter's actual fetch function
- * (importNotionDocument/importUrlDocument/importSingleDriveFile/
- * processManualUpload) necessarily takes different INPUT (a Notion page
- * needs `{supabase, ownerUserId, pageUrl}`, a bare URL just needs `{url}`,
- * an uploaded file needs raw bytes, a Drive file needs `{supabase,
- * ownerUserId, fileId}`) -- forcing one method signature across all four
- * would mean every adapter accepts a union of unrelated parameters it
- * mostly ignores, which is worse than the alternative this interface
- * actually enforces: every adapter's fetch function must be typed
- * `(...): Promise<DocumentSource>` (or a value assignable to it), so
- * `lib/ingestion/ingest.ts`/`lib/sources/pipeline.ts` can treat the output
- * of any of them identically regardless of where a document came from.
+ * Deliberately expressed as one shared shape for adapter *output* only, not
+ * a unified method signature across all four adapters' input: each
+ * adapter's fetch function (importNotionDocument/importUrlDocument/
+ * importSingleDriveFile/processManualUpload) necessarily takes different
+ * input (a Notion page needs `{supabase, ownerUserId, pageUrl}`, a bare URL
+ * needs `{url}`, an upload needs raw bytes, a Drive file needs `{supabase,
+ * ownerUserId, fileId}`). Forcing one signature across all four would mean
+ * every adapter accepts a union of parameters it mostly ignores; instead,
+ * every adapter's fetch function is typed `(...): Promise<DocumentSource>`
+ * (or a value assignable to it), so `lib/ingestion/ingest.ts`/
+ * `lib/sources/pipeline.ts` can treat the output of any of them identically
+ * regardless of where a document came from.
  */
 export type DocumentSource = NormalizedDocument;

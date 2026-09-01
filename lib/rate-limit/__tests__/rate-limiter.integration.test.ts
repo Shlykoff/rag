@@ -8,9 +8,9 @@
 // migration), including the append-only-log-as-counter design actually
 // producing correct counts via COUNT(*) over a time window.
 //
-// PROJECTS PIVOT: checkChatRateLimit is project-scoped now (`usage_events.
-// project_id`, "layer 1" -- the aggregate budget shared by a project's
-// owner test chat and every external channel session of that project, see
+// checkChatRateLimit is project-scoped (`usage_events.project_id`, "layer
+// 1" -- the aggregate budget shared by a project's owner test chat and
+// every external channel session of that project, see
 // lib/gateway/answer.ts) -- every usage_events row inserted below carries a
 // real `project_id` from lib/testing/integration-helpers.ts's
 // createTestProject().

@@ -3,27 +3,16 @@
 -- Integration Secret; Google Drive Service Account JSON). Manual upload
 -- and public URL need no stored credential and never get a row here.
 --
--- Encryption plan (explicitly called out, not implemented here):
--- application-level encryption, done in the server-side source adapter
--- (lib/sources/) *before* the row is written, not Supabase Vault.
--- Rationale, for document-sources-specialist / qa-reviewer to confirm:
---   - Vault's secret encryption key is backed by pgsodium/KMS, and the key
---     management differs between local Docker Supabase and hosted Supabase
---     (hosted uses project-level KMS-backed keys; local uses a locally
---     generated key) -- that inconsistency makes "does decryption still
---     work after `supabase db push`" a real risk for a portfolio project
---     that must demo cleanly on hosted.
---   - Application-level encryption keeps the encryption key fully outside
---     the database (an env var / secret manager entry the app controls),
---     matching CLAUDE.md's rule that secrets never live in the DB in
---     plaintext and keeps the threat model simple: a DB dump alone is not
---     enough to recover tokens.
---   - This is a design decision, not yet implemented crypto -- the actual
---     encrypt/decrypt code belongs to document-sources-specialist. This
---     migration only guarantees the column cannot reasonably be mistaken
---     for a plaintext-friendly field (bytea ciphertext, not `token text`).
--- If this direction is not what's wanted, flag it before
--- document-sources-specialist builds against this shape.
+-- Encryption: application-level, done in the server-side source adapter
+-- (lib/sources/crypto.ts) before the row is written -- not Supabase
+-- Vault. Vault's key management differs between local Docker Supabase and
+-- hosted Supabase (project-level KMS-backed keys vs. a locally generated
+-- key), which risks decryption breaking after `supabase db push`.
+-- Application-level encryption keeps the key fully outside the database
+-- (an env var the app controls), so secrets never live in the DB in
+-- plaintext and a DB dump alone can't recover tokens. This migration only
+-- guarantees the column shape cannot be mistaken for a plaintext-friendly
+-- field (bytea ciphertext, not `token text`).
 create type public.source_credential_type as enum ('notion', 'google_drive');
 
 create table public.source_credentials (

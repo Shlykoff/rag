@@ -6,8 +6,8 @@
 // AI-provider call per CLAUDE.md rule 4) -> hand off to the
 // framework-agnostic pipeline -> frame its events as Server-Sent Events.
 //
-// PROJECTS PIVOT: this is the project owner's own in-app test-chat path --
-// it always resolves an `externalParticipant`-less ChatRequestInput (see
+// This is the project owner's own in-app test-chat path -- it always
+// resolves an `externalParticipant`-less ChatRequestInput (see
 // lib/chat/handle-chat-request.ts). The gateway (lib/gateway/answer.ts) is
 // the parallel, non-streaming entry point for external channel messages
 // (Telegram etc); it does its own project-owner resolution + all three
@@ -77,10 +77,8 @@ export const runtime = "nodejs";
 
 // `uuidShapeSchema`, not `z.string().uuid()` -- see lib/validation/uuid.ts's
 // header for why: Zod's built-in validator is RFC-4122-version-strict and
-// rejected the seeded demo project's sentinel id
-// (00000000-0000-0000-0000-000000000002), a real Postgres `uuid` value,
-// with a bare 400 on every chat request from the demo account (reproduced
-// live).
+// would reject sentinel-style seed ids that are still valid Postgres `uuid`
+// values (e.g. this project's own seeded demo project id).
 const ChatRequestBodySchema = z.object({
   projectId: uuidShapeSchema,
   conversationId: uuidShapeSchema.optional(),
@@ -149,16 +147,11 @@ export async function POST(request: Request): Promise<Response> {
   // getAIProviders() (bring-your-own-key, project-scoped -- see
   // lib/ai/index.ts) rejects when this project has no active provider
   // configured, or when its owner's stored credential(s) are missing.
-  // Before the original (env-var-driven) version of this fix, an
-  // equivalent throw happened outside any try/catch in this route,
-  // producing a bare 500 with no body/Content-Type -- reproduced live by
-  // qa-reviewer via curl. That violated this file's own documented
-  // contract (only 401/400/404/429/200-SSE were specified), so it's caught
-  // explicitly here and turned into a real JSON error body, consistent
-  // with the other branches above -- now split into two outcomes (see the
-  // module header's 422 vs. 500 contract). The reserved rate-limit slot
-  // must still be released on both paths: this returns before the
-  // ReadableStream (whose `finally` normally does that) is ever
+  // Caught explicitly here and turned into a real JSON error body (split
+  // into the 422 vs. 500 outcomes documented in the module header) rather
+  // than left to escape as a bare, contract-violating 500. The reserved
+  // rate-limit slot must still be released on both paths: this returns
+  // before the ReadableStream (whose `finally` normally does that) is ever
   // constructed.
   let chatProvider: ChatProvider;
   let embeddingsProvider: EmbeddingsProvider;
@@ -192,15 +185,13 @@ export async function POST(request: Request): Promise<Response> {
     async start(controller) {
       // If the client disconnects mid-stream (navigates away, closes the
       // tab, aborts the fetch), the platform can tear down/close this
-      // controller out from under us -- observed live as an uncaught
-      // `TypeError: Invalid state: Controller is already closed`
-      // (ERR_INVALID_STATE) from a later `controller.enqueue`/`.close()`
-      // call, since neither the `for await` loop nor `handleChatRequest`
-      // itself has any way to know the reader on the other end is gone.
-      // This is benign (there's no client left to receive anything) --
-      // `safeEnqueue`/the `close()` try/catch below just stop trying once
-      // that happens, instead of letting it escape `start()` as an
-      // unhandled rejection.
+      // controller out from under us, since neither the `for await` loop
+      // nor `handleChatRequest` itself has any way to know the reader on
+      // the other end is gone. This is benign (there's no client left to
+      // receive anything) -- `safeEnqueue`/the `close()` try/catch below
+      // just stop trying once that happens, instead of letting a
+      // "controller already closed" error escape `start()` as an unhandled
+      // rejection.
       let closed = false;
       const safeEnqueue = (chunk: Uint8Array) => {
         if (closed) return;

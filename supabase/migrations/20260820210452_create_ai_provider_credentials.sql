@@ -2,30 +2,23 @@
 -- credentials.
 --
 -- Mirrors source_credentials' shape and reasoning (see that migration's
--- header) -- ciphertext + nonce + key version columns, one row per
--- (user, provider), RLS deny-by-default with explicit grants (this
--- Supabase image does not auto-expose new tables to Data API roles, see
--- the grant comment in the documents migration).
+-- header): ciphertext + nonce + key version columns, one row per (user,
+-- provider), RLS deny-by-default with explicit grants.
 --
--- Encryption plan: same as source_credentials -- application-level
--- AES-256-GCM in lib/ai/crypto.ts (a deliberate near-duplicate of
--- lib/sources/crypto.ts, not a shared module -- keeps lib/ai/ and
--- lib/sources/ domain-isolated), not Supabase Vault, for the same
--- local-vs-hosted KMS-consistency reasoning already recorded in
--- source_credentials. This migration only guarantees the column shape
--- cannot be mistaken for a plaintext-friendly field (bytea, not
--- `api_key text`). Actual encrypt/decrypt code is Stage B
--- (rag-pipeline-specialist)'s responsibility.
+-- Encryption: application-level AES-256-GCM in lib/ai/crypto.ts (a
+-- deliberate near-duplicate of lib/sources/crypto.ts, not a shared
+-- module, to keep lib/ai/ and lib/sources/ domain-isolated), not Supabase
+-- Vault -- same local-vs-hosted KMS reasoning as source_credentials. This
+-- migration only guarantees the column shape cannot be mistaken for a
+-- plaintext-friendly field (bytea, not `api_key text`).
 --
--- Credentials stay account-level (per auth.users), NOT project-scoped,
--- under the projects architecture pivot -- see the projects migration's
--- header: "connect a provider" is a user (account) action, "which
--- connected provider a given project uses" is the per-project selection
+-- Credentials stay account-level (per auth.users), not project-scoped:
+-- "connect a provider" is a user (account) action, "which connected
+-- provider a given project uses" is the per-project selection
 -- (projects.active_ai_provider). public.ai_provider_type -- referenced by
 -- both projects.active_ai_provider and this table's `provider` column --
--- is defined in the projects migration (20260819052349), not here: it had
--- to move earlier in migration order once projects needed it before this
--- migration runs (see that file's header comment for the full reasoning).
+-- is defined in the projects migration (20260819052349), which needs it
+-- before this migration runs.
 create table public.ai_provider_credentials (
   id uuid primary key default gen_random_uuid(),
   user_id uuid not null references auth.users (id) on delete cascade,
@@ -90,16 +83,3 @@ create policy "ai_provider_credentials_delete_own"
 -- not the base table privilege check.
 grant select, insert, update, delete on public.ai_provider_credentials to authenticated;
 grant select, insert, update, delete on public.ai_provider_credentials to service_role;
-
--- user_settings has been removed by the projects architecture pivot: its
--- one meaningful column, active_ai_provider, moved to projects
--- (per-project instead of per-user -- see that migration). This file
--- previously created both public.ai_provider_type (used by
--- user_settings.active_ai_provider) and the user_settings table itself;
--- since this schema is local-only and not yet pushed to any hosted
--- Supabase project (see CLAUDE.md), that history is edited away in place
--- rather than reversed with a separate `drop table` migration --
--- public.ai_provider_type now lives in the projects migration
--- (20260819052349), needed earlier in migration order since
--- documents.project_id's referenced table (projects) must exist before
--- this migration runs.
