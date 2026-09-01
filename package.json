@@ -12,7 +12,7 @@
   },
   "scripts": {
     "dev": "next dev",
-    "build": "node scripts/apply-production-migrations.mjs && next build",
+    "build": "next build && node scripts/apply-production-migrations.mjs",
     "start": "next start",
     "lint": "eslint",
     "test": "vitest run",
