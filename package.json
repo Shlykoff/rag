@@ -12,7 +12,7 @@
   },
   "scripts": {
     "dev": "next dev",
-    "build": "next build",
+    "build": "node scripts/apply-production-migrations.mjs && next build",
     "start": "next start",
     "lint": "eslint",
     "test": "vitest run",
@@ -48,6 +48,7 @@
     "esbuild": "^0.28.2",
     "eslint": "^9",
     "eslint-config-next": "16.3.1",
+    "supabase": "^2.116.0",
     "typescript": "^5",
     "vitest": "4.1.11"
   }
