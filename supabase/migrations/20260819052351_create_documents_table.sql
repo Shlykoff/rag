@@ -166,12 +166,15 @@ create policy "documents_delete_own"
   );
 
 -- Table-level grants -------------------------------------------------------
--- This project's Supabase CLI/local Postgres image defaults new tables to
--- NOT being auto-exposed to the Data API roles (only TRIGGER/REFERENCES/
--- TRUNCATE are granted out of the box; see `auto_expose_new_tables` in
--- supabase/config.toml). RLS policies alone are not enough: without an
--- explicit GRANT, Postgres rejects the query before RLS is even
--- evaluated. This also applies to service_role -- BYPASSRLS lets it skip
--- row filtering, but it still needs the base table privilege.
+-- RLS policies alone are not enough: without an explicit GRANT, Postgres
+-- rejects the query before RLS is even evaluated. This also applies to
+-- service_role -- BYPASSRLS lets it skip row filtering, but it still needs
+-- the base table privilege.
+--
+-- Explicit REVOKE before GRANT, naming anon/authenticated/service_role
+-- directly (not `from public`) -- see the full explanation of why this is
+-- required (not just RLS-adjacent boilerplate) in the projects migration
+-- (20260819052349, "Table-level grants" section). Do not drop the REVOKE.
+revoke all on public.documents from anon, authenticated, service_role;
 grant select, insert, update, delete on public.documents to authenticated;
 grant select, insert, update, delete on public.documents to service_role;

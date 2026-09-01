@@ -122,11 +122,14 @@ create policy "conversations_delete_own"
   to authenticated
   using (auth.uid() = user_id);
 
--- Table-level grants: required in addition to RLS on this Supabase/PG
--- image (see the comment in the documents migration for why). service_role
--- gets full CRUD -- it's the only role that ever writes external-channel
--- conversations (find-or-create from lib/gateway/), and may also update
--- rows on the owner's behalf (e.g. auto-titling).
+-- Table-level grants: required in addition to RLS (see the projects
+-- migration, 20260819052349, "Table-level grants" section, for the full
+-- explanation of why an explicit REVOKE naming roles directly must precede
+-- these GRANTs). service_role gets full CRUD -- it's the only role that
+-- ever writes external-channel conversations (find-or-create from
+-- lib/gateway/), and may also update rows on the owner's behalf (e.g.
+-- auto-titling).
+revoke all on public.conversations from anon, authenticated, service_role;
 grant select, insert, update, delete on public.conversations to authenticated;
 grant select, insert, update, delete on public.conversations to service_role;
 
@@ -205,8 +208,11 @@ create policy "messages_insert_own"
 -- perspective (deny by default covers both operations). The server may
 -- still correct/redact rows via service_role if ever needed.
 
--- Table-level grants: required in addition to RLS on this Supabase/PG
--- image (see the comment in the documents migration for why).
+-- Table-level grants: required in addition to RLS (see the projects
+-- migration, 20260819052349, "Table-level grants" section, for the full
+-- explanation of why an explicit REVOKE naming roles directly must precede
+-- these GRANTs).
+revoke all on public.messages from anon, authenticated, service_role;
 -- authenticated: SELECT + INSERT only, matching the two policies above.
 grant select, insert on public.messages to authenticated;
 -- service_role: full CRUD -- the server inserts assistant messages (with

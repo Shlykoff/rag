@@ -102,10 +102,13 @@ create policy "document_chunks_select_own"
   );
 
 -- Table-level grants -------------------------------------------------------
--- See the equivalent comment in the documents migration: new tables are
--- not auto-exposed to Data API roles here, so explicit GRANTs are
--- required in addition to RLS/policies, for both authenticated and
--- service_role (BYPASSRLS does not imply table privileges).
+-- Explicit GRANTs are required in addition to RLS/policies, for both
+-- authenticated and service_role (BYPASSRLS does not imply table
+-- privileges) -- and each is preceded by an explicit REVOKE naming
+-- anon/authenticated/service_role directly, not `from public`. See the full
+-- explanation in the projects migration (20260819052349, "Table-level
+-- grants" section) for why the REVOKE is required, not just the GRANTs.
+revoke all on public.document_chunks from anon, authenticated, service_role;
 -- authenticated: SELECT only, matching the single policy above -- end
 -- users never write chunks directly, only the ingestion pipeline does.
 grant select on public.document_chunks to authenticated;

@@ -23,6 +23,19 @@ begin
 end;
 $$;
 
+-- Trigger-only function (`returns trigger`): Postgres itself refuses to
+-- invoke a trigger function outside of a trigger context ("trigger functions
+-- can only be called as triggers" -- there is no NEW/OLD record otherwise),
+-- so even if EXECUTE were ever granted to anon/authenticated this could not
+-- be called directly as an RPC with any effect. Revoked anyway, for defense
+-- in depth and so this function needs no special-case reasoning the next
+-- time someone audits grants in this schema -- see the fuller explanation
+-- of why every object here gets an explicit revoke, below the RLS section
+-- of this same migration. Revoking EXECUTE does not stop triggers from
+-- firing: trigger invocation does not go through the firing statement's own
+-- EXECUTE privilege check.
+revoke all on function public.set_updated_at() from public, anon, authenticated, service_role;
+
 -- Referenced by projects.active_ai_provider and (later)
 -- ai_provider_credentials.provider. Includes 'voyage' as a full enum value
 -- because ai_provider_credentials stores it as an independent credential
@@ -95,10 +108,42 @@ create policy "projects_delete_own"
   using (auth.uid() = user_id);
 
 -- Table-level grants -------------------------------------------------------
--- This project's Supabase CLI/local Postgres image defaults new tables to
--- NOT being auto-exposed to the Data API roles -- RLS alone is not enough,
--- an explicit GRANT is required too (Postgres checks table privilege
--- before RLS is even evaluated). Applies to service_role as well:
--- BYPASSRLS only skips row filtering, not the base table privilege check.
+-- RLS alone is not enough: Postgres checks table-level privilege before RLS
+-- is even evaluated, so every table needs an explicit GRANT too. Applies to
+-- service_role as well -- BYPASSRLS only skips row filtering, not the base
+-- table privilege check.
+--
+-- Every grant below is preceded by an explicit REVOKE, naming
+-- anon/authenticated/service_role directly (never `from public` alone).
+-- This is not defensive boilerplate -- it fixes a real, verified gap:
+--
+-- Which Postgres role actually executes `CREATE TABLE`/`CREATE FUNCTION`
+-- determines the DEFAULT privileges Postgres attaches to that object for
+-- other roles (see `pg_default_acl`). On this project's Supabase Postgres
+-- image there are two different default-ACL entries registered for the
+-- `public` schema, and which one applies depends on the creating role:
+--   - objects created as `postgres` (how local `supabase start`/`db reset`
+--     runs migrations -- confirmed via `pg_class.relowner`/`pg_proc.proowner`
+--     on this project's own tables/functions): anon/authenticated/
+--     service_role automatically get TRUNCATE/REFERENCES/TRIGGER on tables
+--     and nothing on functions. This is the behavior `auto_expose_new_tables`
+--     in supabase/config.toml documents, and what this repo has always
+--     developed and tested against locally.
+--   - objects created as `supabase_admin`: anon/authenticated/service_role
+--     automatically get FULL SELECT/INSERT/UPDATE/DELETE on tables and
+--     EXECUTE on functions, granted directly BY ROLE NAME rather than via
+--     the `public` pseudo-role -- so a later `revoke ... from public` does
+--     NOT remove it, only naming the roles explicitly does.
+-- "No explicit GRANT was written for anon/authenticated" is therefore not
+-- the same thing as "inaccessible" -- it silently depends on which of those
+-- two roles happens to create the object on a given environment, which a
+-- migration file neither controls nor should have to trust. Every table in
+-- this schema (and the match_document_chunks RPC -- see that migration)
+-- explicitly revokes from anon/authenticated/service_role BY NAME
+-- immediately before granting back exactly the intended privileges, so the
+-- end state is deterministic no matter which role created the object. Do
+-- not remove these REVOKE statements or "simplify" them back to relying on
+-- an ungranted-by-default assumption.
+revoke all on public.projects from anon, authenticated, service_role;
 grant select, insert, update, delete on public.projects to authenticated;
 grant select, insert, update, delete on public.projects to service_role;
