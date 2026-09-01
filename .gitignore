@@ -53,3 +53,4 @@ supabase/.temp
 # ignored here only as a safety net if the process is killed mid-run before
 # its own cleanup (finally block) executes.
 scripts/*.bundle.cjs
+.env*
