@@ -352,6 +352,23 @@ Placeholders for every provider this project supports: `AI_PROVIDER`, `OPENAI_AP
 - **Google Drive**: create a service account, download its JSON key, `POST /api/sources/credentials` `{ "sourceType": "google_drive", "credential": "<minified JSON>" }`, share a Drive **folder** (not a single file) with the service account's `client_email` (Viewer), then `POST /api/sources/google-drive` `{ "folderId": "<id>" }`. Returns `{ imported: [...], skipped: [...] }`.
 - **Refresh**: `POST /api/sources/{documentId}/refresh` on any of the above and confirm `last_synced_at` advances.
 
+## Deployment
+
+Hosted on Vercel, database on a hosted Supabase project. Every push to `main` builds and deploys automatically; `supabase/migrations/*.sql` are applied to the hosted database as the last step of that same build (`scripts/apply-production-migrations.mjs`, after `next build` succeeds, not before) — nothing to run by hand.
+
+### Rolling back a bad deploy
+
+**If the deploy touched the database (added a migration): use `git revert`, not Vercel's "Instant Rollback" button.**
+
+Vercel's Instant Rollback just re-points the live domain at an already-built artifact — it does not touch git, and it does not re-run the migration script. `main` keeps pointing at the bad commit, so the rollback only exists in Vercel's dashboard state; the next ordinary push to `main` moves production forward again, potentially straight back through the bug. It also can't undo a migration that already ran.
+
+1. Find the commit that introduced the problem: `git log --oneline`.
+2. `git revert <commit>` (add `-m 1` if it's a merge commit). If the bad commit added a migration that needs undoing, write a new migration file in the same commit/PR that reverses it (a plain `ADD COLUMN`/`CREATE TABLE` is trivially safe to reverse this way; a `DROP COLUMN` or a data-mutating migration may not be — see CLAUDE.md rule 9 on writing migrations backward-compatibly in the first place, so this case is rare).
+3. Push the revert as a normal branch + PR (branch protection on `main` requires this — no direct pushes). Let CI run: both `lint-and-test` and `integration-tests` (the latter runs the reverted migration against a genuinely fresh Postgres instance, catching a bad revert before it ships).
+4. Merge once green. The revert deploys through the normal pipeline — code and any corrective migration land in the same build, in order (build, then migration).
+
+**If it's a pure code bug with no migration involved and every second counts**, Vercel's Instant Rollback (dashboard → Deployments → pick a previous one → "Promote to Production") is fine as an immediate stop-gap. But do the `git revert` right after anyway — otherwise `main` and what's actually live silently disagree until someone remembers to reconcile them.
+
 ## Author & License
 
 Built by [Vasili Shlykoff](https://github.com/Shlykoff). Licensed under the [MIT License](LICENSE).
