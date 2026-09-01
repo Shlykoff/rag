@@ -369,6 +369,23 @@ Vercel's Instant Rollback just re-points the live domain at an already-built art
 
 **If it's a pure code bug with no migration involved and every second counts**, Vercel's Instant Rollback (dashboard → Deployments → pick a previous one → "Promote to Production") is fine as an immediate stop-gap. But do the `git revert` right after anyway — otherwise `main` and what's actually live silently disagree until someone remembers to reconcile them.
 
+### Checking something against production from the shell
+
+`.env.local` always points at the local Docker Supabase stack and is the only file `npm run dev`/`npm run build` ever load — that never changes. For a one-off check against the hosted production project (did that migration actually land, does this row look right, is a specific credential decryptable), there's a second, gitignored file, `.env.production.local`, loaded only on request into the current shell:
+
+```bash
+source scripts/env.sh production   # loads .env.production.local into this shell
+source scripts/env.sh local        # back to .env.local's values
+```
+
+It must be **sourced**, not run as a script — a subprocess can't change its parent shell's environment. Populate `.env.production.local` yourself; it isn't generated automatically:
+
+- `NEXT_PUBLIC_SUPABASE_URL` / `NEXT_PUBLIC_SUPABASE_ANON_KEY` / `SUPABASE_SERVICE_ROLE_KEY`: from the Supabase dashboard → Project Settings → API (or `supabase projects api-keys --project-ref <ref>`).
+- `SUPABASE_DB_URL`: the transaction-pooler connection string (Project Settings → Database → Connection string → "Transaction" mode) — the project's direct `db.<ref>.supabase.co:5432` host is IPv6-only and won't resolve from most machines/networks.
+- `CREDENTIALS_ENCRYPTION_KEY`: the same value set as a Vercel Secret for the production deployment. Vercel never returns a Secret's plaintext once saved (not even to `vercel env pull`, which writes a `[SENSITIVE]` placeholder for it) — copy it from wherever it was first generated, or rotate it in the Vercel dashboard if that's genuinely lost (rotating invalidates every credential already encrypted with the old key, so only do this if you actually need to).
+
+Never commit this file (already covered by the `.env.*.local` pattern in `.gitignore`), and never paste its values over `.env.local` — that would point local development at the production database.
+
 ## Author & License
 
 Built by [Vasili Shlykoff](https://github.com/Shlykoff). Licensed under the [MIT License](LICENSE).
