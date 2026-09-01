@@ -6,6 +6,11 @@ on:
   pull_request:
     branches: [main]
 
+# Cancel superseded runs on the same branch/PR instead of queueing them.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   lint-and-test:
     runs-on: ubuntu-latest
@@ -68,11 +73,31 @@ jobs:
       - name: Start local Supabase
         run: supabase start
 
-      - name: Run integration tests
+      # supabase status's default env-var names (API_URL, ANON_KEY,
+      # SERVICE_ROLE_KEY) don't match what this app's code actually reads
+      # (NEXT_PUBLIC_SUPABASE_URL etc, see lib/supabase/*.ts) --
+      # --override-name remaps them. These are fixed, publicly-documented
+      # values for the local dev stack (not secrets; the same values appear
+      # in every `supabase start` on every machine), so they're safe to
+      # write straight into $GITHUB_ENV.
+      #
+      # IMPORTANT: `-o env` wraps every value in double quotes
+      # (KEY="value"), which is correct shell syntax but NOT what
+      # $GITHUB_ENV expects -- it's a dumb KEY=VALUE line parser with no
+      # quote-stripping, so appending the quoted form directly makes every
+      # value include literal `"` characters (breaking, e.g., supabase-js's
+      # URL validation on NEXT_PUBLIC_SUPABASE_URL). The sed strips those
+      # quotes before appending.
+      - name: Export local Supabase env vars
         run: |
-          eval "$(supabase status -o env)"
-          export NEXT_PUBLIC_SUPABASE_URL="$API_URL"
-          export NEXT_PUBLIC_SUPABASE_ANON_KEY="$ANON_KEY"
-          export SUPABASE_SERVICE_ROLE_KEY="$SERVICE_ROLE_KEY"
-          export CREDENTIALS_ENCRYPTION_KEY="0000000000000000000000000000000000000000000000000000000000000000"
-          npx vitest run --config vitest.integration.config.mts
+          supabase status -o env \
+            --override-name api.url=NEXT_PUBLIC_SUPABASE_URL \
+            --override-name auth.anon_key=NEXT_PUBLIC_SUPABASE_ANON_KEY \
+            --override-name auth.service_role_key=SUPABASE_SERVICE_ROLE_KEY \
+            | sed 's/="\(.*\)"$/=\1/' \
+            >> "$GITHUB_ENV"
+
+      - name: Run integration tests
+        run: npx vitest run --config vitest.integration.config.mts
+        env:
+          CREDENTIALS_ENCRYPTION_KEY: "0000000000000000000000000000000000000000000000000000000000000000"
