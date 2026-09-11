@@ -138,7 +138,7 @@ async function resolveExternalConversation(
     .match(matchFilter)
     .maybeSingle();
   if (selectError) {
-    return { error: `Не удалось найти диалог: ${selectError.message}` };
+    return conversationUnavailable("external conversation lookup", selectError.message);
   }
   if (existing) {
     return { id: existing.id as string, isNew: false };
@@ -165,14 +165,14 @@ async function resolveExternalConversation(
       .match(matchFilter)
       .maybeSingle();
     if (raceSelectError) {
-      return { error: `Не удалось найти диалог: ${raceSelectError.message}` };
+      return conversationUnavailable("external conversation re-lookup", raceSelectError.message);
     }
     if (raceWinner) {
       return { id: raceWinner.id as string, isNew: false };
     }
   }
 
-  return { error: `Не удалось найти или создать диалог: ${insertError?.message ?? "unknown error"}` };
+  return conversationUnavailable("external conversation insert", insertError?.message);
 }
 
 async function resolveConversationId(
@@ -192,7 +192,7 @@ async function resolveConversationId(
       .eq("project_id", input.projectId)
       .eq("user_id", input.ownerUserId)
       .maybeSingle();
-    if (error) return { error: `Не удалось найти диалог: ${error.message}` };
+    if (error) return conversationUnavailable("conversation lookup", error.message);
     if (!data) return { error: "Диалог не найден." };
     return { id: input.conversationId, isNew: false };
   }
@@ -203,9 +203,17 @@ async function resolveConversationId(
     .select("id")
     .single();
   if (error || !data) {
-    return { error: `Не удалось создать диалог: ${error?.message ?? "unknown error"}` };
+    return conversationUnavailable("conversation insert", error?.message);
   }
   return { id: data.id as string, isNew: true };
+}
+
+const CONVERSATION_UNAVAILABLE_MESSAGE = "Не удалось открыть диалог. Попробуйте ещё раз.";
+
+/** The DB detail goes to the server log only; the user gets a generic message. */
+function conversationUnavailable(step: string, detail: string | undefined): { error: string } {
+  console.error(`handleChatRequest: ${step} failed: ${detail ?? "unknown error"}`);
+  return { error: CONVERSATION_UNAVAILABLE_MESSAGE };
 }
 
 interface PriorMessageRow {

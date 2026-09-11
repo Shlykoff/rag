@@ -856,7 +856,7 @@ describe("handleChatRequest", () => {
         })
       );
       expect(events).toEqual([
-        { type: "error", message: "Не удалось найти или создать диалог: connection reset", retryable: false },
+        { type: "error", message: "Не удалось открыть диалог. Попробуйте ещё раз.", retryable: false },
       ]);
     });
 

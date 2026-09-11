@@ -88,11 +88,16 @@ export async function createDocumentFromSource(
   // above -- this ordering (insert row -> upload object -> set
   // storage_path -> ingest) is why NormalizedDocument.storagePath is
   // always undefined coming out of an adapter (see lib/sources/types.ts).
-  const storagePath = await uploadObject(supabase, params.projectId, documentId, params.object);
-
-  const { error: updateError } = await supabase.from("documents").update({ storage_path: storagePath }).eq("id", documentId);
-  if (updateError) {
-    throw new Error(`createDocumentFromSource: failed to set storage_path for ${documentId}: ${updateError.message}`);
+  let storagePath: string | undefined;
+  try {
+    storagePath = await uploadObject(supabase, params.projectId, documentId, params.object);
+    const { error: updateError } = await supabase.from("documents").update({ storage_path: storagePath }).eq("id", documentId);
+    if (updateError) {
+      throw new Error(`createDocumentFromSource: failed to set storage_path for ${documentId}: ${updateError.message}`);
+    }
+  } catch (err) {
+    await discardUnfinishedDocument(supabase, documentId, storagePath);
+    throw err;
   }
 
   // ingestDocumentWithDefaultProviders's IngestResult already carries
@@ -104,6 +109,20 @@ export async function createDocumentFromSource(
     title: params.title,
     text: params.text,
   });
+}
+
+/** A row that never reached ingestion would otherwise sit in 'pending' forever. Best-effort: the caller still gets the original error. */
+async function discardUnfinishedDocument(
+  supabase: SupabaseClient,
+  documentId: string,
+  storagePath: string | undefined
+): Promise<void> {
+  if (storagePath) {
+    const { error } = await supabase.storage.from("documents").remove([storagePath]);
+    if (error) console.error(`discardUnfinishedDocument: failed to remove ${storagePath}: ${error.message}`);
+  }
+  const { error } = await supabase.from("documents").delete().eq("id", documentId);
+  if (error) console.error(`discardUnfinishedDocument: failed to delete document ${documentId}: ${error.message}`);
 }
 
 export interface RefreshDocumentParams {
