@@ -134,33 +134,40 @@ export function ProfileForm() {
           {PROVIDER_DISPLAY_INFO.anthropic.label}
         </h2>
         <p className="field-hint" style={{ marginBottom: "0.7rem" }}>
-          У Anthropic нет собственных embeddings — для поиска по документам нужен ещё ключ Voyage AI.
-          Оба нужны, чтобы использовать Anthropic в проекте. Ключи — на{" "}
+          Только чат: своих эмбеддингов у Anthropic нет, поэтому для поиска по документам проекту понадобится
+          ключ OpenAI, Gemini или Voyage AI. Ключ — на{" "}
           <a href="https://console.anthropic.com/settings/keys" target="_blank" rel="noopener noreferrer">
             console.anthropic.com
-          </a>{" "}
-          и{" "}
+          </a>
+          .
+        </p>
+        <ProviderKeyField
+          provider="anthropic"
+          label="Anthropic API key"
+          configured={configured.anthropic}
+          placeholder="sk-ant-..."
+          onConfiguredChange={handleConfiguredChange}
+        />
+      </section>
+
+      <section className="card" aria-labelledby="provider-voyage-heading">
+        <h2 id="provider-voyage-heading" className="provider-section-title">
+          Voyage AI
+        </h2>
+        <p className="field-hint" style={{ marginBottom: "0.7rem" }}>
+          Только эмбеддинги (поиск по документам) — сочетается с любой моделью чата. Ключ — на{" "}
           <a href="https://dashboard.voyageai.com/api-keys" target="_blank" rel="noopener noreferrer">
             dashboard.voyageai.com
           </a>
           .
         </p>
-        <div style={{ display: "flex", flexDirection: "column", gap: "0.9rem" }}>
-          <ProviderKeyField
-            provider="anthropic"
-            label="Anthropic API key"
-            configured={configured.anthropic}
-            placeholder="sk-ant-..."
-            onConfiguredChange={handleConfiguredChange}
-          />
-          <ProviderKeyField
-            provider="voyage"
-            label="Voyage API key"
-            configured={configured.voyage}
-            placeholder="pa-..."
-            onConfiguredChange={handleConfiguredChange}
-          />
-        </div>
+        <ProviderKeyField
+          provider="voyage"
+          label="Voyage API key"
+          configured={configured.voyage}
+          placeholder="pa-..."
+          onConfiguredChange={handleConfiguredChange}
+        />
       </section>
 
       <section className="card" aria-labelledby="provider-gemini-heading">

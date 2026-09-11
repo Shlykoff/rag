@@ -1,36 +1,33 @@
 // lib/ui/provider-metadata.ts
 //
-// Single frontend source of truth for two facts about each
-// ActiveAIProvider: its display label, and which credential(s) an account
-// needs configured before that provider is usable ('anthropic' uniquely
-// also needs 'voyage', since Anthropic has no embeddings API of its own --
-// see lib/ai/index.ts's PROVIDER_REGISTRY). Shared by
-// components/projects/ModelPicker.tsx, components/profile/
-// ActiveProviderSection.tsx, and components/profile/ProfileForm.tsx so
-// they can't drift from each other.
-//
-// The canonical source is still lib/ai/index.ts's PROVIDER_REGISTRY
-// (server-only -- it holds the actual adapter constructors, not just
-// labels). Only a type-only import from "@/lib/ai" here (erased at compile
-// time) -- no runtime/value import, so nothing server-only reaches a "use
-// client" bundle through this module.
+// Client-safe display info for the AI providers a project can use, shared
+// by components/projects/ModelPicker.tsx and components/profile/*. The
+// canonical registries live in lib/ai/index.ts (server-only -- they hold the
+// adapter constructors); only type-only imports from "@/lib/ai" here, so
+// nothing server-only reaches a "use client" bundle.
 
-import type { ActiveAIProvider, AIProviderCredentialType } from "@/lib/ai";
+import type { ActiveAIProvider, AIProviderCredentialType, EmbeddingProviderType } from "@/lib/ai";
 
 export interface ProviderDisplayInfo {
   label: string;
-  /** Every credential type that must be configured for this provider to be usable. Always includes the provider's own id, plus 'voyage' for 'anthropic' (its fixed, non-optional embeddings pairing). */
+  /** Credentials an account needs for this chat provider to be usable. */
   requiresCredentials: AIProviderCredentialType[];
 }
 
 export const PROVIDER_DISPLAY_INFO: Record<ActiveAIProvider, ProviderDisplayInfo> = {
   openai: { label: "OpenAI", requiresCredentials: ["openai"] },
-  anthropic: {
-    label: "Anthropic Claude (+ Voyage AI для embeddings)",
-    requiresCredentials: ["anthropic", "voyage"],
-  },
+  anthropic: { label: "Anthropic Claude", requiresCredentials: ["anthropic"] },
   gemini: { label: "Google Gemini", requiresCredentials: ["gemini"] },
 };
 
-/** Stable display order for rendering every provider (openai, anthropic, gemini) -- `Object.keys()` on the map above would work too, but this makes the order an explicit, reviewable decision rather than incidental object-key iteration order. */
+/** Stable display order for the chat providers. */
 export const PROVIDER_DISPLAY_ORDER: ActiveAIProvider[] = ["openai", "anthropic", "gemini"];
+
+/** Embedding models a project can pick -- each needs only its own provider's key. Model names match lib/ai/index.ts's defaults. */
+export const EMBEDDING_PROVIDER_DISPLAY_INFO: Record<EmbeddingProviderType, { label: string; model: string }> = {
+  openai: { label: "OpenAI", model: "text-embedding-3-small" },
+  gemini: { label: "Google Gemini", model: "gemini-embedding-001" },
+  voyage: { label: "Voyage AI", model: "voyage-3-large" },
+};
+
+export const EMBEDDING_PROVIDER_DISPLAY_ORDER: EmbeddingProviderType[] = ["openai", "gemini", "voyage"];

@@ -89,7 +89,7 @@ export async function saveAIProviderCredential(
 
 /**
  * Returns the decrypted API key for (userId, provider), or null if none is
- * stored. Callers (lib/ai/index.ts's PROVIDER_REGISTRY builders) must treat
+ * stored. Callers (lib/ai/index.ts's provider registries) must treat
  * the return value as a secret: never log it, never include it in a thrown
  * error's `message`/`userMessage`, never return it from an API route.
  */
@@ -208,21 +208,18 @@ export async function getActiveProvider(
 }
 
 /**
- * Thrown by setActiveProvider() when the requested provider isn't actually
- * usable yet (its credential -- or, for anthropic, one of its *two* required
- * credentials -- hasn't been saved). A distinct class (rather than a plain
- * Error) so callers (app/api/profile/ai-providers/route.ts) can map this
- * specifically to a 400 with an actionable message, instead of a generic 500
- * -- this is an expected "you tried to activate something you haven't
- * configured yet" user error, not a server fault.
+ * Thrown by setActiveProvider()/setProjectEmbeddingProvider() when the
+ * requested provider's credential hasn't been saved yet. A distinct class so
+ * the API route can map it to a 400 with an actionable message instead of a
+ * generic 500 -- an expected user state, not a server fault.
  */
 export class MissingProviderCredentialsError extends Error {
-  readonly provider: ActiveAIProvider;
+  readonly provider: AIProviderCredentialType;
   readonly missing: AIProviderCredentialType[];
 
-  constructor(provider: ActiveAIProvider, missing: AIProviderCredentialType[]) {
+  constructor(provider: AIProviderCredentialType, missing: AIProviderCredentialType[]) {
     super(
-      `setActiveProvider: cannot activate '${provider}' -- missing credential(s): ${missing.join(", ")}. Save ${
+      `cannot use '${provider}' -- missing credential(s): ${missing.join(", ")}. Save ${
         missing.length > 1 ? "them" : "it"
       } first via POST /api/profile/ai-providers.`
     );
@@ -232,26 +229,115 @@ export class MissingProviderCredentialsError extends Error {
   }
 }
 
+/** Providers a project can pick for embeddings -- Anthropic has no embeddings API (matches projects_embedding_provider_not_anthropic). */
+export type EmbeddingProviderType = Exclude<AIProviderCredentialType, "anthropic">;
+
+/** Thrown by setProjectEmbeddingProvider() when the project already has documents embedded with its current model. */
+export class EmbeddingProviderLockedError extends Error {
+  constructor(projectId: string) {
+    super(`setProjectEmbeddingProvider: project ${projectId} already has documents embedded with its current model`);
+    this.name = "EmbeddingProviderLockedError";
+  }
+}
+
+interface OwnedProjectRow {
+  id: string;
+  user_id: string;
+  embedding_provider: EmbeddingProviderType | null;
+}
+
+/** Defense in depth against a caller-side scoping bug (the primary ownership check is the caller's RLS-scoped one). */
+async function requireProjectOwnedBy(
+  supabase: SupabaseClient,
+  projectId: string,
+  ownerUserId: string,
+  caller: string
+): Promise<OwnedProjectRow> {
+  const { data, error } = await supabase
+    .from("projects")
+    .select("id, user_id, embedding_provider")
+    .eq("id", projectId)
+    .maybeSingle<OwnedProjectRow>();
+  if (error) {
+    throw new Error(`${caller}: failed to load project ${projectId}: ${error.message}`);
+  }
+  if (!data) {
+    throw new Error(`${caller}: project ${projectId} does not exist`);
+  }
+  if (data.user_id !== ownerUserId) {
+    throw new Error(`${caller}: project ${projectId} belongs to user ${data.user_id}, not ${ownerUserId}`);
+  }
+  return data;
+}
+
+async function countProjectDocuments(supabase: SupabaseClient, projectId: string): Promise<number> {
+  const { count, error } = await supabase
+    .from("documents")
+    .select("id", { count: "exact", head: true })
+    .eq("project_id", projectId);
+  if (error) {
+    throw new Error(`countProjectDocuments: failed to count documents for project ${projectId}: ${error.message}`);
+  }
+  return count ?? 0;
+}
+
 /**
- * Sets `projects.active_ai_provider` for `projectId`.
- *
- * `ownerUserId` is the caller's already server-validated notion of who owns
- * this project (verified via the RLS-scoped session client before this is
- * ever called). Two things are checked against it before the write, both
- * app-level rather than DB constraints (see the projects migration's
- * column comment):
- *   1. `projectId` actually belongs to `ownerUserId` -- defense in depth
- *      against a caller-side scoping bug (mirrors the
- *      `documentRow.project_id !== doc.projectId` guard in
- *      lib/ingestion/ingest.ts), not the primary enforcement boundary.
- *   2. `ownerUserId` actually holds the credential(s) `provider` needs --
- *      'anthropic' requires both an 'anthropic' row (chat) and a 'voyage'
- *      row (Anthropic has no embeddings API of its own -- see
- *      lib/ai/index.ts's PROVIDER_REGISTRY); every other provider needs
- *      just its own row.
- * Both checks run before the write, so a rejected call never leaves
- * `projects.active_ai_provider` pointing at a provider with no usable
- * credential.
+ * The project's embedding model, and whether it's locked: once a model is
+ * chosen and the project has documents, those vectors only compare with the
+ * same model, so it can't be changed.
+ */
+export async function getProjectEmbeddingState(
+  supabase: SupabaseClient,
+  projectId: string
+): Promise<{ provider: EmbeddingProviderType | null; locked: boolean }> {
+  const { data, error } = await supabase
+    .from("projects")
+    .select("embedding_provider")
+    .eq("id", projectId)
+    .maybeSingle<{ embedding_provider: EmbeddingProviderType | null }>();
+  if (error) {
+    throw new Error(`getProjectEmbeddingState: failed to load project ${projectId}: ${error.message}`);
+  }
+  if (!data) {
+    throw new Error(`getProjectEmbeddingState: project ${projectId} does not exist`);
+  }
+  const locked = data.embedding_provider !== null && (await countProjectDocuments(supabase, projectId)) > 0;
+  return { provider: data.embedding_provider, locked };
+}
+
+/**
+ * Sets `projects.embedding_provider`. The first choice is always allowed;
+ * changing it is refused with EmbeddingProviderLockedError once the project
+ * has documents. Re-selecting the current provider is a no-op.
+ */
+export async function setProjectEmbeddingProvider(
+  supabase: SupabaseClient,
+  projectId: string,
+  ownerUserId: string,
+  provider: EmbeddingProviderType
+): Promise<void> {
+  const project = await requireProjectOwnedBy(supabase, projectId, ownerUserId, "setProjectEmbeddingProvider");
+  if (project.embedding_provider === provider) return;
+
+  if (!(await hasAIProviderCredential(supabase, ownerUserId, provider))) {
+    throw new MissingProviderCredentialsError(provider, [provider]);
+  }
+  if (project.embedding_provider !== null && (await countProjectDocuments(supabase, projectId)) > 0) {
+    throw new EmbeddingProviderLockedError(projectId);
+  }
+
+  const { error } = await supabase.from("projects").update({ embedding_provider: provider }).eq("id", projectId);
+  if (error) {
+    throw new Error(`setProjectEmbeddingProvider: failed to update project ${projectId}: ${error.message}`);
+  }
+}
+
+/**
+ * Sets `projects.active_ai_provider` (the chat model) for `projectId`, after
+ * checking the project belongs to `ownerUserId` and the owner has saved this
+ * provider's key -- so the column never points at an unusable provider.
+ * Switching it never touches stored vectors: embeddings are a separate
+ * setting (setProjectEmbeddingProvider()).
  */
 export async function setActiveProvider(
   supabase: SupabaseClient,
@@ -259,30 +345,10 @@ export async function setActiveProvider(
   ownerUserId: string,
   provider: ActiveAIProvider
 ): Promise<void> {
-  const { data: project, error: projectError } = await supabase
-    .from("projects")
-    .select("id, user_id")
-    .eq("id", projectId)
-    .maybeSingle<{ id: string; user_id: string }>();
-  if (projectError) {
-    throw new Error(`setActiveProvider: failed to load project ${projectId}: ${projectError.message}`);
-  }
-  if (!project) {
-    throw new Error(`setActiveProvider: project ${projectId} does not exist`);
-  }
-  if (project.user_id !== ownerUserId) {
-    throw new Error(
-      `setActiveProvider: project ${projectId} belongs to user ${project.user_id}, not ${ownerUserId}`
-    );
-  }
+  await requireProjectOwnedBy(supabase, projectId, ownerUserId, "setActiveProvider");
 
-  const required: AIProviderCredentialType[] = provider === "anthropic" ? ["anthropic", "voyage"] : [provider];
-  const haveEach = await Promise.all(
-    required.map((p) => hasAIProviderCredential(supabase, ownerUserId, p))
-  );
-  const missing = required.filter((_, i) => !haveEach[i]);
-  if (missing.length > 0) {
-    throw new MissingProviderCredentialsError(provider, missing);
+  if (!(await hasAIProviderCredential(supabase, ownerUserId, provider))) {
+    throw new MissingProviderCredentialsError(provider, [provider]);
   }
 
   const { error } = await supabase

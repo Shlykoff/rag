@@ -45,6 +45,7 @@ describe("runRetrieval", () => {
       query_embedding: [0.1, 0.2, 0.3],
       match_count: 6, // default
       p_project_id: "project-123", // MUST be exactly the projectId this function received, never client-supplied
+      p_embedding_model: "fake-model", // only chunks from the query's own embedding model are comparable
     });
     expect(result.sources).toHaveLength(1);
     expect(result.candidateCount).toBe(1);

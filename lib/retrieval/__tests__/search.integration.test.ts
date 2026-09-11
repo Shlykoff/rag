@@ -112,6 +112,17 @@ describe.skipIf(!hasIntegrationEnv())("runRetrieval (integration, real Supabase)
         embedding_provider: null,
         embedding_model: null,
       },
+      // Same project, perfect vector match, but embedded by a DIFFERENT
+      // model: its vector lives in another space and must never be
+      // compared with (or returned for) this model's queries.
+      {
+        document_id: docA,
+        chunk_index: 3,
+        content: "Project A chunk from another embedding model",
+        embedding: deterministicVector(QUERY_AXIS),
+        embedding_provider: "other-provider",
+        embedding_model: "other-model",
+      },
       // Project B: also an exact match to the same query vector -- this is
       // the critical cross-tenant isolation case. If match_document_chunks
       // (or runRetrieval's call to it) ever stopped scoping by
@@ -184,5 +195,18 @@ describe.skipIf(!hasIntegrationEnv())("runRetrieval (integration, real Supabase)
       { matchCount: 10 }
     );
     expect(result.sources).toEqual([]);
+  });
+
+  it("never returns a chunk embedded by a different model, even a perfect vector match in the same project", async () => {
+    const result = await runRetrieval(
+      "irrelevant question text",
+      projectA,
+      { supabase, embeddingsProvider: embeddingsProviderReturning(deterministicVector(QUERY_AXIS)) },
+      { matchCount: 10 }
+    );
+
+    expect(result.contextText).not.toContain("another embedding model");
+    expect(result.sources.every((source) => source.documentId === docA)).toBe(true);
+    expect(result.sources).toHaveLength(2);
   });
 });
