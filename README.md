@@ -19,12 +19,12 @@ Next.js (App Router, TypeScript strict) · pluggable AI-provider layer (OpenAI /
 
 ## Running locally
 
-Requires Docker (for local Supabase) and Node **22+** (see `.nvmrc` — `nvm use`); this project's Supabase/AI dependencies need native Node 22 features.
+Requires Docker (for local Supabase) and Node **24** (see `.nvmrc` — `nvm use`), the same major version Vercel runs in production.
 
 ```bash
 git clone <repo>
 cd RAG
-nvm use                 # Node 22
+nvm use                 # Node 24
 npm install
 
 supabase start           # local Supabase in Docker; prints local URL/keys
@@ -55,15 +55,12 @@ Open `http://localhost:3000/login` and click **"Попробовать демо"
 ```bash
 npm test                  # fast unit tests, no Docker required
 npm run test:integration  # requires `supabase start` first -- runs against
-                           # the real local Postgres/pgvector. Needs Node
-                           # 22+ specifically -- @supabase/supabase-js's
-                           # realtime client throws on Node 20 ("native
-                           # WebSocket not found").
+                           # the real local Postgres/pgvector.
 ```
 
-**CI** (`.github/workflows/ci.yml`, every push/PR to `main`): type check → lint → `npm test` → `next build` (placeholder env vars, no real network calls at build time). Integration tests do **not** run in CI (no Docker on GitHub-hosted runners) — run them locally instead.
+**CI** (`.github/workflows/ci.yml`, every push/PR to `main`): two jobs. `lint-and-test`: type check → lint → `npm test` → `next build` (placeholder env vars, no real network calls at build time). `integration-tests`: `npx supabase start` on the runner's Docker (CLI version pinned by `package-lock.json`), then the integration suite against that fresh database.
 
-`npm test` never touches a database — everything runs against fakes. `npm run test:integration` loads `.env.local` and runs `*.integration.test.ts` files against your local `supabase start` instance: real inserts, a real `match_document_chunks` RPC call, real cross-tenant isolation checks. It's a separate Vitest config (`vitest.integration.config.mts`) so plain `npm test`/CI never needs Docker.
+`npm test` never touches a database — everything runs against fakes. `npm run test:integration` loads `.env.local` and runs `*.integration.test.ts` files against your local `supabase start` instance: real inserts, a real `match_document_chunks` RPC call, real cross-tenant isolation checks. It's a separate Vitest config (`vitest.integration.config.mts`) so plain `npm test` never needs Docker.
 
 ## Architecture: the AI provider abstraction (`lib/ai/`)
 
