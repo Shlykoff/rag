@@ -264,22 +264,24 @@ describe.skipIf(!hasIntegrationEnv())("projects pivot: RLS + grants (integration
     });
 
     it("inserting a message bumps the conversation's updated_at", async () => {
-      const { data: before } = await serviceClient
+      // Its own conversation, so the extra message doesn't change the message counts other tests assert.
+      const { data: before, error: createError } = await serviceClient
         .from("conversations")
-        .select("updated_at")
-        .eq("id", ownTestChatConvo)
+        .insert({ project_id: projectA, user_id: ownerA.id })
+        .select("id, updated_at")
         .single();
+      expect(createError).toBeNull();
       await new Promise((resolve) => setTimeout(resolve, 50));
 
       const { error } = await serviceClient
         .from("messages")
-        .insert({ conversation_id: ownTestChatConvo, role: "user", content: "bump updated_at" });
+        .insert({ conversation_id: before!.id, role: "user", content: "bump updated_at" });
       expect(error).toBeNull();
 
       const { data: after } = await serviceClient
         .from("conversations")
         .select("updated_at")
-        .eq("id", ownTestChatConvo)
+        .eq("id", before!.id)
         .single();
       expect(new Date(after!.updated_at as string).getTime()).toBeGreaterThan(
         new Date(before!.updated_at as string).getTime()
