@@ -151,27 +151,9 @@ comment on column public.projects.chat_model_kind is
 comment on column public.projects.embedding_model_kind is
   'Always ''embedding''. Exists only so projects_embedding_model_fkey can pin the referenced ai_models row to kind = embedding.';
 
--- Backfill from the provider columns. updated_at tracks user edits, so the
--- trigger is paused for this statement.
-alter table public.projects disable trigger set_projects_updated_at;
-
-update public.projects p
-set chat_model_id = m.id
-from public.ai_models m
-where p.chat_model_id is null
-  and m.provider = p.active_ai_provider
-  and m.kind = 'chat'
-  and m.is_recommended;
-
-update public.projects p
-set embedding_model_id = m.id
-from public.ai_models m
-where p.embedding_model_id is null
-  and m.provider = p.embedding_provider
-  and m.kind = 'embedding'
-  and m.is_recommended;
-
-alter table public.projects enable trigger set_projects_updated_at;
+-- No backfill: the provider columns can't tell which model (or dimension)
+-- existing chunks were embedded with, and guessing would silently point a
+-- project at vectors it can't match. Null means "not chosen yet".
 
 -- document_chunks.embedding: any dimension -------------------------------
 -- HNSW needs a fixed dimension, so the single index on vector(1024) is
@@ -300,7 +282,7 @@ $$;
 do $$
 begin
   if (
-    select string_to_array(extversion, '.')::int[] >= array[0, 8, 0]
+    select string_to_array(split_part(extversion, '-', 1), '.')::int[] >= array[0, 8, 0]
     from pg_extension
     where extname = 'vector'
   ) then

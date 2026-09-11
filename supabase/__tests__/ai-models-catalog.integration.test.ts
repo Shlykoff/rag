@@ -263,6 +263,25 @@ describe.skipIf(!hasIntegrationEnv())("ai_models catalog + project models + vari
       expect(error).toBeNull();
       expect(data).toEqual({ chat_model_id: chat.id, embedding_model_id: embedding.id });
     });
+
+    it("blocks changing the kind of a catalog model a project references", async () => {
+      const terra = catalogModel("openai", "gpt-5.6-terra");
+      const { id } = await createTestProject(service, owner.id, "Kind lock project");
+      const { error: refError } = await service.from("projects").update({ chat_model_id: terra.id }).eq("id", id);
+      expect(refError).toBeNull();
+
+      // Every other constraint is satisfied, so only the FK can reject this.
+      const { error } = await runPrivilegedSql(`
+        do $$
+        begin
+          update public.ai_models
+          set kind = 'embedding', dimensions = 1536, max_output_tokens = null, output_price_usd_per_mtok = null
+          where id = '${terra.id}';
+          raise exception 'updated' using errcode = 'P0001';
+        end $$;
+      `);
+      expect(error?.code).toBe("23503");
+    });
   });
 
   describe("match_document_chunks with variable dimensions", () => {
@@ -386,6 +405,15 @@ describe.skipIf(!hasIntegrationEnv())("ai_models catalog + project models + vari
         p_embedding_model: MODEL_1536,
       });
       expect(error).not.toBeNull();
+    });
+
+    it("runs with iterative HNSW scans so filtering can't starve top-k", async () => {
+      const { rows, error } = await runPrivilegedSql<{ proconfig: string[] | null }>(
+        "select proconfig from pg_proc where proname = 'match_document_chunks' and pronamespace = 'public'::regnamespace"
+      );
+      expect(error).toBeNull();
+      expect(rows).toHaveLength(1);
+      expect(rows![0].proconfig).toEqual(expect.arrayContaining(["hnsw.iterative_scan=relaxed_order"]));
     });
 
     it("no longer has the 3-argument overload", async () => {

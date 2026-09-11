@@ -150,6 +150,10 @@ export async function runPrivilegedSql<Row = Record<string, unknown>>(
   query: string
 ): Promise<{ rows: Row[] | null; error: { code: string; message: string } | null }> {
   const { url, serviceRoleKey } = requireIntegrationEnv();
+  const { hostname } = new URL(url);
+  if (hostname !== "127.0.0.1" && hostname !== "localhost") {
+    throw new Error(`runPrivilegedSql only runs against a local Supabase stack, not ${hostname}.`);
+  }
   const response = await fetch(`${url}/pg/query`, {
     method: "POST",
     headers: {
@@ -159,7 +163,13 @@ export async function runPrivilegedSql<Row = Record<string, unknown>>(
     },
     body: JSON.stringify({ query }),
   });
-  const body: unknown = await response.json();
+  const text = await response.text();
+  let body: unknown;
+  try {
+    body = JSON.parse(text);
+  } catch {
+    throw new Error(`runPrivilegedSql: HTTP ${response.status} non-JSON response from /pg/query: ${text.slice(0, 200)}`);
+  }
   if (response.ok) {
     return { rows: body as Row[], error: null };
   }
