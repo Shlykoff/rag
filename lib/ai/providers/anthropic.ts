@@ -14,7 +14,7 @@
 import { createAnthropic } from "@ai-sdk/anthropic";
 import { streamText } from "ai";
 import type { ChatMessage, ChatProvider, ChatStreamResult } from "../types";
-import { wrapAiSdkStream } from "../stream-utils";
+import { fromStreamTextResult, logStreamError, wrapAiSdkStream } from "../stream-utils";
 
 export interface AnthropicConfig {
   apiKey: string;
@@ -41,12 +41,15 @@ export class AnthropicChatProvider implements ChatProvider {
     const model = this.aiSdk.chat(this.modelName);
     return wrapAiSdkStream(
       () =>
-        streamText({
-          model,
-          system: systemPrompt,
-          messages,
-          maxRetries: 0, // lib/ai/stream-utils.ts is the single retry layer -- see providers/openai.ts constructor comment for the same reasoning
-        }),
+        fromStreamTextResult(
+          streamText({
+            model,
+            system: systemPrompt,
+            messages,
+            maxRetries: 0, // lib/ai/stream-utils.ts is the single retry layer -- see providers/openai.ts constructor comment for the same reasoning
+            onError: logStreamError(this.providerName),
+          })
+        ),
       { provider: this.providerName }
     );
   }
