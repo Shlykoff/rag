@@ -16,12 +16,8 @@
 //
 //   PATCH /api/projects/{projectId}
 //   body: { name: string }          -- trimmed, 1..200 chars; the only
-//      field this endpoint supports today (active_ai_provider has its own
-//      dedicated endpoint, see ./model/route.ts, per CLAUDE.md's explicit
-//      "connect a provider is account-level, which one a project uses is
-//      project-level" split -- renaming and re-modeling a project are
-//      different concerns with different validation, kept as separate
-//      routes rather than one do-everything PATCH)
+//      field this endpoint supports (the project's models have their own
+//      endpoint with its own validation, ./model/route.ts)
 //   -> 401 { error: "unauthorized" }
 //   -> 404 { error: "not_found" }
 //   -> 400 { error: "invalid_request", details }
@@ -87,7 +83,7 @@ export async function GET(
     return Response.json({ error: "not_found" }, { status: 404 });
   }
 
-  return Response.json({ project: toProjectDTO(data as ProjectRow) }, { status: 200 });
+  return Response.json({ project: toProjectDTO(data as unknown as ProjectRow) }, { status: 200 });
 }
 
 export async function PATCH(
@@ -125,7 +121,7 @@ export async function PATCH(
     return Response.json({ error: "not_found" }, { status: 404 });
   }
 
-  return Response.json({ project: toProjectDTO(data as ProjectRow) }, { status: 200 });
+  return Response.json({ project: toProjectDTO(data as unknown as ProjectRow) }, { status: 200 });
 }
 
 interface StorageEntry {

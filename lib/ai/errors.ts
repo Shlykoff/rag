@@ -6,7 +6,7 @@
 // lib/ai/ must never branch on `err instanceof OpenAI.APIError` or similar
 // -- it only ever sees `AIProviderError`, normalized here. This is what
 // lets the API route show one consistent message to the user regardless of
-// which AI_PROVIDER is active.
+// which provider serves the project's models.
 
 /** Coarse classification used to decide retry behavior and pick a user-facing message. */
 export type AIErrorKind =

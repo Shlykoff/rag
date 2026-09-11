@@ -7,13 +7,10 @@
 // handling, which keeps the retry-banner treatment). Deliberately minimal:
 // no onboarding wizard, just a short explanation and a link onward.
 //
-// Links to this project's own /projects/{projectId}/model picker, not
-// directly to the account-level /profile: this 422 fires both when the
-// project has no active_ai_provider chosen yet (the common case -- next
-// step is /model) and when its chosen credential was since deleted (next
-// step is /profile) -- /model is the right first stop for both, and is
-// itself where a "nothing configured account-wide" state points onward to
-// /profile (see ModelPicker.tsx).
+// Links to this project's model page, not straight to /profile: the 422
+// fires both when a chat/embedding model isn't chosen yet and when the key
+// for a chosen model was deleted, and the model page handles both (it
+// links on to /profile when a key is missing).
 
 import { useEffect, useRef } from "react";
 import Link from "next/link";
@@ -57,12 +54,12 @@ export function NoProviderModal({ projectId, onDismiss }: { projectId: string; o
         onClick={(event) => event.stopPropagation()}
       >
         <h2 id="no-provider-modal-title" style={{ fontSize: "1.1rem" }}>
-          Добавьте AI-провайдера
+          Выберите модель проекта
         </h2>
         <p className="field-hint" style={{ marginTop: "0.5rem" }}>
-          У этого проекта пока не выбрана активная AI-модель (или подключённый ключ провайдера был
-          удалён), поэтому ассистенту нечем отвечать. Выберите провайдера на странице модели проекта —
-          если ещё ни один не подключён к аккаунту, оттуда можно перейти в профиль и добавить ключ.
+          Ассистенту нечем ответить: у проекта не выбрана модель чата или модель эмбеддингов, либо из
+          профиля удалён API-ключ провайдера выбранной модели. Откройте настройки модели проекта — там
+          можно выбрать модели, а если нужного ключа нет, перейти в профиль и добавить его.
         </p>
         <div style={{ display: "flex", gap: "0.6rem", justifyContent: "flex-end", marginTop: "1.25rem" }}>
           <button ref={closeButtonRef} type="button" className="btn btn-ghost" onClick={onDismiss}>

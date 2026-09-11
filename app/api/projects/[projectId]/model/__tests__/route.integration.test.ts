@@ -1,17 +1,9 @@
 // app/api/projects/[projectId]/model/__tests__/route.integration.test.ts
 //
-// Runs against a REAL local Supabase. Two things the mocked unit test
-// (../route.test.ts) can only assert "should work" for, verified live
-// here instead:
-//   1. Ownership enforcement is REAL Postgres RLS (two real signed-in
-//      users, `verifyProjectOwnership` NOT mocked) -- same pattern as
-//      ../../__tests__/route.integration.test.ts, applied to this route.
-//   2. The full round trip through REAL lib/ai/credentials.ts calls: save
-//      a real (fake-value, never sent to an actual provider) API key,
-//      encrypt/decrypt it for real, PUT this project's active provider,
-//      and read it back via GET -- including the real
-//      MissingProviderCredentialsError path when the owner tries to
-//      activate a provider they haven't connected a credential for yet.
+// GET/PUT /api/projects/{projectId}/model against a REAL local Supabase:
+// ownership is real Postgres RLS (two signed-in users, verifyProjectOwnership
+// not mocked), and selection runs through the real catalog, foreign keys and
+// encrypted (fake-value) keys. Nothing is sent to a provider.
 
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import type { SupabaseClient } from "@supabase/supabase-js";
@@ -22,6 +14,7 @@ import {
   hasIntegrationEnv,
   makeIntegrationSupabaseClient,
 } from "../../../../../../lib/testing/integration-helpers";
+import { findCatalogModel } from "../../../../../../lib/testing/ai-model-fixtures";
 
 let currentUser: { id: string; email: string } | null = null;
 let currentAuthClient: SupabaseClient;
@@ -37,13 +30,8 @@ vi.mock("@/lib/supabase/server-client", async () => {
   };
 });
 
-// NOT mocked: lib/supabase/service-client.ts and lib/ai/credentials.ts's
-// real encrypt/DB calls talk to the real local Supabase started by
-// `supabase start` (NEXT_PUBLIC_SUPABASE_URL/SUPABASE_SERVICE_ROLE_KEY /
-// CREDENTIALS_ENCRYPTION_KEY loaded from .env.local by `npm run
-// test:integration`'s --env-file flag).
 import { GET, PUT } from "../route";
-import { saveAIProviderCredential } from "@/lib/ai";
+import { listAIModels, saveAIProviderCredential, type AIModel, type AIProviderCredentialType } from "@/lib/ai";
 
 function makeRequest(method: string, body?: unknown): Request {
   return new Request("http://localhost/api/projects/x/model", {
@@ -61,114 +49,141 @@ describe.skipIf(!hasIntegrationEnv() || !process.env.CREDENTIALS_ENCRYPTION_KEY)
   "GET/PUT /api/projects/{projectId}/model (integration, real Supabase)",
   () => {
     let serviceClient: SupabaseClient;
-    let ownerA: { id: string; email: string; client: SupabaseClient };
-    let ownerB: { id: string; email: string; client: SupabaseClient };
+    let catalog: AIModel[];
+    const createdUsers: string[] = [];
 
     beforeAll(async () => {
       serviceClient = makeIntegrationSupabaseClient();
-      ownerA = await createAuthenticatedTestUser(serviceClient, "model-route-owner-a");
-      ownerB = await createAuthenticatedTestUser(serviceClient, "model-route-owner-b");
+      catalog = await listAIModels(serviceClient);
     });
 
     afterAll(async () => {
-      if (ownerA) await deleteTestUser(serviceClient, ownerA.id);
-      if (ownerB) await deleteTestUser(serviceClient, ownerB.id);
+      for (const id of createdUsers) await deleteTestUser(serviceClient, id);
     });
 
     afterEach(() => {
       currentUser = null;
     });
 
-    it("a real second user gets 404 (not 403) on GET/PUT for a project they don't own", async () => {
-      const project = await createTestProject(serviceClient, ownerA.id, "Owner A's project");
+    const model = (modelId: string) => findCatalogModel(catalog, modelId);
 
-      currentAuthClient = ownerB.client;
-      currentUser = { id: ownerB.id, email: ownerB.email };
+    /** A fresh signed-in owner (keys drive auto-fill, so tests don't share one) with one project. */
+    async function signedInOwner(label: string, keys: AIProviderCredentialType[] = []) {
+      const owner = await createAuthenticatedTestUser(serviceClient, label);
+      createdUsers.push(owner.id);
+      for (const provider of keys) {
+        await saveAIProviderCredential(serviceClient, owner.id, provider, `fake-${provider}-${owner.id}`);
+      }
+      currentAuthClient = owner.client;
+      currentUser = { id: owner.id, email: owner.email };
+      const project = await createTestProject(serviceClient, owner.id);
+      return { owner, projectId: project.id };
+    }
 
-      const getResponse = await GET(makeRequest("GET"), makeParams(project.id));
-      expect(getResponse.status).toBe(404);
+    async function projectColumns(projectId: string) {
+      const { data, error } = await serviceClient
+        .from("projects")
+        .select("chat_model_id, embedding_model_id, active_ai_provider, embedding_provider")
+        .eq("id", projectId)
+        .single();
+      if (error) throw new Error(error.message);
+      return data;
+    }
 
-      const putResponse = await PUT(makeRequest("PUT", { provider: "openai" }), makeParams(project.id));
-      expect(putResponse.status).toBe(404);
+    it("another signed-in user gets 404 (not 403) on GET and PUT, and nothing changes", async () => {
+      const { projectId } = await signedInOwner("model-route-owner", ["openai"]);
+      const stranger = await createAuthenticatedTestUser(serviceClient, "model-route-stranger");
+      createdUsers.push(stranger.id);
+      await saveAIProviderCredential(serviceClient, stranger.id, "openai", "fake-openai");
+      currentAuthClient = stranger.client;
+      currentUser = { id: stranger.id, email: stranger.email };
 
-      // Untouched.
-      const { data: row } = await serviceClient.from("projects").select("active_ai_provider").eq("id", project.id).maybeSingle();
-      expect(row?.active_ai_provider).toBeNull();
+      expect((await GET(makeRequest("GET"), makeParams(projectId))).status).toBe(404);
+      const put = await PUT(makeRequest("PUT", { chatModelId: model("gpt-5.6-luna").id }), makeParams(projectId));
+      expect(put.status).toBe(404);
+
+      expect((await projectColumns(projectId)).chat_model_id).toBeNull();
     });
 
-    it("400 { error: 'missing_credentials' } for a provider the owner hasn't connected yet, then a real save + PUT + GET round trip once they have", async () => {
-      const project = await createTestProject(serviceClient, ownerA.id, "Model round trip");
-      currentAuthClient = ownerA.client;
-      currentUser = { id: ownerA.id, email: ownerA.email };
+    it("GET auto-fills from a single key and lists the active catalog by sort_order", async () => {
+      const { projectId } = await signedInOwner("model-route-autofill", ["gemini"]);
 
-      // Nothing saved yet for this fresh user -- expect a clean 400, not a 500.
-      const beforeResponse = await PUT(makeRequest("PUT", { provider: "gemini" }), makeParams(project.id));
-      expect(beforeResponse.status).toBe(400);
-      const beforeBody = await beforeResponse.json();
-      expect(beforeBody).toMatchObject({ error: "missing_credentials", provider: "gemini", missing: ["gemini"] });
+      const response = await GET(makeRequest("GET"), makeParams(projectId));
 
-      // Real save (fake key value -- never sent to an actual Gemini API by
-      // this test, only encrypted/stored/decrypted).
-      await saveAIProviderCredential(serviceClient, ownerA.id, "gemini", `AIza-integration-test-${project.id}`);
-
-      const beforeGet = await GET(makeRequest("GET"), makeParams(project.id));
-      expect((await beforeGet.json()).configured).toMatchObject({ gemini: true, openai: false });
-
-      const putResponse = await PUT(makeRequest("PUT", { provider: "gemini" }), makeParams(project.id));
-      expect(putResponse.status).toBe(200);
-      expect(await putResponse.json()).toEqual({ activeProvider: "gemini" });
-
-      const afterGet = await GET(makeRequest("GET"), makeParams(project.id));
-      expect(await afterGet.json()).toMatchObject({ activeProvider: "gemini" });
-
-      const { data: row } = await serviceClient.from("projects").select("active_ai_provider").eq("id", project.id).maybeSingle();
-      expect(row?.active_ai_provider).toBe("gemini");
-    });
-
-    it("anthropic needs only its own key -- no Voyage key required to activate it as the chat model", async () => {
-      const project = await createTestProject(serviceClient, ownerA.id, "Anthropic chat");
-      currentAuthClient = ownerA.client;
-      currentUser = { id: ownerA.id, email: ownerA.email };
-
-      await saveAIProviderCredential(serviceClient, ownerA.id, "anthropic", `sk-ant-integration-test-${project.id}`);
-
-      const response = await PUT(makeRequest("PUT", { provider: "anthropic" }), makeParams(project.id));
       expect(response.status).toBe(200);
-      expect(await response.json()).toEqual({ activeProvider: "anthropic" });
+      const payload = await response.json();
+      expect(payload).toMatchObject({
+        chatModelId: model("gemini-3.8-flash").id,
+        embeddingModelId: model("gemini-embedding-001").id,
+        embeddingLocked: false,
+        configured: { openai: false, anthropic: false, gemini: true, voyage: false },
+      });
+      const active = catalog.filter((m) => m.isActive);
+      expect(payload.models.map((m: { id: string }) => m.id)).toEqual(active.map((m) => m.id));
+      expect(payload.models.find((m: { modelId: string }) => m.modelId === "text-embedding-3-large")).toMatchObject({
+        kind: "embedding",
+        dimensions: 3072,
+        maxOutputTokens: null,
+        outputPriceUsdPerMtok: null,
+        isRecommended: false,
+        isActive: true,
+      });
+      expect(await projectColumns(projectId)).toMatchObject({ active_ai_provider: "gemini", embedding_provider: "gemini" });
     });
 
-    it("the embedding model can be picked while the project is empty, then 409 once it has documents", async () => {
-      const project = await createTestProject(serviceClient, ownerA.id, "Embedding lock");
-      currentAuthClient = ownerA.client;
-      currentUser = { id: ownerA.id, email: ownerA.email };
+    it("PUT chat model: 422 without the key, then 200 once it's saved, with GET and the provider column in sync", async () => {
+      const { owner, projectId } = await signedInOwner("model-route-chat", ["openai", "gemini"]);
+      const opus = model("claude-opus-5");
 
-      await saveAIProviderCredential(serviceClient, ownerA.id, "gemini", `AIza-integration-test-${project.id}`);
-      await saveAIProviderCredential(serviceClient, ownerA.id, "openai", `sk-integration-test-${project.id}`);
+      const before = await PUT(makeRequest("PUT", { chatModelId: opus.id }), makeParams(projectId));
+      expect(before.status).toBe(422);
+      expect(await before.json()).toMatchObject({ error: "missing_credentials", provider: "anthropic" });
 
-      const setResponse = await PUT(makeRequest("PUT", { embeddingProvider: "gemini" }), makeParams(project.id));
-      expect(setResponse.status).toBe(200);
-      expect(await setResponse.json()).toEqual({ embeddingProvider: "gemini" });
-      expect(await (await GET(makeRequest("GET"), makeParams(project.id))).json()).toMatchObject({
-        embeddingProvider: "gemini",
-        embeddingLocked: false,
-      });
+      await saveAIProviderCredential(serviceClient, owner.id, "anthropic", `fake-anthropic-${owner.id}`);
+      const after = await PUT(makeRequest("PUT", { chatModelId: opus.id }), makeParams(projectId));
+      expect(after.status).toBe(200);
+      expect(await after.json()).toEqual({ chatModelId: opus.id });
+
+      expect((await (await GET(makeRequest("GET"), makeParams(projectId))).json()).chatModelId).toBe(opus.id);
+      expect(await projectColumns(projectId)).toMatchObject({ chat_model_id: opus.id, active_ai_provider: "anthropic" });
+    });
+
+    it("PUT rejects a wrong-kind model and an unknown id with 400 invalid_model", async () => {
+      const { projectId } = await signedInOwner("model-route-invalid", ["openai"]);
+
+      const wrongKind = await PUT(makeRequest("PUT", { chatModelId: model("text-embedding-3-small").id }), makeParams(projectId));
+      expect(wrongKind.status).toBe(400);
+      expect(await wrongKind.json()).toMatchObject({ error: "invalid_model", reason: "wrong_kind" });
+
+      const unknown = await PUT(
+        makeRequest("PUT", { embeddingModelId: "99999999-9999-4999-8999-999999999999" }),
+        makeParams(projectId)
+      );
+      expect(unknown.status).toBe(400);
+      expect(await unknown.json()).toMatchObject({ error: "invalid_model", reason: "not_found" });
+    });
+
+    it("the embedding model can change while the project is empty, then 409 once it has documents", async () => {
+      const { projectId } = await signedInOwner("model-route-lock", ["openai", "gemini"]);
+
+      const first = await PUT(makeRequest("PUT", { embeddingModelId: model("gemini-embedding-001").id }), makeParams(projectId));
+      expect(first.status).toBe(200);
+      const second = await PUT(makeRequest("PUT", { embeddingModelId: model("text-embedding-3-large").id }), makeParams(projectId));
+      expect(second.status).toBe(200);
 
       const { error: docError } = await serviceClient
         .from("documents")
-        .insert({ project_id: project.id, title: "Indexed doc", source_type: "manual_upload" });
+        .insert({ project_id: projectId, title: "Indexed doc", source_type: "manual_upload" });
       expect(docError).toBeNull();
+      expect((await (await GET(makeRequest("GET"), makeParams(projectId))).json()).embeddingLocked).toBe(true);
 
-      expect(await (await GET(makeRequest("GET"), makeParams(project.id))).json()).toMatchObject({
-        embeddingProvider: "gemini",
-        embeddingLocked: true,
+      const locked = await PUT(makeRequest("PUT", { embeddingModelId: model("gemini-embedding-001").id }), makeParams(projectId));
+      expect(locked.status).toBe(409);
+      expect((await locked.json()).error).toBe("embedding_locked");
+      expect(await projectColumns(projectId)).toMatchObject({
+        embedding_model_id: model("text-embedding-3-large").id,
+        embedding_provider: "openai",
       });
-
-      const switchResponse = await PUT(makeRequest("PUT", { embeddingProvider: "openai" }), makeParams(project.id));
-      expect(switchResponse.status).toBe(409);
-      expect((await switchResponse.json()).error).toBe("embedding_locked");
-
-      const { data: row } = await serviceClient.from("projects").select("embedding_provider").eq("id", project.id).maybeSingle();
-      expect(row?.embedding_provider).toBe("gemini");
     });
   }
 );

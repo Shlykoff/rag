@@ -4,26 +4,17 @@
 //
 // The /profile page's client-side content: loads
 // GET /api/profile/ai-providers on mount (loading skeleton -> ready/error),
-// then renders one section per provider slot (OpenAI, "Anthropic (+
-// Voyage)" -- one section, two key fields, since that pairing is fixed --
-// and Gemini) plus a read-only summary of which providers are fully
-// configured (see ActiveProviderSection.tsx).
+// then renders one key field per provider plus a summary of what the saved
+// keys cover (ActiveProviderSection.tsx). Which concrete models a project
+// uses is chosen on that project's own model page, not here.
 //
 // Goes through app/api/profile/ai-providers/route.ts for everything, never
-// lib/ai/credentials.ts directly -- same boundary as components/sources/*
-// only ever calling app/api/sources/* routes, never
-// lib/sources/credentials.ts.
-//
-// Uses components/sources/request-helpers.ts's getJson() (shared with
-// ModelPicker.tsx/TelegramChannelPanel.tsx) for fetch + status-code
-// branching; per-provider display labels come from
-// lib/ui/provider-metadata.ts (also shared) rather than being duplicated
-// here as plain JSX text.
+// lib/ai/credentials.ts directly.
 
 import { useEffect, useState } from "react";
 import { redirectToLogin } from "@/lib/ui/client-redirect";
 import { getJson } from "@/components/sources/request-helpers";
-import { PROVIDER_DISPLAY_INFO } from "@/lib/ui/provider-metadata";
+import { PROVIDER_LABELS, describeProviderCapabilities } from "@/lib/ui/provider-metadata";
 import { ProviderKeyField } from "./ProviderKeyField";
 import { ActiveProviderSection } from "./ActiveProviderSection";
 import type { AIProviderCredentialType, ConfiguredFlags } from "./types";
@@ -37,25 +28,61 @@ type LoadState =
   | { status: "error"; message: string }
   | { status: "ready"; configured: ConfiguredFlags };
 
-/**
- * Pure request -> LoadState mapping, no setState of its own -- callers
- * (the mount effect below and the "Попробовать снова" retry button) only
- * ever call setState from a `.then()` callback or event handler, never
- * synchronously inside a `useEffect` body (calling setState directly,
- * synchronously, within an effect risks a cascading extra render).
- * Returning a value from an awaited async function and letting the
- * effect's `.then()` apply it keeps the actual state write outside the
- * effect's synchronous call stack.
- */
+interface ProviderSection {
+  provider: AIProviderCredentialType;
+  keyLabel: string;
+  placeholder: string;
+  /** Where the user gets a key: "Ключ — на <link>" / "Ключ — в <link>". */
+  keyWhere: "на" | "в";
+  keyUrl: string;
+  keyUrlLabel: string;
+  note?: string;
+}
+
+const PROVIDER_SECTIONS: readonly ProviderSection[] = [
+  {
+    provider: "openai",
+    keyLabel: "OpenAI API key",
+    placeholder: "sk-...",
+    keyWhere: "на",
+    keyUrl: "https://platform.openai.com/api-keys",
+    keyUrlLabel: "platform.openai.com → API keys",
+  },
+  {
+    provider: "anthropic",
+    keyLabel: "Anthropic API key",
+    placeholder: "sk-ant-...",
+    keyWhere: "на",
+    keyUrl: "https://console.anthropic.com/settings/keys",
+    keyUrlLabel: "console.anthropic.com",
+    note: "Своих эмбеддингов у Anthropic нет: для поиска по документам проекту понадобится ещё ключ OpenAI, Gemini или Voyage AI.",
+  },
+  {
+    provider: "gemini",
+    keyLabel: "Gemini API key",
+    placeholder: "AIza...",
+    keyWhere: "в",
+    keyUrl: "https://aistudio.google.com/apikey",
+    keyUrlLabel: "Google AI Studio",
+  },
+  {
+    provider: "voyage",
+    keyLabel: "Voyage API key",
+    placeholder: "pa-...",
+    keyWhere: "на",
+    keyUrl: "https://dashboard.voyageai.com/api-keys",
+    keyUrlLabel: "dashboard.voyageai.com",
+    note: "Сочетается с моделью чата любого провайдера.",
+  },
+];
+
+// Returns the state instead of setting it, so the effect below only calls
+// setState from a .then() callback, never synchronously in its body.
 async function fetchProviderState(): Promise<LoadState> {
   const result = await getJson<GetResponseBody>("/api/profile/ai-providers");
   if (!result.ok) {
     if (result.kind === "unauthorized") {
       redirectToLogin();
-      // Unreachable in practice -- redirectToLogin() is a hard navigation
-      // (window.location.href), so the component unmounts before this
-      // return value would ever be applied. Only here to satisfy the
-      // return type.
       return { status: "loading" };
     }
     return { status: "error", message: result.message };
@@ -108,87 +135,31 @@ export function ProfileForm() {
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: "1.25rem" }}>
-      <section className="card" aria-labelledby="provider-openai-heading">
-        <h2 id="provider-openai-heading" className="provider-section-title">
-          {PROVIDER_DISPLAY_INFO.openai.label}
-        </h2>
-        <p className="field-hint" style={{ marginBottom: "0.7rem" }}>
-          Чат и поиск по документам через OpenAI (по умолчанию <code>gpt-4.1-mini</code> +{" "}
-          <code>text-embedding-3-small</code>). Ключ — на{" "}
-          <a href="https://platform.openai.com/api-keys" target="_blank" rel="noopener noreferrer">
-            platform.openai.com → API keys
-          </a>
-          .
-        </p>
-        <ProviderKeyField
-          provider="openai"
-          label="OpenAI API key"
-          configured={configured.openai}
-          placeholder="sk-..."
-          onConfiguredChange={handleConfiguredChange}
-        />
-      </section>
-
-      <section className="card" aria-labelledby="provider-anthropic-heading">
-        <h2 id="provider-anthropic-heading" className="provider-section-title">
-          {PROVIDER_DISPLAY_INFO.anthropic.label}
-        </h2>
-        <p className="field-hint" style={{ marginBottom: "0.7rem" }}>
-          Только чат: своих эмбеддингов у Anthropic нет, поэтому для поиска по документам проекту понадобится
-          ключ OpenAI, Gemini или Voyage AI. Ключ — на{" "}
-          <a href="https://console.anthropic.com/settings/keys" target="_blank" rel="noopener noreferrer">
-            console.anthropic.com
-          </a>
-          .
-        </p>
-        <ProviderKeyField
-          provider="anthropic"
-          label="Anthropic API key"
-          configured={configured.anthropic}
-          placeholder="sk-ant-..."
-          onConfiguredChange={handleConfiguredChange}
-        />
-      </section>
-
-      <section className="card" aria-labelledby="provider-voyage-heading">
-        <h2 id="provider-voyage-heading" className="provider-section-title">
-          Voyage AI
-        </h2>
-        <p className="field-hint" style={{ marginBottom: "0.7rem" }}>
-          Только эмбеддинги (поиск по документам) — сочетается с любой моделью чата. Ключ — на{" "}
-          <a href="https://dashboard.voyageai.com/api-keys" target="_blank" rel="noopener noreferrer">
-            dashboard.voyageai.com
-          </a>
-          .
-        </p>
-        <ProviderKeyField
-          provider="voyage"
-          label="Voyage API key"
-          configured={configured.voyage}
-          placeholder="pa-..."
-          onConfiguredChange={handleConfiguredChange}
-        />
-      </section>
-
-      <section className="card" aria-labelledby="provider-gemini-heading">
-        <h2 id="provider-gemini-heading" className="provider-section-title">
-          {PROVIDER_DISPLAY_INFO.gemini.label}
-        </h2>
-        <p className="field-hint" style={{ marginBottom: "0.7rem" }}>
-          Чат и поиск по документам через Gemini. Ключ — в{" "}
-          <a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener noreferrer">
-            Google AI Studio
-          </a>
-          .
-        </p>
-        <ProviderKeyField
-          provider="gemini"
-          label="Gemini API key"
-          configured={configured.gemini}
-          placeholder="AIza..."
-          onConfiguredChange={handleConfiguredChange}
-        />
-      </section>
+      {PROVIDER_SECTIONS.map((section) => {
+        const headingId = `provider-${section.provider}-heading`;
+        const capabilities = describeProviderCapabilities(section.provider);
+        return (
+          <section key={section.provider} className="card" aria-labelledby={headingId}>
+            <h2 id={headingId} className="provider-section-title">
+              {PROVIDER_LABELS[section.provider]}
+            </h2>
+            <p className="field-hint" style={{ marginBottom: "0.7rem" }}>
+              Даёт проектам: {capabilities}.{section.note ? ` ${section.note}` : ""} Ключ — {section.keyWhere}{" "}
+              <a href={section.keyUrl} target="_blank" rel="noopener noreferrer">
+                {section.keyUrlLabel}
+              </a>
+              .
+            </p>
+            <ProviderKeyField
+              provider={section.provider}
+              label={section.keyLabel}
+              configured={configured[section.provider]}
+              placeholder={section.placeholder}
+              onConfiguredChange={handleConfiguredChange}
+            />
+          </section>
+        );
+      })}
 
       <section className="card">
         <ActiveProviderSection configured={configured} />

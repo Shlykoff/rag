@@ -119,12 +119,12 @@ export function ChatView({ projectId, conversationId: initialConversationId, ini
       }
 
       // Specific to app/api/chat/route.ts's `422 { error: "no_credentials" }`
-      // -- the signed-in user has no active AI provider configured yet.
-      // Distinct from every other error status (400/429/500), which keep
-      // the generic retry-banner treatment below: retrying a "no
-      // credentials" turn can never succeed until the user actually visits
-      // /profile, so this shows a dedicated modal instead of a "Повторить"
-      // button that would just fail again.
+      // -- the project has no chat/embedding model chosen, or the key for a
+      // chosen model's provider is missing. Distinct from every other error
+      // status (400/429/500), which keep the generic retry-banner treatment
+      // below: retrying can never succeed until the user fixes the project's
+      // model settings, so this shows a dedicated modal instead of a
+      // "Повторить" button that would just fail again.
       if (response.status === 422) {
         const body = (await response.json().catch(() => ({}))) as { error?: string; message?: string };
         if (body.error === "no_credentials") {
@@ -132,7 +132,7 @@ export function ChatView({ projectId, conversationId: initialConversationId, ini
           updateAssistantMessage(assistantMessageId, {
             pending: false,
             error: {
-              message: body.message ?? "Добавьте AI-провайдера в профиле, чтобы получить ответ.",
+              message: body.message ?? "Выберите модели проекта в разделе «Модель», чтобы получить ответ.",
               retryable: false,
             },
           });

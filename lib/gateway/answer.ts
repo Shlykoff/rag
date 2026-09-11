@@ -58,7 +58,7 @@
 
 import "server-only";
 import { getServiceRoleClient } from "../supabase/service-client";
-import { getAIProviders, AIProviderError } from "../ai";
+import { getAIProviders, AIProviderError, type ProjectAIConfigRow } from "../ai";
 import { handleChatRequest } from "../chat/handle-chat-request";
 import { reserveChatRateLimitSlot } from "../rate-limit/rate-limiter";
 import { checkChannelParticipantRateLimit } from "../rate-limit/channel-participant-rate-limiter";
@@ -78,14 +78,6 @@ export type GatewayAnswerResult =
   | { kind: "rate_limited" }
   | { kind: "no_credentials" }
   | { kind: "error" };
-
-/** Same shape as lib/ai's ProjectAIConfigRow, so it can be handed to getAIProviders() as preFetchedProjectRow. */
-interface ProjectOwnerRow {
-  id: string;
-  user_id: string;
-  active_ai_provider: "openai" | "anthropic" | "gemini" | null;
-  embedding_provider: "openai" | "gemini" | "voyage" | null;
-}
 
 /**
  * Answers one external channel message end-to-end (retrieval + generation)
@@ -107,9 +99,10 @@ export async function answerExternalMessage(req: GatewayAnswerRequest): Promise<
   // treated as a generic, logged `error`.
   const { data: project, error: projectError } = await supabase
     .from("projects")
-    .select("id, user_id, active_ai_provider, embedding_provider")
+    // Exactly ProjectAIConfigRow's columns, so the row can be handed to getAIProviders() as preFetchedProjectRow.
+    .select("id, user_id, chat_model_id, embedding_model_id")
     .eq("id", req.projectId)
-    .maybeSingle<ProjectOwnerRow>();
+    .maybeSingle<ProjectAIConfigRow>();
   if (projectError) {
     console.error(`answerExternalMessage: failed to load project ${req.projectId}:`, projectError);
     return { kind: "error" };

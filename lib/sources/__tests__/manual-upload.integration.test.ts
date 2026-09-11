@@ -10,7 +10,7 @@
 // "documents" Storage bucket (same path convention as
 // lib/sources/pipeline.ts) -> run the real chunk/embed/store pipeline
 // (lib/ingestion/ingest.ts's `ingestDocument`, injected with a
-// deterministic fake EmbeddingsProvider -- no AI_PROVIDER/API key needed,
+// deterministic fake EmbeddingsProvider -- no provider API key needed,
 // same DI pattern as lib/ingestion/__tests__/ingest.integration.test.ts).
 //
 // Deliberately calls the building blocks directly rather than going

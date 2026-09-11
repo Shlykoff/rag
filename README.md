@@ -9,9 +9,9 @@ Full spec: [`docs/spec.md`](docs/spec.md). Architectural ground rules: [`CLAUDE.
 
 ## What this is
 
-Documents live inside **projects** — a user can own several, each with its own document set, its own active AI provider, its own in-app test chat, and its own external channel integration (Telegram). People messaging a project's Telegram bot are that project's audience, not app users: they never get a Supabase account.
+Documents live inside **projects** — a user can own several, each with its own document set, its own chat and embedding models, its own in-app test chat, and its own external channel integration (Telegram). People messaging a project's Telegram bot are that project's audience, not app users: they never get a Supabase account.
 
-Each signed-in user connects their own AI-provider API key(s) (bring-your-own-key, encrypted at rest) and picks which connected provider each of their projects uses. There is no live deploy yet; run it locally per below.
+Each signed-in user connects their own AI-provider API key(s) (bring-your-own-key, encrypted at rest) and picks a concrete chat model and embedding model for each project from the model catalog (`ai_models`). Live at https://rag.shlykoff.com; to run it locally, see below.
 
 ## Stack
 
@@ -39,7 +39,7 @@ npm run seed:ai-keys      # REQUIRED. AI provider selection is per-user/
                            # per-project now, not a global env var read at
                            # request time -- this script is what seeds the
                            # demo account's own encrypted credentials (and
-                           # its demo project's active provider) from
+                           # its demo project's chat/embedding models) from
                            # .env.local. Safe to re-run any time, e.g.
                            # after every `supabase db reset`.
 
@@ -82,28 +82,30 @@ interface EmbeddingsProvider {
 }
 ```
 
-`PROVIDER_REGISTRY` is the single source of truth for which providers exist:
+Each project picks two concrete models from the **`ai_models` catalog** (migration-managed: provider, model id, kind, embedding dimension, context window, prices with a `pricing_as_of` date, `is_recommended`, `is_active`). The catalog is the only source of model ids — nothing is hard-coded or read from env vars. `getAIProviders()` builds the adapters from the project's two catalog rows and the owner's key for each row's provider (`lib/ai/catalog.ts`, `lib/ai/index.ts`):
 
 | Provider | Chat | Embeddings | Notes |
 |---|---|---|---|
-| `openai` | `gpt-4.1-mini` via `@ai-sdk/openai` streaming | `text-embedding-3-small`, `dimensions: 1024` | default |
-| `anthropic` | `claude-sonnet-4-5` via `@ai-sdk/anthropic` streaming | Voyage `voyage-3-large`, `outputDimension: 1024` | Anthropic has no embeddings API — Voyage is a fixed pairing, not independently selectable |
-| `gemini` | `gemini-3.6-flash` | `gemini-embedding-001`, `dimensions: 1024` | reuses the same OpenAI-Chat-Completions-compatible client as `openai` (`createOpenAICompatiblePair()`), pointed at Google's official OpenAI-compatible endpoint via a different `baseURL`/`apiKey`/`model` |
+| `openai` | `gpt-*` via `@ai-sdk/openai` streaming | `text-embedding-3-*`, `dimensions` from the catalog (1536 / 3072) | |
+| `anthropic` | `claude-*` via `@ai-sdk/anthropic` streaming | — | no embeddings API: pair it with any embedding model (Voyage for a Claude-only account) |
+| `gemini` | `gemini-*` | `gemini-embedding-*`, `dimensions` from the catalog (3072) | reuses the OpenAI-compatible adapter classes pointed at Google's official OpenAI-compatible endpoint via `baseURL`; `dimensions` is honored there (checked live), though Google's docs don't list it |
+| `voyage` | — | `voyage-4*`, `outputDimension` from the catalog (1024) | embeddings only; accepts only {256, 512, 1024, 2048} |
 
-Adapters (`lib/ai/providers/{openai,anthropic,voyage,gemini}.ts`) wrap the Vercel AI SDK for chat streaming and the raw `openai`/`voyageai` SDKs for embeddings. Each returns two distinct, independently-labeled `chatProvider`/`embeddingsProvider` views over one shared HTTP client rather than one dual-interface object — `chatProvider.modelName` and `embeddingsProvider.modelName` are semantically different fields that must never be confused (this is what `document_chunks.embedding_model` records per row).
+Recommended models (`is_recommended`, one per provider and kind) are the auto-fill defaults, see below. Adapters (`lib/ai/providers/{openai,anthropic,voyage,gemini}.ts`) wrap the Vercel AI SDK for chat streaming and the raw `openai`/`voyageai` SDKs for embeddings; chat and embeddings are separate objects, each carrying exactly one model id (`embeddingsProvider.modelName` is what `document_chunks.embedding_model` records per row).
 
-**1024 dimensions everywhere.** All three providers are pinned to 1024-dimensional vectors, matching `document_chunks.embedding vector(1024)`. This isn't arbitrary: Voyage (`voyage-3-large`/`voyage-4`, used for `anthropic`'s embeddings) only accepts `output_dimension` from `{256, 512, 1024, 2048}` — 1536 isn't in that set — and 1024 is Voyage's own default. OpenAI and Gemini both support truncating their native embedding output down to an arbitrary dimension, including 1024, so this is the one value usable by all three behind a single `vector(1024)` column with no migration needed on provider switch.
+**Embedding dimension comes from the catalog.** `document_chunks.embedding` is an untyped `vector`; every catalog dimension has its own partial HNSW index (on a `halfvec` cast above 2000 dims), and `match_document_chunks` only compares a question with chunks of the same model **and** dimension. Each adapter requests the catalog dimension, and `lib/ai/embed-batch.ts` rejects any returned vector of another length. Adding a model with a new dimension needs a migration that also adds its index.
 
-**Switching a provider requires re-ingesting documents.** Different embedding models produce incompatible vector spaces even at equal dimensionality — this is expected behavior, not a bug. `document_chunks.embedding_provider`/`embedding_model` record which provider/model produced each row, so a provider switch's "which documents need re-embedding" question has a real SQL answer.
+**The chat model can change at any time; the embedding model can't once the project has documents.** Vectors from different models are incompatible even at equal dimension — expected behavior, not a bug. Such a change is refused with `409 embedding_locked`; re-indexing a project into a new embedding model is not implemented yet. `document_chunks.embedding_provider`/`embedding_model` record which model produced each row, so "which documents need re-embedding" has a real SQL answer.
 
 ### Bring-your-own-key credentials (`lib/ai/credentials.ts`, `app/api/profile/ai-providers/route.ts`)
 
-Each signed-in user stores their own API key(s), encrypted at rest, and each **project** independently picks which of that user's connected providers it uses:
+Each signed-in user stores their own API key(s), encrypted at rest, and each **project** picks its models from the catalog, usable only with a connected key:
 
-- **`ai_provider_credentials`** — one encrypted row per `(user_id, provider)`, account-level. `provider ∈ {openai, anthropic, gemini, voyage}`; Voyage is a full independent row, since "Anthropic fully configured" means both an `anthropic` row and a `voyage` row exist.
-- **`projects.active_ai_provider`** — nullable, project-level, `CHECK`ed to never be `'voyage'`. `setActiveProvider()` refuses to activate a provider whose credential(s) aren't connected yet (`MissingProviderCredentialsError` → `400`), so this column can never point at something unusable.
-- **`app/api/profile/ai-providers/route.ts`** (account-level: connect/check/remove a key) and **`app/api/projects/{projectId}/model/route.ts`** (project-level: read/set which connected provider this project uses) are deliberately two separate routes — "connect a provider" is a user action, "which connected provider a project uses" is a per-project selection. The plaintext key is never echoed back, logged, or returned by `GET` — only booleans.
-- `getAIProviders()` throws `AIProviderError{kind:"no_credentials"}` (never a bare error) when a project has no active provider, or its owner's credential for that provider was deleted after being made active — callers map this to a clean `422`, not a `500`.
+- **`ai_provider_credentials`** — one encrypted row per `(user_id, provider)`, account-level. `provider ∈ {openai, anthropic, gemini, voyage}`.
+- **`projects.chat_model_id` / `embedding_model_id`** — nullable references into `ai_models`, kind-checked by composite foreign keys. `setProjectChatModel()`/`setProjectEmbeddingModel()` (`lib/ai/model-selection.ts`) refuse an unknown, wrong-kind or retired model (`400 invalid_model`), a model whose provider key isn't connected (`422 missing_credentials`) and a locked embedding change (`409 embedding_locked`). A retired model keeps working where it's already selected. The legacy `active_ai_provider`/`embedding_provider` columns are still written alongside, until a later migration drops them.
+- **Auto-fill** (`lib/ai/model-autofill.ts`): when the owner's keys leave exactly one provider for a kind (chat: OpenAI/Anthropic/Gemini; embeddings: OpenAI/Gemini/Voyage), an empty slot gets that provider's recommended model — after a key is saved (for all the user's projects), when a project is created, and when a project's model settings are read. A chosen model is never overwritten. Only an OpenAI key → both slots OpenAI; Anthropic + Voyage → Claude + Voyage; OpenAI + Anthropic → chat stays empty (ambiguous), embeddings OpenAI.
+- **`app/api/profile/ai-providers/route.ts`** (account-level: connect/check/remove a key) and **`app/api/projects/{projectId}/model/route.ts`** (project-level: read/set the project's models) are separate routes. The plaintext key is never echoed back, logged, or returned by `GET` — only booleans.
+- `getAIProviders()` throws `AIProviderError{kind:"no_credentials"}` (never a bare error) when a project has no chat/embedding model chosen, or the owner's key for a chosen model's provider was deleted — callers map this to a clean `422`, not a `500`.
 
 ### Credential encryption (`lib/crypto/secret-box.ts`)
 
@@ -290,15 +292,17 @@ GET    /api/projects/{id}                  -> 200 { project } | 404
 PATCH  /api/projects/{id} { name }         -> 200 { project } | 404 | 400
 DELETE /api/projects/{id}                  -> 200 { projectId, status } | 404 | 500 { error: "storage_cleanup_failed" }
 
-GET  /api/projects/{id}/model              -> 200 { activeProvider, configured }
-PUT  /api/projects/{id}/model { provider } -> 200 { activeProvider } | 400 { error: "missing_credentials", provider, missing }
+GET  /api/projects/{id}/model   -> 200 { chatModelId, embeddingModelId, embeddingLocked, configured, models }
+PUT  /api/projects/{id}/model { chatModelId } | { embeddingModelId }
+     -> 200 { chatModelId } | { embeddingModelId }
+      | 400 { error: "invalid_request" | "invalid_model", ... } | 409 embedding_locked | 422 missing_credentials
 
 POST/GET/DELETE /api/projects/{id}/channels/telegram   -- connect (registers the webhook via
   Telegram's own setWebhook API), status (live getWebhookInfo check, not a cached flag --
   see below), disconnect
 ```
 
-`ProjectDTO`: `{ id, name, activeAiProvider, documentCount, createdAt, updatedAt }`.
+`ProjectDTO`: `{ id, name, activeAiProvider, chatModelId, chatModelName, embeddingModelId, documentCount, createdAt, updatedAt }` — `activeAiProvider` and `chatModelName` come from the chat model's catalog row. `models` in `GET /model` lists the active catalog rows plus any selected retired one, by `sort_order`.
 
 **Deleting a project** walks the real `"<projectId>/<documentId>/<suffix>"` Storage convention directly (list, then remove every object found) **before** deleting the `projects` row, and leaves the row alone if the sweep fails — once the row is gone, nothing in the app remembers what used to live under that prefix, so a failed cleanup after that point would orphan objects permanently. `ON DELETE CASCADE` alone only removes DB rows, never Storage objects.
 
@@ -308,13 +312,13 @@ POST/GET/DELETE /api/projects/{id}/channels/telegram   -- connect (registers the
 
 Every protected page lives under `app/(app)/projects/[projectId]/**` except `/projects` itself (the landing page after login) and account-level `/profile`.
 
-- **`/projects`** — list/create/rename/delete, each card showing document count, active-model badge, Telegram-connected badge. Delete requires typing the project's exact name before the button enables.
+- **`/projects`** — list/create/rename/delete, each card showing document count, the chat model's name ("Работает на: …", same badge as the project header), Telegram-connected badge. Delete requires typing the project's exact name before the button enables.
 - **`/projects/[projectId]/{chat,documents,model,channels}`** — a shared sub-nav (`ProjectSubNav.tsx`) verifies project ownership once in the layout (missing-or-not-owned both render the same branded 404); every page below can assume the project is already verified.
   - **`chat`** — the streaming chat UI (`ChatView.tsx`, a hand-rolled SSE parser, `MessageBubble`/`SourceList`), plus a collapsible history panel of this project's own test-chat conversations.
   - **`documents`** — the source-adding UI (tab picker over upload/Notion/URL/Drive forms, each with inline instructions), document list with status badges and a **Refresh** button per document.
-  - **`model`** — reads/sets `active_ai_provider`; distinguishes "nothing connected at the account level" (banner pointing at `/profile`) from "a provider is connected but missing a paired credential" (e.g. `anthropic` without `voyage`) from a normal pick.
+  - **`model`** — two sections, chat model and embedding model, over `GET/PUT /api/projects/{id}/model`. In each the user first picks a provider (only providers with a saved key are enabled; the rest link to `/profile`), which immediately saves that provider's recommended model, then may pick another model of the same provider. Every model shows its context window, max output (chat), vector dimension (embeddings), price per 1M tokens (input/output for chat, input for embeddings) with the catalog's pricing date, and a "рекомендуемая" badge. Once the project has documents the embedding section is locked with an explanation (its vectors were built by that model; switching would need re-indexing every document, not available yet). A selected model whose provider key was deleted gets a warning with a `/profile` link; every PUT error (`invalid_model`, `embedding_locked`, `missing_credentials`, …) maps to its own Russian message. The display logic is pure and unit-tested (`lib/ui/model-catalog.ts`).
   - **`channels`** — connect/status/disconnect Telegram, plus a **read-only** list of this project's external-channel sessions with a per-conversation transcript (reusing the chat UI's own message/source components).
-- **`/profile`** — three provider cards (OpenAI; Anthropic+Voyage as one card with two key fields; Gemini) plus a read-only summary of which are configured. Never pre-fills a previously-saved key.
+- **`/profile`** — one key card per provider (OpenAI and Gemini: chat + embeddings; Anthropic: chat only; Voyage: embeddings only) plus a summary of whether the saved keys cover both model kinds. No model names here — models are picked per project. Never pre-fills a previously-saved key.
 - **Citations** render each source under an answer phrased by type ("на основе документа «X»" / "из Notion-страницы «X»" / "со страницы по ссылке X" / "из файла Google Drive «X»"), with a real deep link for `url`/`notion`/`google_drive` sources.
 - **`NoProviderModal`** (chat) and **`NoProviderNotice`** (documents page) both react to the same `422 { error: "no_credentials" }` contract and link to this project's `/model` page — a modal in chat (interrupts an in-progress conversation), an inline banner on the documents page (already a dedicated settings screen).
 - **Google OAuth sign-in** (`components/auth/GoogleSignInButton.tsx` + `app/auth/callback/route.ts`) is additive alongside the existing demo/email+password flow. The callback exchanges the OAuth code via `@supabase/ssr`'s `exchangeCodeForSession()` and only ever redirects to a fixed allow-list (`/`, `/projects`, `/profile`) — a crafted `?next=` value is never reflected into the `Location` header.
@@ -337,9 +341,9 @@ Separately, `lib/retrieval/search.ts`'s context budget (3000 estimated tokens) b
 
 ## `.env.example`
 
-Placeholders for every provider this project supports: `AI_PROVIDER`, `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `VOYAGE_API_KEY`, `GEMINI_API_KEY` (plus optional model-override vars), `NOTION_API_KEY`/`GOOGLE_SERVICE_ACCOUNT_JSON` (local-dev fallbacks only — the real per-user flow is `POST /api/sources/credentials`), `SUPABASE_AUTH_EXTERNAL_GOOGLE_CLIENT_ID`/`_SECRET` (Google OAuth sign-in, optional), `CREDENTIALS_ENCRYPTION_KEY`, and the three Supabase vars.
+Placeholders for every provider this project supports: `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `VOYAGE_API_KEY`, `GEMINI_API_KEY`, `NOTION_API_KEY`/`GOOGLE_SERVICE_ACCOUNT_JSON` (local-dev fallbacks only — the real per-user flow is `POST /api/sources/credentials`), `SUPABASE_AUTH_EXTERNAL_GOOGLE_CLIENT_ID`/`_SECRET` (Google OAuth sign-in, optional), `CREDENTIALS_ENCRYPTION_KEY`, and the three Supabase vars.
 
-`AI_PROVIDER`/`*_API_KEY` are kept for exactly one purpose: they feed `npm run seed:ai-keys`, which is how the seeded demo account gets its own per-user credentials at setup time. The running app never reads them at request time — every user's chat/ingestion runs on their own `ai_provider_credentials` row and their project's `active_ai_provider`. There is no global Telegram env var: bot tokens/webhook secrets are per-project, DB-stored (`channel_integrations`), connected via the app or `scripts/telegram-set-webhook.ts`.
+The `*_API_KEY` vars are kept for exactly one purpose: they feed `npm run seed:ai-keys`, which is how the seeded demo account gets its own per-user credentials at setup time. The running app never reads them — every user's chat/ingestion runs on their own `ai_provider_credentials` rows and their project's catalog models. There is no `AI_PROVIDER` or per-model env var. There is no global Telegram env var: bot tokens/webhook secrets are per-project, DB-stored (`channel_integrations`), connected via the app or `scripts/telegram-set-webhook.ts`.
 
 ## How to test each source manually
 

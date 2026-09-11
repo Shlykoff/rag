@@ -1,97 +1,48 @@
 // lib/ai/providers/openai.ts
 //
-// Chat + embeddings adapter for any OpenAI-Chat-Completions-API-compatible
-// backend. This file is one of the few places in the codebase allowed to
-// import the `openai` / `@ai-sdk/openai` SDKs directly (see CLAUDE.md rule
-// 4 and lib/ai/index.ts).
+// Chat and embeddings adapters for any OpenAI-API-compatible backend. One of
+// the few places allowed to import the `openai` / `@ai-sdk/openai` SDKs
+// directly (CLAUDE.md rule 4).
 //
-// providers/gemini.ts constructs this exact class again, pointed at
-// Google's OpenAI-compatible endpoint via `baseURL` -- see the comment
-// there for why that's a deliberate reuse (Google officially supports the
-// OpenAI Chat Completions + Embeddings wire format), not a copy-paste
-// mistake.
+// providers/gemini.ts constructs these same classes, pointed at Google's
+// OpenAI-compatible endpoint via `baseURL` -- a deliberate reuse (Google
+// officially supports the OpenAI Chat Completions + Embeddings wire format),
+// not a copy-paste mistake.
 
 import OpenAI from "openai";
 import { createOpenAI } from "@ai-sdk/openai";
 import { streamText } from "ai";
-import type {
-  ChatMessage,
-  ChatProvider,
-  ChatStreamResult,
-  EmbeddingsProvider,
-} from "../types";
+import type { ChatMessage, ChatProvider, ChatStreamResult, EmbeddingsProvider } from "../types";
 import { embedInBatches } from "../embed-batch";
 import { fromStreamTextResult, logStreamError, wrapAiSdkStream } from "../stream-utils";
 
-/** Fixed project-wide so pgvector's `vector(1024)` column works unchanged across providers (see CLAUDE.md) -- 1024 is Voyage's own default and the common denominator across all three providers' supported dimensions. */
-export const OPENAI_EMBEDDING_DIMENSIONS = 1024;
-
-/** OpenAI accepts up to 2048 inputs per embeddings call; we batch well under that so a single bad chunk (see embed-batch.ts bisection) doesn't force retrying a huge batch. */
+/** OpenAI accepts up to 2048 inputs per call; smaller batches keep embed-batch.ts's bisection of a failing batch cheap. */
 const EMBEDDING_BATCH_SIZE = 100;
 
-export interface OpenAICompatibleConfig {
-  /** Machine-readable provider id used in usage_events.provider / error messages. Defaults to 'openai'; providers/gemini.ts passes 'gemini' when reusing this class. */
+export interface OpenAICompatibleClientConfig {
+  /** usage_events.provider / error label. Defaults to 'openai'; providers/gemini.ts passes 'gemini'. */
   providerName?: string;
   apiKey: string;
-  /** Overrides the OpenAI API base URL -- this is the hook providers/gemini.ts uses to point this same class at Google's OpenAI-compatible endpoint instead of api.openai.com. */
+  /** Points the same client at another compatible backend (Google's endpoint, see providers/gemini.ts). */
   baseURL?: string;
-  chatModel: string;
-  embeddingModel: string;
 }
 
-/**
- * Internal implementation shared by the chat-role and embeddings-role views
- * returned by createOpenAICompatiblePair() below. Deliberately not exported
- * and does not `implements ChatProvider, EmbeddingsProvider` itself.
- *
- * Why: ChatProvider.modelName and EmbeddingsProvider.modelName are two
- * semantically different fields (chat model vs. embedding model) that
- * happen to share the same `string` type -- TypeScript's structural typing
- * can't say "this field means X through interface A and Y through
- * interface B" on one object. A single object implementing both interfaces
- * would let `embeddingsProvider.modelName` silently read back the chat
- * model (e.g. into document_chunks.embedding_model). This class is never
- * handed out directly: createOpenAICompatiblePair() returns two distinct
- * thin views, each with its own correct `modelName`, both delegating to one
- * shared instance of this class so there's still exactly one HTTP client /
- * API key / baseURL per process.
- */
-class OpenAICompatibleCore {
+export class OpenAICompatibleChatProvider implements ChatProvider {
   readonly providerName: string;
-  readonly chatModelName: string;
-  readonly embeddingModelName: string;
-  readonly dimensions = OPENAI_EMBEDDING_DIMENSIONS;
-  private readonly rawClient: OpenAI;
+  readonly modelName: string;
   private readonly aiSdk: ReturnType<typeof createOpenAI>;
 
-  constructor(config: OpenAICompatibleConfig) {
+  constructor(config: OpenAICompatibleClientConfig & { model: string }) {
     this.providerName = config.providerName ?? "openai";
-    this.chatModelName = config.chatModel;
-    this.embeddingModelName = config.embeddingModel;
-    // maxRetries: 0 -- lib/ai/retry.ts and lib/ai/stream-utils.ts are the
-    // single retry layer for this project (consistent backoff, consistent
-    // AIProviderError shape); the vendor SDK's own built-in retry would
-    // otherwise silently retry underneath ours with different timing.
-    this.rawClient = new OpenAI({
-      apiKey: config.apiKey,
-      baseURL: config.baseURL,
-      maxRetries: 0,
-    });
+    this.modelName = config.model;
     this.aiSdk = createOpenAI({ apiKey: config.apiKey, baseURL: config.baseURL });
   }
 
-  streamChat({
-    systemPrompt,
-    messages,
-  }: {
-    systemPrompt: string;
-    messages: ChatMessage[];
-  }): ChatStreamResult {
-    // `.chat(...)` explicitly selects the Chat Completions API rather than
-    // OpenAI's newer Responses API -- required for Gemini's compatible
-    // endpoint, which only implements Chat Completions, and kept the same
-    // for the real OpenAI adapter so both code paths behave identically.
-    const model = this.aiSdk.chat(this.chatModelName);
+  streamChat({ systemPrompt, messages }: { systemPrompt: string; messages: ChatMessage[] }): ChatStreamResult {
+    // `.chat(...)` selects Chat Completions rather than the Responses API:
+    // Gemini's compatible endpoint only implements Chat Completions, and real
+    // OpenAI uses the same path so both behave identically.
+    const model = this.aiSdk.chat(this.modelName);
     return wrapAiSdkStream(
       () =>
         fromStreamTextResult(
@@ -99,34 +50,44 @@ class OpenAICompatibleCore {
             model,
             system: systemPrompt,
             messages,
-            maxRetries: 0, // see the constructor comment: our own retry wrapper is the only retry layer
+            maxRetries: 0, // lib/ai/stream-utils.ts is the only retry layer
             onError: logStreamError(this.providerName),
           })
         ),
       { provider: this.providerName }
     );
   }
+}
 
-  async embed(texts: string[]): Promise<number[][]> {
+export class OpenAICompatibleEmbeddingsProvider implements EmbeddingsProvider {
+  readonly providerName: string;
+  readonly modelName: string;
+  readonly dimensions: number;
+  private readonly client: OpenAI;
+
+  constructor(config: OpenAICompatibleClientConfig & { model: string; dimensions: number }) {
+    this.providerName = config.providerName ?? "openai";
+    this.modelName = config.model;
+    this.dimensions = config.dimensions;
+    // maxRetries: 0 -- lib/ai/retry.ts is the only retry layer (one backoff
+    // policy, one error shape); SDK retries would stack underneath it.
+    this.client = new OpenAI({ apiKey: config.apiKey, baseURL: config.baseURL, maxRetries: 0 });
+  }
+
+  embed(texts: string[]): Promise<number[][]> {
     return embedInBatches(texts, {
       provider: this.providerName,
       batchSize: EMBEDDING_BATCH_SIZE,
       dimensions: this.dimensions,
       callBatch: async (batch) => {
-        // `dimensions` pins every provider to the same 1024-wide vector
-        // space (see CLAUDE.md). For real OpenAI this is the native
-        // `dimensions` request field; when this class is reused by
-        // providers/gemini.ts, Google maps the same field to Gemini's
-        // native `output_dimensionality` parameter.
-        const response = await this.rawClient.embeddings.create({
-          model: this.embeddingModelName,
+        const response = await this.client.embeddings.create({
+          model: this.modelName,
           input: batch,
           dimensions: this.dimensions,
         });
-        // Defensively sort by `.index`: OpenAI documents the response as
-        // matching input order, but nothing stops a third-party
-        // OpenAI-compatible backend (Gemini) from reordering, and we'd
-        // rather pay a `.sort()` than silently misalign chunk<->vector.
+        // Sorted by `.index`: a compatible backend (Gemini) isn't bound by
+        // OpenAI's input-order guarantee, and a misaligned chunk/vector pair
+        // would be silent.
         return response.data
           .slice()
           .sort((a, b) => a.index - b.index)
@@ -134,34 +95,4 @@ class OpenAICompatibleCore {
       },
     });
   }
-}
-
-/**
- * The only supported way to get a {chatProvider, embeddingsProvider} pair
- * backed by an OpenAI-Chat-Completions-API-compatible endpoint (real OpenAI,
- * or -- via providers/gemini.ts -- Google's OpenAI-compatible endpoint).
- * Constructs exactly ONE OpenAICompatibleCore (one HTTP client, one API
- * key/baseURL pair) and returns two independent, correctly-labeled views
- * over it -- see the OpenAICompatibleCore class comment for why this is two
- * objects instead of one dual-interface object.
- */
-export function createOpenAICompatiblePair(
-  config: OpenAICompatibleConfig
-): { chatProvider: ChatProvider; embeddingsProvider: EmbeddingsProvider } {
-  const core = new OpenAICompatibleCore(config);
-
-  const chatProvider: ChatProvider = {
-    providerName: core.providerName,
-    modelName: core.chatModelName,
-    streamChat: (input) => core.streamChat(input),
-  };
-
-  const embeddingsProvider: EmbeddingsProvider = {
-    providerName: core.providerName,
-    modelName: core.embeddingModelName,
-    dimensions: core.dimensions,
-    embed: (texts) => core.embed(texts),
-  };
-
-  return { chatProvider, embeddingsProvider };
 }

@@ -1,33 +1,46 @@
 // lib/ai/__tests__/index.test.ts
 //
-// getAIProviders()/getEmbeddingsProvider() build providers from a project's
-// two settings (chat model + embedding model) and its owner's keys. The
-// DB-backed credential lookup is mocked; the provider adapters are real, so
-// the chat/embeddings modelName separation is exercised for real.
+// getAIProviders()/getEmbeddingsProvider() build adapters from the
+// project's two catalog rows (provider, model id, dimensions) and its
+// owner's keys. Catalog and key lookups are mocked; the adapters are real.
 
 import { afterEach, describe, expect, it, vi } from "vitest";
-
-const mockGetActiveProvider = vi.fn();
-const mockGetAIProviderCredential = vi.fn();
-
-vi.mock("../credentials", () => ({
-  getActiveProvider: (...args: unknown[]) => mockGetActiveProvider(...args),
-  getAIProviderCredential: (...args: unknown[]) => mockGetAIProviderCredential(...args),
-}));
-
-import { getAIProviders, getEmbeddingsProvider, getActiveProviderLabel, type ProjectAIConfigRow } from "../index";
-import { AIProviderError } from "../errors";
 import type { SupabaseClient } from "@supabase/supabase-js";
+import { aiModel, FIXTURE_CATALOG, fixtureModel } from "../../testing/ai-model-fixtures";
+import type { AIModel } from "../catalog";
+
+const RETIRED_CHAT = aiModel({ provider: "openai", modelId: "gpt-retired", kind: "chat", isActive: false });
+const MODELS: AIModel[] = [...FIXTURE_CATALOG, RETIRED_CHAT];
+
+const mockGetAIProviderCredential = vi.fn();
+const mockGetAIModel = vi.fn(async (_supabase: unknown, id: string) => MODELS.find((m) => m.id === id) ?? null);
+
+vi.mock("../credentials", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../credentials")>();
+  return { ...actual, getAIProviderCredential: (...args: unknown[]) => mockGetAIProviderCredential(...args) };
+});
+
+vi.mock("../catalog", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../catalog")>();
+  return { ...actual, getAIModel: (supabase: unknown, id: string) => mockGetAIModel(supabase, id) };
+});
+
+import { getAIProviders, getEmbeddingsProvider, getProviderLabel, type ProjectAIConfigRow } from "../index";
+import { AIProviderError } from "../errors";
 
 const PROJECT_ID = "project-1";
 const OWNER_ID = "owner-1";
 
-function projectRow(overrides: Partial<ProjectAIConfigRow> = {}): ProjectAIConfigRow {
-  return { id: PROJECT_ID, user_id: OWNER_ID, active_ai_provider: "openai", embedding_provider: "openai", ...overrides };
+function projectRow(chatModelId: string | null, embeddingModelId: string | null, userId = OWNER_ID): ProjectAIConfigRow {
+  return { id: PROJECT_ID, user_id: userId, chat_model_id: chatModelId, embedding_model_id: embeddingModelId };
 }
 
-/** Only `.from("projects")` is queried by getAIProviders() itself; credentials are mocked above. */
-function fakeSupabase(project: ProjectAIConfigRow | null) {
+function projectWith(chat: string | null, embedding: string | null, userId = OWNER_ID): ProjectAIConfigRow {
+  return projectRow(chat === null ? null : fixtureModel(chat).id, embedding === null ? null : fixtureModel(embedding).id, userId);
+}
+
+/** Only `.from("projects")` is queried directly; catalog and keys are mocked above. */
+function fakeSupabase(project: ProjectAIConfigRow | null): SupabaseClient {
   return {
     from(table: string) {
       if (table !== "projects") throw new Error(`fakeSupabase: unexpected table ${table}`);
@@ -41,8 +54,14 @@ function fakeSupabase(project: ProjectAIConfigRow | null) {
         maybeSingle: async () => ({ data: project, error: null }),
       };
     },
-  } as never;
+  } as unknown as SupabaseClient;
 }
+
+const noQueries = {
+  from() {
+    throw new Error("must not query projects when preFetchedProjectRow is given");
+  },
+} as unknown as SupabaseClient;
 
 function withKeys(keys: Partial<Record<string, string>>) {
   mockGetAIProviderCredential.mockImplementation(
@@ -50,230 +69,155 @@ function withKeys(keys: Partial<Record<string, string>>) {
   );
 }
 
-async function expectNoCredentials(promise: Promise<unknown>) {
+async function expectNoCredentials(promise: Promise<unknown>): Promise<AIProviderError> {
   const err = await promise.catch((e: unknown) => e);
   expect(err).toBeInstanceOf(AIProviderError);
   expect((err as AIProviderError).kind).toBe("no_credentials");
   expect((err as AIProviderError).retryable).toBe(false);
+  return err as AIProviderError;
 }
 
-const ENV_KEYS = ["OPENAI_CHAT_MODEL", "OPENAI_EMBEDDING_MODEL", "GEMINI_CHAT_MODEL", "GEMINI_EMBEDDING_MODEL"] as const;
-let savedEnv: Partial<Record<(typeof ENV_KEYS)[number], string | undefined>> = {};
+const params = { projectId: PROJECT_ID, ownerUserId: OWNER_ID };
 
-function clearModelEnv() {
-  savedEnv = {};
-  for (const key of ENV_KEYS) {
-    savedEnv[key] = process.env[key];
-    delete process.env[key];
-  }
-}
+afterEach(() => vi.clearAllMocks());
 
-function restoreModelEnv() {
-  for (const key of ENV_KEYS) {
-    const value = savedEnv[key];
-    if (value === undefined) delete process.env[key];
-    else process.env[key] = value;
-  }
-}
-
-describe("getAIProviders({projectId, ownerUserId}, supabase)", () => {
-  afterEach(() => {
-    restoreModelEnv();
-    vi.clearAllMocks();
-  });
-
-  it("throws a plain Error when the project doesn't belong to ownerUserId, before touching any credential", async () => {
-    clearModelEnv();
-    const supabase = fakeSupabase(projectRow({ user_id: "someone-else" }));
-
-    await expect(getAIProviders({ projectId: PROJECT_ID, ownerUserId: OWNER_ID }, supabase)).rejects.toThrow(
-      /does not exist or does not belong to user/
-    );
+describe("getAIProviders", () => {
+  it("throws a plain Error when the project doesn't belong to ownerUserId, before any lookup", async () => {
+    await expect(
+      getAIProviders(params, fakeSupabase(projectWith("gpt-5.6-luna", "text-embedding-3-small", "someone-else")))
+    ).rejects.toThrow(/does not exist or does not belong to user/);
+    expect(mockGetAIModel).not.toHaveBeenCalled();
     expect(mockGetAIProviderCredential).not.toHaveBeenCalled();
   });
 
-  it("throws no_credentials when the project has no chat model chosen, without loading any key", async () => {
-    clearModelEnv();
-    await expectNoCredentials(
-      getAIProviders({ projectId: PROJECT_ID, ownerUserId: OWNER_ID }, fakeSupabase(projectRow({ active_ai_provider: null })))
-    );
+  it("no chat model chosen -> no_credentials asking to choose one, without any catalog or key lookup", async () => {
+    const err = await expectNoCredentials(getAIProviders(params, fakeSupabase(projectWith(null, "text-embedding-3-small"))));
+    expect(err.userMessage).toMatch(/Выберите модель чата в настройках проекта/);
+    expect(mockGetAIModel).not.toHaveBeenCalled();
     expect(mockGetAIProviderCredential).not.toHaveBeenCalled();
   });
 
-  it("throws no_credentials when the project has no embedding model chosen", async () => {
-    clearModelEnv();
-    withKeys({ openai: "test-openai-key" });
-    await expectNoCredentials(
-      getAIProviders({ projectId: PROJECT_ID, ownerUserId: OWNER_ID }, fakeSupabase(projectRow({ embedding_provider: null })))
-    );
+  it("no embedding model chosen -> no_credentials asking to choose one", async () => {
+    withKeys({ openai: "k" });
+    const err = await expectNoCredentials(getAIProviders(params, fakeSupabase(projectWith("gpt-5.6-luna", null))));
+    expect(err.userMessage).toMatch(/Выберите модель эмбеддингов в настройках проекта/);
   });
 
-  it("throws no_credentials when the chat provider's key is missing", async () => {
-    clearModelEnv();
+  it("missing key for the chat model's provider -> no_credentials", async () => {
     withKeys({});
-    await expectNoCredentials(getAIProviders({ projectId: PROJECT_ID, ownerUserId: OWNER_ID }, fakeSupabase(projectRow())));
+    const err = await expectNoCredentials(
+      getAIProviders(params, fakeSupabase(projectWith("gpt-5.6-luna", "text-embedding-3-small")))
+    );
+    expect(err.userMessage).toMatch(/OpenAI/);
     expect(mockGetAIProviderCredential).toHaveBeenCalledWith(expect.anything(), OWNER_ID, "openai");
   });
 
-  it("throws no_credentials when the embedding provider's key is missing", async () => {
-    clearModelEnv();
-    withKeys({ anthropic: "test-anthropic-key" });
-    await expectNoCredentials(
-      getAIProviders(
-        { projectId: PROJECT_ID, ownerUserId: OWNER_ID },
-        fakeSupabase(projectRow({ active_ai_provider: "anthropic", embedding_provider: "voyage" }))
-      )
-    );
+  it("missing key for the embedding model's provider -> no_credentials", async () => {
+    withKeys({ anthropic: "k" });
+    await expectNoCredentials(getAIProviders(params, fakeSupabase(projectWith("claude-opus-5", "voyage-4-large"))));
+    expect(mockGetAIProviderCredential).toHaveBeenCalledWith(expect.anything(), OWNER_ID, "voyage");
   });
 
-  // Guards the two-distinct-views design in providers/openai.ts: a single
-  // dual-interface object would let `embeddingsProvider.modelName` silently
-  // return the chat model, which ingestion writes into
-  // document_chunks.embedding_model.
-  it("openai + openai: distinct objects with distinct, correct model names", async () => {
-    clearModelEnv();
-    withKeys({ openai: "test-openai-key" });
+  it("openai chat + openai embeddings: model ids and dimension come from the catalog rows", async () => {
+    withKeys({ openai: "k" });
 
     const { chatProvider, embeddingsProvider } = await getAIProviders(
-      { projectId: PROJECT_ID, ownerUserId: OWNER_ID },
-      fakeSupabase(projectRow())
+      params,
+      fakeSupabase(projectWith("gpt-4.1-mini", "text-embedding-3-small"))
     );
 
-    expect(chatProvider).not.toBe(embeddingsProvider);
-    expect(chatProvider.modelName).toBe("gpt-4.1-mini");
-    expect(embeddingsProvider.modelName).toBe("text-embedding-3-small");
-    expect(chatProvider.providerName).toBe("openai");
-    expect(embeddingsProvider.providerName).toBe("openai");
+    expect(chatProvider).toMatchObject({ providerName: "openai", modelName: "gpt-4.1-mini" });
+    expect(embeddingsProvider).toMatchObject({ providerName: "openai", modelName: "text-embedding-3-small", dimensions: 1536 });
   });
 
-  it("gemini + gemini: distinct objects with distinct, correct model names", async () => {
-    clearModelEnv();
-    withKeys({ gemini: "test-gemini-key" });
+  it("gemini chat + gemini embeddings at 3072 dimensions", async () => {
+    withKeys({ gemini: "k" });
 
     const { chatProvider, embeddingsProvider } = await getAIProviders(
-      { projectId: PROJECT_ID, ownerUserId: OWNER_ID },
-      fakeSupabase(projectRow({ active_ai_provider: "gemini", embedding_provider: "gemini" }))
+      params,
+      fakeSupabase(projectWith("gemini-3.8-flash", "gemini-embedding-001"))
     );
 
-    expect(chatProvider.modelName).toBe("gemini-3.6-flash");
-    expect(embeddingsProvider.modelName).toBe("gemini-embedding-001");
-    expect(chatProvider.providerName).toBe("gemini");
-    expect(embeddingsProvider.providerName).toBe("gemini");
+    expect(chatProvider).toMatchObject({ providerName: "gemini", modelName: "gemini-3.8-flash" });
+    expect(embeddingsProvider).toMatchObject({ providerName: "gemini", modelName: "gemini-embedding-001", dimensions: 3072 });
+  });
+
+  it("anthropic chat + voyage embeddings at 1024 dimensions", async () => {
+    withKeys({ anthropic: "k", voyage: "v" });
+
+    const { chatProvider, embeddingsProvider } = await getAIProviders(
+      params,
+      fakeSupabase(projectWith("claude-opus-5", "voyage-4-large"))
+    );
+
+    expect(chatProvider).toMatchObject({ providerName: "anthropic", modelName: "claude-opus-5" });
+    expect(embeddingsProvider).toMatchObject({ providerName: "voyage", modelName: "voyage-4-large", dimensions: 1024 });
   });
 
   it("anthropic chat pairs with any embedding provider -- here Gemini, no Voyage key needed", async () => {
-    clearModelEnv();
-    withKeys({ anthropic: "test-anthropic-key", gemini: "test-gemini-key" });
+    withKeys({ anthropic: "k", gemini: "g" });
 
-    const { chatProvider, embeddingsProvider } = await getAIProviders(
-      { projectId: PROJECT_ID, ownerUserId: OWNER_ID },
-      fakeSupabase(projectRow({ active_ai_provider: "anthropic", embedding_provider: "gemini" }))
-    );
+    const { embeddingsProvider } = await getAIProviders(params, fakeSupabase(projectWith("claude-opus-5", "gemini-embedding-001")));
 
-    expect(chatProvider.providerName).toBe("anthropic");
     expect(embeddingsProvider.providerName).toBe("gemini");
     expect(mockGetAIProviderCredential).not.toHaveBeenCalledWith(expect.anything(), OWNER_ID, "voyage");
   });
 
-  it("anthropic chat + voyage embeddings", async () => {
-    clearModelEnv();
-    withKeys({ anthropic: "test-anthropic-key", voyage: "test-voyage-key" });
+  it("a retired model that is still selected keeps working", async () => {
+    withKeys({ openai: "k" });
+    const project = projectRow(RETIRED_CHAT.id, fixtureModel("text-embedding-3-small").id);
 
-    const { chatProvider, embeddingsProvider } = await getAIProviders(
-      { projectId: PROJECT_ID, ownerUserId: OWNER_ID },
-      fakeSupabase(projectRow({ active_ai_provider: "anthropic", embedding_provider: "voyage" }))
-    );
+    const { chatProvider } = await getAIProviders(params, fakeSupabase(project));
 
-    expect(chatProvider.providerName).toBe("anthropic");
-    expect(embeddingsProvider.providerName).toBe("voyage");
+    expect(chatProvider.modelName).toBe("gpt-retired");
   });
 
-  it("skips its own projects fetch when preFetchedProjectRow is given, but still enforces the ownership guard", async () => {
-    clearModelEnv();
-    withKeys({ openai: "test-openai-key" });
-    const supabaseThatMustNotBeQueried = {
-      from() {
-        throw new Error("getAIProviders must not re-fetch the projects row when preFetchedProjectRow is given");
-      },
-    } as unknown as SupabaseClient;
+  it("a model id missing from the catalog is a plain Error, not no_credentials", async () => {
+    withKeys({ openai: "k" });
+    const project = projectRow("99999999-9999-4999-8999-999999999999", fixtureModel("text-embedding-3-small").id);
+
+    const err = await getAIProviders(params, fakeSupabase(project)).catch((e: unknown) => e);
+
+    expect(err).toBeInstanceOf(Error);
+    expect(err).not.toBeInstanceOf(AIProviderError);
+  });
+
+  it("uses preFetchedProjectRow without querying projects, still enforcing ownership", async () => {
+    withKeys({ openai: "k" });
 
     const { chatProvider } = await getAIProviders(
-      { projectId: PROJECT_ID, ownerUserId: OWNER_ID, preFetchedProjectRow: projectRow() },
-      supabaseThatMustNotBeQueried
+      { ...params, preFetchedProjectRow: projectWith("gpt-5.6-luna", "text-embedding-3-small") },
+      noQueries
     );
-    expect(chatProvider.providerName).toBe("openai");
-  });
-
-  it("still rejects a preFetchedProjectRow whose user_id doesn't match ownerUserId", async () => {
-    clearModelEnv();
-    const supabaseThatMustNotBeQueried = {
-      from() {
-        throw new Error("must not be queried");
-      },
-    } as unknown as SupabaseClient;
+    expect(chatProvider.modelName).toBe("gpt-5.6-luna");
 
     await expect(
       getAIProviders(
-        { projectId: PROJECT_ID, ownerUserId: OWNER_ID, preFetchedProjectRow: projectRow({ user_id: "someone-else" }) },
-        supabaseThatMustNotBeQueried
+        { ...params, preFetchedProjectRow: projectWith("gpt-5.6-luna", "text-embedding-3-small", "someone-else") },
+        noQueries
       )
-    ).rejects.toThrow(/does not exist or does not belong to user/);
-    expect(mockGetAIProviderCredential).not.toHaveBeenCalled();
-  });
-
-  it("an overridden OPENAI_EMBEDDING_MODEL shows up on embeddingsProvider, not chatProvider", async () => {
-    clearModelEnv();
-    process.env.OPENAI_CHAT_MODEL = "gpt-4.1-mini";
-    process.env.OPENAI_EMBEDDING_MODEL = "text-embedding-3-large";
-    withKeys({ openai: "test-openai-key" });
-
-    const { chatProvider, embeddingsProvider } = await getAIProviders(
-      { projectId: PROJECT_ID, ownerUserId: OWNER_ID },
-      fakeSupabase(projectRow())
-    );
-
-    expect(chatProvider.modelName).toBe("gpt-4.1-mini");
-    expect(embeddingsProvider.modelName).toBe("text-embedding-3-large");
+    ).rejects.toThrow(/does not belong to user/);
   });
 });
 
-describe("getEmbeddingsProvider({projectId, ownerUserId}, supabase)", () => {
-  afterEach(() => {
-    restoreModelEnv();
-    vi.clearAllMocks();
-  });
+describe("getEmbeddingsProvider", () => {
+  it("needs only the embedding model -- works with no chat model chosen", async () => {
+    withKeys({ voyage: "v" });
 
-  it("needs only the embedding model -- works for a project with no chat model chosen yet", async () => {
-    clearModelEnv();
-    withKeys({ gemini: "test-gemini-key" });
+    const embeddingsProvider = await getEmbeddingsProvider(params, fakeSupabase(projectWith(null, "voyage-4-large")));
 
-    const embeddingsProvider = await getEmbeddingsProvider(
-      { projectId: PROJECT_ID, ownerUserId: OWNER_ID },
-      fakeSupabase(projectRow({ active_ai_provider: null, embedding_provider: "gemini" }))
-    );
-
-    expect(embeddingsProvider.providerName).toBe("gemini");
-    expect(embeddingsProvider.modelName).toBe("gemini-embedding-001");
+    expect(embeddingsProvider).toMatchObject({ providerName: "voyage", modelName: "voyage-4-large", dimensions: 1024 });
   });
 
   it("throws no_credentials when no embedding model is chosen", async () => {
-    clearModelEnv();
-    await expectNoCredentials(
-      getEmbeddingsProvider({ projectId: PROJECT_ID, ownerUserId: OWNER_ID }, fakeSupabase(projectRow({ embedding_provider: null })))
-    );
+    await expectNoCredentials(getEmbeddingsProvider(params, fakeSupabase(projectWith("gpt-5.6-luna", null))));
   });
 });
 
-describe("getActiveProviderLabel(projectId, supabase)", () => {
-  afterEach(() => vi.clearAllMocks());
-
-  it("returns null (never throws) when the project has no chat provider", async () => {
-    mockGetActiveProvider.mockResolvedValue(null);
-    expect(await getActiveProviderLabel(PROJECT_ID, fakeSupabase(projectRow()))).toBeNull();
-  });
-
-  it("returns the registry's display label for the project's chat provider", async () => {
-    mockGetActiveProvider.mockResolvedValue("gemini");
-    expect(await getActiveProviderLabel(PROJECT_ID, fakeSupabase(projectRow()))).toBe("Google Gemini");
+describe("getProviderLabel", () => {
+  it("labels every credential provider and nothing else", () => {
+    expect(getProviderLabel("gemini")).toBe("Google Gemini");
+    expect(getProviderLabel("voyage")).toBe("Voyage AI");
+    expect(getProviderLabel("not-a-provider")).toBeUndefined();
   });
 });

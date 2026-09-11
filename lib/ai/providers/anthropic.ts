@@ -1,15 +1,10 @@
 // lib/ai/providers/anthropic.ts
 //
-// Chat-only adapter: Anthropic has no embeddings API of its own, so
-// AI_PROVIDER=anthropic always pairs this ChatProvider with Voyage's
-// EmbeddingsProvider (providers/voyage.ts) -- wired together in
-// lib/ai/index.ts, never inside this file.
+// Chat-only adapter: Anthropic has no embeddings API, so a project chatting
+// with Claude picks its embedding model separately (see lib/ai/index.ts).
 //
-// This uses `@ai-sdk/anthropic`, which implements the Anthropic Messages
-// API streaming protocol itself (it does not wrap `@anthropic-ai/sdk`
-// internally) -- so there's no separate raw Anthropic SDK dependency here,
-// consistent with CLAUDE.md's "адаптеры оборачивают официальные
-// провайдер-пакеты Vercel AI SDK, а не пишут стриминг с нуля".
+// Uses `@ai-sdk/anthropic`, which implements the Messages API streaming
+// protocol itself -- no separate `@anthropic-ai/sdk` dependency.
 
 import { createAnthropic } from "@ai-sdk/anthropic";
 import { streamText } from "ai";
@@ -18,7 +13,7 @@ import { fromStreamTextResult, logStreamError, wrapAiSdkStream } from "../stream
 
 export interface AnthropicConfig {
   apiKey: string;
-  chatModel: string;
+  model: string;
 }
 
 export class AnthropicChatProvider implements ChatProvider {
@@ -27,17 +22,11 @@ export class AnthropicChatProvider implements ChatProvider {
   private readonly aiSdk: ReturnType<typeof createAnthropic>;
 
   constructor(config: AnthropicConfig) {
-    this.modelName = config.chatModel;
+    this.modelName = config.model;
     this.aiSdk = createAnthropic({ apiKey: config.apiKey });
   }
 
-  streamChat({
-    systemPrompt,
-    messages,
-  }: {
-    systemPrompt: string;
-    messages: ChatMessage[];
-  }): ChatStreamResult {
+  streamChat({ systemPrompt, messages }: { systemPrompt: string; messages: ChatMessage[] }): ChatStreamResult {
     const model = this.aiSdk.chat(this.modelName);
     return wrapAiSdkStream(
       () =>
@@ -46,7 +35,7 @@ export class AnthropicChatProvider implements ChatProvider {
             model,
             system: systemPrompt,
             messages,
-            maxRetries: 0, // lib/ai/stream-utils.ts is the single retry layer -- see providers/openai.ts constructor comment for the same reasoning
+            maxRetries: 0, // lib/ai/stream-utils.ts is the only retry layer
             onError: logStreamError(this.providerName),
           })
         ),

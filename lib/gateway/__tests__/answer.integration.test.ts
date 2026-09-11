@@ -77,8 +77,7 @@ function fakeChatProvider({ chunks, waitFor }: FakeChatProviderOptions) {
   };
 }
 
-// Real dimensionality (1024, matching document_chunks.embedding
-// vector(1024)) and a FIXED, deterministic vector (see
+// A 1024-dim (any catalog dimension would do) FIXED, deterministic vector (see
 // lib/testing/integration-helpers.ts's deterministicVector) -- every
 // beforeEach below inserts a real document_chunks row with this EXACT SAME
 // vector, so cosine similarity between the query embedding and that stored

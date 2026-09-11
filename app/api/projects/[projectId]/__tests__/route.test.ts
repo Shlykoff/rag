@@ -46,19 +46,27 @@ function makeParams(projectId: string): { params: Promise<{ projectId: string }>
   return { params: Promise.resolve({ projectId }) };
 }
 
+const CHAT_MODEL_ID = "22222222-2222-4222-8222-222222222222";
+const EMBEDDING_MODEL_ID = "33333333-3333-4333-8333-333333333333";
+
 const SAMPLE_ROW = {
   id: "11111111-1111-4111-8111-111111111111",
   name: "бот1",
-  active_ai_provider: "openai" as const,
+  chat_model_id: CHAT_MODEL_ID,
+  embedding_model_id: EMBEDDING_MODEL_ID,
   created_at: "2026-01-01T00:00:00Z",
   updated_at: "2026-01-02T00:00:00Z",
   documents: [{ count: 2 }],
+  chat_model: { display_name: "GPT-5.6 Luna", provider: "openai" as const },
 };
 
 const SAMPLE_DTO = {
   id: "11111111-1111-4111-8111-111111111111",
   name: "бот1",
   activeAiProvider: "openai",
+  chatModelId: CHAT_MODEL_ID,
+  chatModelName: "GPT-5.6 Luna",
+  embeddingModelId: EMBEDDING_MODEL_ID,
   documentCount: 2,
   createdAt: "2026-01-01T00:00:00Z",
   updatedAt: "2026-01-02T00:00:00Z",
