@@ -33,6 +33,7 @@ vi.mock("../../ai", () => ({
 }));
 
 import { ingestDocumentWithDefaultProviders } from "../ingest";
+import { AIProviderError } from "../../ai/errors";
 import type { NormalizedDocument } from "../ingest";
 
 interface DocumentRow {
@@ -97,7 +98,13 @@ describe("ingestDocumentWithDefaultProviders", () => {
     });
     mockGetServiceRoleClient.mockReturnValue(supabase);
     mockGetEmbeddingsProvider.mockRejectedValue(
-      new Error("getAIProviders: project project-1 has no active_ai_provider set.")
+      new AIProviderError({
+        provider: "none",
+        kind: "no_credentials",
+        retryable: false,
+        message: "getAIProviders: project project-1 has no active_ai_provider set.",
+        userMessage: "Добавьте и выберите AI-провайдера для этого проекта.",
+      })
     );
 
     await expect(ingestDocumentWithDefaultProviders(baseDoc)).rejects.toThrow(/active_ai_provider/);
@@ -119,7 +126,7 @@ describe("ingestDocumentWithDefaultProviders", () => {
     expect(documentUpdates[0].id).toBe("doc-1");
     expect(documentUpdates[0].payload.processing_status).toBe("error");
     expect(documentUpdates[0].payload.processing_error).toBeTruthy();
-    expect(documentUpdates[0].payload.processing_error).toMatch(/active_ai_provider/);
+    expect(documentUpdates[0].payload.processing_error).toBe("Добавьте и выберите AI-провайдера для этого проекта.");
   });
 
   it("still throws (does not swallow the error) after recording processing_status: 'error'", async () => {

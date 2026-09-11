@@ -92,15 +92,22 @@ function aiProvidersRateLimitedResponse(rateLimit: { retryAfterMs: number }): Re
   );
 }
 
+function internalError(method: string, err: unknown, message: string): Response {
+  console.error(`${method} /api/profile/ai-providers failed:`, err);
+  return Response.json({ error: "internal_error", message }, { status: 500 });
+}
+
 export async function GET(): Promise<Response> {
   const authClient = await getRouteHandlerSupabaseClient();
   const user = await getAuthenticatedUser(authClient);
   if (!user) return Response.json({ error: "unauthorized" }, { status: 401 });
 
-  const supabase = getServiceRoleClient();
-  const configured = await getConfiguredProvidersMap(supabase, user.id);
-
-  return Response.json({ configured }, { status: 200 });
+  try {
+    const configured = await getConfiguredProvidersMap(getServiceRoleClient(), user.id);
+    return Response.json({ configured }, { status: 200 });
+  } catch (err) {
+    return internalError("GET", err, "Не удалось загрузить настройки AI-провайдеров.");
+  }
 }
 
 export async function POST(request: Request): Promise<Response> {
@@ -117,8 +124,11 @@ export async function POST(request: Request): Promise<Response> {
   const parsed = await parseJsonBody(request, PostBodySchema);
   if ("errorResponse" in parsed) return parsed.errorResponse;
 
-  const supabase = getServiceRoleClient();
-  await saveAIProviderCredential(supabase, user.id, parsed.data.provider, parsed.data.apiKey);
+  try {
+    await saveAIProviderCredential(getServiceRoleClient(), user.id, parsed.data.provider, parsed.data.apiKey);
+  } catch (err) {
+    return internalError("POST", err, "Не удалось сохранить API-ключ.");
+  }
   return Response.json({ status: "saved" }, { status: 200 });
 }
 
@@ -133,7 +143,10 @@ export async function DELETE(request: Request): Promise<Response> {
   const parsed = await parseJsonBody(request, DeleteBodySchema);
   if ("errorResponse" in parsed) return parsed.errorResponse;
 
-  const supabase = getServiceRoleClient();
-  await deleteAIProviderCredential(supabase, user.id, parsed.data.provider);
+  try {
+    await deleteAIProviderCredential(getServiceRoleClient(), user.id, parsed.data.provider);
+  } catch (err) {
+    return internalError("DELETE", err, "Не удалось удалить API-ключ.");
+  }
   return Response.json({ status: "deleted" }, { status: 200 });
 }
