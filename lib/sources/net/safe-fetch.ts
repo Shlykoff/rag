@@ -86,7 +86,7 @@ function ssrfError(message: string, userMessage: string, cause?: unknown): Sourc
  *
  * CALLBACK SHAPE: Node's `net.js` calls this function with a DIFFERENT
  * expected callback shape depending on `options.all`, chosen unilaterally
- * by Node per call. Since Node 20/22, `net.getDefaultAutoSelectFamily()`
+ * by Node per call. Since Node 20, `net.getDefaultAutoSelectFamily()`
  * defaults to `true` (Happy Eyeballs), and under that mode `net.js` invokes
  * a custom `lookup` hook with `options.all === true` and requires the
  * MODERN array form: `callback(null, [{ address, family }, ...])`. Replying
@@ -96,7 +96,7 @@ function ssrfError(message: string, userMessage: string, cause?: unknown): Sourc
  * caller as a misleading `kind: "upstream_error"` for every hostname (a
  * literal-IP URL never reaches this function at all -- see validateUrl()).
  * See lib/sources/net/__tests__/safe-fetch-hostname-lookup.test.ts for the
- * regression test (real hostname, real socket, real Node 22
+ * regression test (real hostname, real socket, real Node
  * autoSelectFamily default, not a mocked lookup).
  */
 function guardedLookup(

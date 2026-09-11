@@ -20,7 +20,7 @@
 // itself (the exact bug this file regression-tests) passed every existing
 // test while making every real hostname-based request fail in production.
 //
-// Root cause this guards against: Node 20/22 default
+// Root cause this guards against: the Node 20+ default
 // `net.getDefaultAutoSelectFamily() === true` (Happy Eyeballs, what this
 // project's pinned Node version -- see package.json's `engines` /
 // `.nvmrc` -- actually runs under). Under that default, `net.js` invokes a

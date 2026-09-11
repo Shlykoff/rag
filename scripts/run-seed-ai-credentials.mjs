@@ -72,7 +72,7 @@ buildSync({
   bundle: true,
   platform: "node",
   format: "cjs",
-  target: "node22",
+  target: "node24",
   packages: "external",
   alias: { "server-only": serverOnlyEmptyPath },
   logLevel: "warning",
