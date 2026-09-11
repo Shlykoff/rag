@@ -9,9 +9,9 @@ Full spec: [`docs/spec.md`](docs/spec.md). Architectural ground rules: [`CLAUDE.
 
 ## What this is
 
-Documents live inside **projects** — a user can own several, each with its own document set, its own active AI provider, its own in-app test chat, and its own external channel integration (Telegram). People messaging a project's Telegram bot are that project's audience, not app users: they never get a Supabase account.
+Documents live inside **projects** — a user can own several, each with its own document set, its own chat and embedding models, its own in-app test chat, and its own external channel integration (Telegram). People messaging a project's Telegram bot are that project's audience, not app users: they never get a Supabase account.
 
-Each signed-in user connects their own AI-provider API key(s) (bring-your-own-key, encrypted at rest) and picks which connected provider each of their projects uses. There is no live deploy yet; run it locally per below.
+Each signed-in user connects their own AI-provider API key(s) (bring-your-own-key, encrypted at rest) and picks a concrete chat model and embedding model for each project from the model catalog (`ai_models`). Live at https://rag.shlykoff.com; to run it locally, see below.
 
 ## Stack
 

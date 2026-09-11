@@ -182,18 +182,3 @@ export async function getProjectModelState(supabase: SupabaseClient, projectId: 
   const embeddingLocked = data.embedding_model_id !== null && (await countProjectDocuments(supabase, projectId)) > 0;
   return { chatModelId: data.chat_model_id, embeddingModelId: data.embedding_model_id, embeddingLocked };
 }
-
-/**
- * Display name of the project's chat model (the "Работает на: …" label), or
- * null when none is chosen. Works with an RLS-scoped client too; the caller
- * must already have verified the viewer may see this project.
- */
-export async function getChatModelDisplayName(supabase: SupabaseClient, projectId: string): Promise<string | null> {
-  const { data, error } = await supabase
-    .from("projects")
-    .select(PROJECT_CHAT_MODEL_EMBED)
-    .eq("id", projectId)
-    .maybeSingle<{ chat_model: { display_name: string } | null }>();
-  if (error) throw new Error(`getChatModelDisplayName: failed to load project ${projectId}: ${error.message}`);
-  return data?.chat_model?.display_name ?? null;
-}

@@ -45,7 +45,6 @@ jobs:
           NEXT_PUBLIC_SUPABASE_URL: "https://ci-placeholder.supabase.co"
           NEXT_PUBLIC_SUPABASE_ANON_KEY: "ci-placeholder-anon-key"
           SUPABASE_SERVICE_ROLE_KEY: "ci-placeholder-service-role-key"
-          OPENAI_API_KEY: "sk-ci-placeholder"
           CREDENTIALS_ENCRYPTION_KEY: "0000000000000000000000000000000000000000000000000000000000000000"
 
   integration-tests:

@@ -227,7 +227,6 @@ export {
   getProjectModelState,
   setProjectChatModel,
   setProjectEmbeddingModel,
-  getChatModelDisplayName,
   PROJECT_CHAT_MODEL_EMBED,
   InvalidModelSelectionError,
   MissingProviderCredentialsError,

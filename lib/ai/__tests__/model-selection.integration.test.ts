@@ -10,7 +10,6 @@ import { listAIModels, type AIModel } from "../catalog";
 import { saveAIProviderCredential, type AIProviderCredentialType } from "../credentials";
 import {
   EmbeddingModelLockedError,
-  getChatModelDisplayName,
   getProjectModelState,
   InvalidModelSelectionError,
   MissingProviderCredentialsError,
@@ -86,10 +85,9 @@ describe.skipIf(!hasIntegrationEnv() || !process.env.CREDENTIALS_ENCRYPTION_KEY)
           embeddingModelId: null,
           embeddingLocked: false,
         });
-        expect(await getChatModelDisplayName(supabase, project.id)).toBeNull();
       });
 
-      it("stores the catalog id, mirrors the provider column, and exposes the display name", async () => {
+      it("stores the catalog id and mirrors the provider column", async () => {
         const owner = await ownerWithKeys("selection-chat", ["anthropic"]);
         const project = await createTestProject(supabase, owner);
         const sonnet = model("claude-sonnet-5");
@@ -97,7 +95,6 @@ describe.skipIf(!hasIntegrationEnv() || !process.env.CREDENTIALS_ENCRYPTION_KEY)
         await setProjectChatModel(supabase, project.id, owner, sonnet.id);
 
         expect(await columns(project.id)).toMatchObject({ chat_model_id: sonnet.id, active_ai_provider: "anthropic" });
-        expect(await getChatModelDisplayName(supabase, project.id)).toBe("Claude Sonnet 5");
       });
 
       it("refuses a model whose provider key is missing, writing nothing", async () => {
