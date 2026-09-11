@@ -138,7 +138,42 @@ export async function deleteTestUser(supabase: SupabaseClient, userId: string): 
   await supabase.auth.admin.deleteUser(userId);
 }
 
-/** A deterministic, non-random 1024-dim vector for a given seed -- lets tests assert exact/near similarity without calling a real embeddings API. `mostlyZero` puts a single 1.0 at index `seed % 1024` (nearly orthogonal vectors for different seeds), which is enough to test ranking/isolation without needing semantically meaningful content. 1024 matches document_chunks.embedding vector(1024) -- see CLAUDE.md. */
+/**
+ * Runs SQL as `postgres` through the local stack's postgres-meta endpoint
+ * (Kong's /pg route) -- for tests that need privileges no API role has,
+ * e.g. constraint checks on the migration-only ai_models catalog. Local/CI
+ * only: hosted Supabase does not expose this route. Writes should roll
+ * themselves back (e.g. a DO block that raises at the end) so a missing
+ * constraint can't leave rows behind.
+ */
+export async function runPrivilegedSql<Row = Record<string, unknown>>(
+  query: string
+): Promise<{ rows: Row[] | null; error: { code: string; message: string } | null }> {
+  const { url, serviceRoleKey } = requireIntegrationEnv();
+  const response = await fetch(`${url}/pg/query`, {
+    method: "POST",
+    headers: {
+      apikey: serviceRoleKey,
+      Authorization: `Bearer ${serviceRoleKey}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ query }),
+  });
+  const body: unknown = await response.json();
+  if (response.ok) {
+    return { rows: body as Row[], error: null };
+  }
+  const failure = body as { code?: string; message?: string; error?: string };
+  return {
+    rows: null,
+    error: {
+      code: failure.code ?? `HTTP ${response.status}`,
+      message: failure.message ?? failure.error ?? "unknown error",
+    },
+  };
+}
+
+/** A deterministic, non-random vector for a given seed -- lets tests assert exact/near similarity without calling a real embeddings API. Puts a single 1.0 at index `seed % dimensions` (orthogonal vectors for different seeds), which is enough to test ranking/isolation without semantically meaningful content. document_chunks.embedding accepts any dimension; 1024 is just the default here. */
 export function deterministicVector(seed: number, dimensions = 1024): number[] {
   const vector = new Array(dimensions).fill(0);
   vector[seed % dimensions] = 1;
