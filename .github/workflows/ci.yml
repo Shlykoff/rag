@@ -59,11 +59,10 @@ jobs:
           node-version-file: ".nvmrc"
           cache: "npm"
 
+      # Also installs the Supabase CLI: it's a devDependency, so its version
+      # comes from package-lock.json (no `latest` lookup against the GitHub
+      # API, which once failed a run on a rate limit).
       - run: npm ci
-
-      - uses: supabase/setup-cli@v1
-        with:
-          version: latest
 
       # Ubuntu GitHub-hosted runners have Docker preinstalled -- `supabase
       # start` runs the same local Postgres/pgvector/Auth/Storage stack this
@@ -71,7 +70,7 @@ jobs:
       # supabase/migrations/*.sql and supabase/seed.sql on first boot,
       # exactly like a fresh local `supabase start` does.
       - name: Start local Supabase
-        run: supabase start
+        run: npx supabase start
 
       # supabase status's default env-var names (API_URL, ANON_KEY,
       # SERVICE_ROLE_KEY) don't match what this app's code actually reads
@@ -90,7 +89,7 @@ jobs:
       # quotes before appending.
       - name: Export local Supabase env vars
         run: |
-          supabase status -o env \
+          npx supabase status -o env \
             --override-name api.url=NEXT_PUBLIC_SUPABASE_URL \
             --override-name auth.anon_key=NEXT_PUBLIC_SUPABASE_ANON_KEY \
             --override-name auth.service_role_key=SUPABASE_SERVICE_ROLE_KEY \

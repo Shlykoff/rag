@@ -12,8 +12,7 @@ export default function AppError({ error, reset }: { error: Error & { digest?: s
       <div className="card" style={{ display: "flex", flexDirection: "column", gap: "0.75rem" }}>
         <h2 style={{ fontSize: "1.1rem" }}>Что-то пошло не так</h2>
         <p className="field-hint">
-          Не удалось загрузить эту страницу. Обычно это означает, что локальный Supabase не запущен
-          (<code>supabase start</code>) или временно недоступен.
+          Не удалось загрузить эту страницу. Возможно, сервер временно недоступен — попробуйте ещё раз.
         </p>
         <div>
           <button type="button" className="btn btn-primary" onClick={() => reset()}>

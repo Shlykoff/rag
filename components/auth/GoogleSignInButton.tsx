@@ -40,7 +40,7 @@ export function GoogleSignInButton() {
       // component unmounts along with it, so `pending` is deliberately
       // never reset on the success path.
     } catch {
-      setError("Не удалось связаться с сервером авторизации. Проверьте, что Supabase запущен.");
+      setError("Не удалось связаться с сервером авторизации. Попробуйте ещё раз.");
       setPending(false);
     }
   }

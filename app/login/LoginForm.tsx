@@ -40,7 +40,7 @@ export function LoginForm() {
       router.push("/");
       router.refresh();
     } catch {
-      setError("Не удалось связаться с сервером авторизации. Проверьте, что Supabase запущен.");
+      setError("Не удалось связаться с сервером авторизации. Попробуйте ещё раз.");
       setPending(null);
     }
   }
