@@ -35,6 +35,7 @@ describe.skipIf(!hasIntegrationEnv())("projects pivot: RLS + grants (integration
   let ownerA: { id: string; email: string; client: SupabaseClient };
   let ownerB: { id: string; email: string; client: SupabaseClient };
   let projectA: string;
+  let projectB: string;
   const uploadedStoragePaths: string[] = [];
 
   beforeAll(async () => {
@@ -53,10 +54,13 @@ describe.skipIf(!hasIntegrationEnv())("projects pivot: RLS + grants (integration
     if (projAErr) throw new Error(`owner A failed to create project: ${projAErr.message}`);
     projectA = projARow.id as string;
 
-    const { error: projBErr } = await ownerB.client
+    const { data: projBRow, error: projBErr } = await ownerB.client
       .from("projects")
-      .insert({ user_id: ownerB.id, name: "Owner B project" });
+      .insert({ user_id: ownerB.id, name: "Owner B project" })
+      .select("id")
+      .single();
     if (projBErr) throw new Error(`owner B failed to create project: ${projBErr.message}`);
+    projectB = projBRow.id as string;
   });
 
   afterAll(async () => {
@@ -241,6 +245,45 @@ describe.skipIf(!hasIntegrationEnv())("projects pivot: RLS + grants (integration
       // Confirm via service_role that the row was genuinely untouched.
       const { data: unchanged } = await serviceClient.from("conversations").select("title").eq("id", externalConvo).single();
       expect(unchanged?.title).toBeNull();
+    });
+
+    it("an owner cannot move their own test-chat conversation into another owner's project", async () => {
+      const { error } = await ownerA.client
+        .from("conversations")
+        .update({ project_id: projectB })
+        .eq("id", ownTestChatConvo)
+        .select();
+      expect(error).not.toBeNull();
+
+      const { data: unchanged } = await serviceClient
+        .from("conversations")
+        .select("project_id")
+        .eq("id", ownTestChatConvo)
+        .single();
+      expect(unchanged?.project_id).toBe(projectA);
+    });
+
+    it("inserting a message bumps the conversation's updated_at", async () => {
+      const { data: before } = await serviceClient
+        .from("conversations")
+        .select("updated_at")
+        .eq("id", ownTestChatConvo)
+        .single();
+      await new Promise((resolve) => setTimeout(resolve, 50));
+
+      const { error } = await serviceClient
+        .from("messages")
+        .insert({ conversation_id: ownTestChatConvo, role: "user", content: "bump updated_at" });
+      expect(error).toBeNull();
+
+      const { data: after } = await serviceClient
+        .from("conversations")
+        .select("updated_at")
+        .eq("id", ownTestChatConvo)
+        .single();
+      expect(new Date(after!.updated_at as string).getTime()).toBeGreaterThan(
+        new Date(before!.updated_at as string).getTime()
+      );
     });
 
     it("service_role CAN update an external-channel-shaped conversation row", async () => {
