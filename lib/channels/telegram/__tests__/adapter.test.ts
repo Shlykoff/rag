@@ -260,6 +260,53 @@ describe("telegram adapter: parseIncoming / handleTelegramWebhook", () => {
     await expect(handleTelegramWebhook(makeRequest(textUpdate("hi", 40, 222)), INTEGRATION)).resolves.toBeUndefined();
   });
 
+  it("with a defer option, verifies and claims inline but produces the reply only when the deferred task runs", async () => {
+    const { supabase, claimedUpdateIds } = makeFakeSupabase();
+    mockGetServiceRoleClient.mockReturnValue(supabase);
+    mockAnswerExternalMessage.mockResolvedValue({ kind: "ok", text: "later answer" });
+    const deferred: Array<() => Promise<void>> = [];
+
+    await handleTelegramWebhook(makeRequest(textUpdate("question", 50, 333)), INTEGRATION, {
+      defer: (task) => deferred.push(task),
+    });
+
+    expect(claimedUpdateIds).toEqual([50]);
+    expect(deferred).toHaveLength(1);
+    expect(mockAnswerExternalMessage).not.toHaveBeenCalled();
+
+    await deferred[0]();
+
+    expect(mockSendTelegramMessage).toHaveBeenCalledWith("123:fake-bot-token", "333", "later answer");
+  });
+
+  it("with a defer option, schedules nothing for an unauthorized request", async () => {
+    const { supabase } = makeFakeSupabase();
+    mockGetServiceRoleClient.mockReturnValue(supabase);
+    const deferred: Array<() => Promise<void>> = [];
+
+    await handleTelegramWebhook(makeRequest(textUpdate("hello"), "wrong-secret"), INTEGRATION, {
+      defer: (task) => deferred.push(task),
+    });
+
+    expect(deferred).toHaveLength(0);
+  });
+
+  it("a deferred reply task never throws, even if the gateway unexpectedly does", async () => {
+    const { supabase } = makeFakeSupabase();
+    mockGetServiceRoleClient.mockReturnValue(supabase);
+    mockAnswerExternalMessage.mockRejectedValue(new Error("unexpected"));
+    const consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    const deferred: Array<() => Promise<void>> = [];
+
+    await handleTelegramWebhook(makeRequest(textUpdate("question", 51, 333)), INTEGRATION, {
+      defer: (task) => deferred.push(task),
+    });
+
+    await expect(deferred[0]()).resolves.toBeUndefined();
+    expect(consoleErrorSpy).toHaveBeenCalled();
+    consoleErrorSpy.mockRestore();
+  });
+
   it("telegramChannelAdapter.channel is 'telegram' (registry key contract)", () => {
     expect(telegramChannelAdapter.channel).toBe("telegram");
   });

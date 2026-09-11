@@ -13,6 +13,11 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 const mockGetServiceRoleClient = vi.fn();
 const mockGetTelegramIntegrationById = vi.fn();
 const mockHandleTelegramWebhook = vi.fn();
+const mockAfter = vi.fn();
+
+vi.mock("next/server", () => ({
+  after: (task: unknown) => mockAfter(task),
+}));
 
 vi.mock("@/lib/supabase/service-client", () => ({
   getServiceRoleClient: () => mockGetServiceRoleClient(),
@@ -62,7 +67,25 @@ describe("POST /api/channels/telegram/{integrationId}", () => {
     const response = await POST(makeRequest(), makeParams("integration-1"));
 
     expect(response.status).toBe(200);
-    expect(mockHandleTelegramWebhook).toHaveBeenCalledWith(expect.any(Request), ENABLED_INTEGRATION);
+    expect(mockHandleTelegramWebhook).toHaveBeenCalledWith(expect.any(Request), ENABLED_INTEGRATION, {
+      defer: expect.any(Function),
+    });
+  });
+
+  it("hands the reply task to next/server's after(), so it runs once the 200 is sent", async () => {
+    mockGetServiceRoleClient.mockReturnValue({});
+    mockGetTelegramIntegrationById.mockResolvedValue(ENABLED_INTEGRATION);
+    const replyTask = async () => {};
+    mockHandleTelegramWebhook.mockImplementation(
+      async (_request: Request, _integration: unknown, options: { defer: (task: () => Promise<void>) => void }) => {
+        options.defer(replyTask);
+      }
+    );
+
+    const response = await POST(makeRequest(), makeParams("integration-1"));
+
+    expect(response.status).toBe(200);
+    expect(mockAfter).toHaveBeenCalledWith(replyTask);
   });
 
   it("returns 200 (never 404) for an unknown integration id, without calling handleTelegramWebhook", async () => {

@@ -7,7 +7,9 @@
 // integration row by the path id, then delegate everything else to
 // lib/channels/telegram/adapter.ts's handleTelegramWebhook() -- all
 // verification (webhook secret), parsing, dedup, command handling, and the
-// actual RAG turn happen there, not in this file.
+// actual RAG turn happen there, not in this file. The RAG turn + reply is
+// scheduled with next/server's after(), so Telegram gets its 200 as soon as
+// the update is verified and claimed.
 //
 // CRITICAL CONTRACT: this route ALWAYS returns 200, regardless of what
 // happened internally (bad secret, unknown integration, disabled
@@ -27,6 +29,7 @@
 // per lib/gateway/answer.ts's own security comment on this exact point.
 
 import "server-only";
+import { after } from "next/server";
 import { getServiceRoleClient } from "@/lib/supabase/service-client";
 import { getTelegramIntegrationById } from "@/lib/channels/telegram/integration-store";
 import { handleTelegramWebhook } from "@/lib/channels/telegram/adapter";
@@ -55,7 +58,7 @@ export async function POST(
       return new Response(null, { status: 200 });
     }
 
-    await handleTelegramWebhook(request, integration);
+    await handleTelegramWebhook(request, integration, { defer: (task) => after(task) });
   } catch (err) {
     // Defensive backstop (see adapter.ts's own comment: handleTelegramWebhook
     // itself is designed to never throw) -- an unexpected exception
