@@ -4,9 +4,9 @@
 //
 // Shown by every components/sources/*Form.tsx (and DocumentCard's Refresh
 // button) instead of the generic red error banner when an ingest request
-// comes back `422 { error: "no_credentials" }` -- the signed-in user has
-// no active AI provider configured yet, or their active provider's stored
-// credential(s) are missing. request-helpers.ts's normalizeResponse()
+// comes back `422 { error: "no_credentials" }` -- the project has no
+// chat/embedding model chosen, or the key for a chosen model's provider is
+// missing. request-helpers.ts's normalizeResponse()
 // surfaces this as its own SourceRequestFailure `kind: "no_credentials"`
 // so callers don't have to re-parse the response body themselves.
 //
@@ -19,10 +19,8 @@
 // message fits the form better, without stealing focus from the rest of
 // the "Добавить источник" card.
 //
-// Links to this project's own /projects/{projectId}/model picker rather
-// than straight to /profile -- see NoProviderModal.tsx's identical comment
-// for why (/model is the right first stop whether the project hasn't
-// picked a provider yet, or its picked provider's credential was deleted).
+// Links to this project's model page rather than straight to /profile --
+// see NoProviderModal.tsx for why.
 
 import Link from "next/link";
 

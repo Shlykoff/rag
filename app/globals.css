@@ -1052,13 +1052,55 @@ select {
 
 /* ---- Model picker (components/projects/ModelPicker.tsx) ---- */
 
+.model-slot {
+  display: flex;
+  flex-direction: column;
+  gap: 0.8rem;
+}
+
+.model-subgroup {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.model-subgroup-title {
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: var(--foreground-muted);
+  margin-bottom: 0.4rem;
+}
+
+.provider-choice-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(11rem, 1fr));
+  gap: 0.5rem;
+}
+
+.model-option-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
 .model-option {
+  position: relative;
   display: flex;
   align-items: flex-start;
   gap: 0.65rem;
   padding: 0.75rem 0.9rem;
   border: 1px solid var(--border);
   border-radius: var(--radius-md);
+}
+
+.model-option input[type="radio"] {
+  margin-top: 0.2rem;
+  flex-shrink: 0;
+}
+
+.model-option:has(input:focus-visible) {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
 }
 
 .model-option-active {
@@ -1073,6 +1115,60 @@ select {
 .model-option-main {
   flex: 1;
   min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.model-option-title {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  flex-wrap: wrap;
+}
+
+.model-option-label {
+  font-weight: 600;
+  cursor: pointer;
+}
+
+/* The label covers the whole card, so a click anywhere selects the radio. */
+.model-option-label::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+}
+
+.model-option:has(input:disabled) .model-option-label {
+  cursor: not-allowed;
+}
+
+/* Links inside a card sit above the label overlay to stay clickable. */
+.model-option a {
+  position: relative;
+  z-index: 1;
+}
+
+.model-option-id {
+  font-size: 0.75rem;
+  color: var(--foreground-muted);
+  overflow-wrap: anywhere;
+}
+
+.model-specs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.2rem 1rem;
+  font-size: 0.8rem;
+}
+
+.model-spec-label {
+  color: var(--foreground-muted);
+}
+
+.badge-accent {
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  color: var(--accent);
 }
 
 /* ---- Channels page (components/projects/TelegramChannelPanel.tsx,

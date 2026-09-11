@@ -228,8 +228,8 @@ export async function ingestDocument(
 
 /**
  * Convenience wrapper wiring in the real service-role Supabase client and
- * the AI_PROVIDER-selected EmbeddingsProvider -- what document-sources-
- * specialist's adapters should actually call after normalizing a document.
+ * the project's catalog embedding model -- what the source adapters call
+ * after normalizing a document.
  * Kept separate from ingestDocument() so the core pipeline stays
  * unit-testable with fakes (see lib/ingestion/__tests__/ingest.test.ts).
  */
@@ -250,9 +250,8 @@ export async function ingestDocumentWithDefaultProviders(
     // no process-global "the" embeddings provider.
     embeddingsProvider = await getEmbeddingsProvider({ projectId: doc.projectId, ownerUserId: doc.ownerUserId }, supabase);
   } catch (err) {
-    // getEmbeddingsProvider() (via getAIProviders()) rejects when
-    // doc.projectId has no active AI provider configured, or its owner's
-    // credential(s) for that provider are missing
+    // getEmbeddingsProvider() rejects when the project has no embedding
+    // model chosen, or its owner's key for that model's provider is missing
     // (AIProviderError{kind:"no_credentials"} -- see lib/ai/index.ts), or
     // on any other AI-provider failure. This has to be caught here, in a
     // try of our own, rather than left to ingestDocument()'s try/catch:

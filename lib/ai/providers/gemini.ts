@@ -1,41 +1,41 @@
 // lib/ai/providers/gemini.ts
 //
 // Deliberate reuse, not a copy-paste mistake: Google publishes an official
-// OpenAI-compatible endpoint for both chat and embeddings
-// (https://generativelanguage.googleapis.com/v1beta/openai/), so this
-// adapter constructs the same OpenAICompatibleCore class used for
-// AI_PROVIDER=openai, just pointed at Google's baseURL/apiKey/model instead.
-// No separate Google SDK is used for chat or text embeddings.
+// OpenAI-compatible endpoint for chat and embeddings, so Gemini runs through
+// the OpenAI-compatible adapter classes (providers/openai.ts) with Google's
+// baseURL. No separate Google SDK is used.
+//
+// Google's docs don't list `dimensions` for the compatible embeddings
+// endpoint, but it is honored (mapped to output_dimensionality) -- checked
+// live for gemini-embedding-001 and gemini-embedding-2. Should that change,
+// embed-batch.ts's per-vector length check fails loudly instead of storing
+// vectors of the wrong size. gemini-embedding-001 doesn't normalize vectors
+// truncated below 3072; harmless here, retrieval uses cosine distance.
 
-import { createOpenAICompatiblePair } from "./openai";
+import { OpenAICompatibleChatProvider, OpenAICompatibleEmbeddingsProvider } from "./openai";
 import type { ChatProvider, EmbeddingsProvider } from "../types";
 
-const GEMINI_OPENAI_COMPATIBLE_BASE_URL =
-  "https://generativelanguage.googleapis.com/v1beta/openai/";
+export const GEMINI_OPENAI_COMPATIBLE_BASE_URL = "https://generativelanguage.googleapis.com/v1beta/openai/";
 
-export interface GeminiConfig {
-  apiKey: string;
-  chatModel: string;
-  embeddingModel: string;
+export function createGeminiChatProvider(config: { apiKey: string; model: string }): ChatProvider {
+  return new OpenAICompatibleChatProvider({
+    providerName: "gemini",
+    baseURL: GEMINI_OPENAI_COMPATIBLE_BASE_URL,
+    apiKey: config.apiKey,
+    model: config.model,
+  });
 }
 
-/**
- * Returns a {chatProvider, embeddingsProvider} pair backed by Google's
- * OpenAI-compatible endpoint, sharing a single underlying HTTP client (see
- * createOpenAICompatiblePair()'s doc comment for why this is two objects
- * with independently-correct `modelName`s rather than one dual-interface
- * object). Kept as a thin factory function rather than a subclass since
- * there's no Gemini-specific behavior beyond the constructor config.
- */
-export function createGeminiProvider(config: GeminiConfig): {
-  chatProvider: ChatProvider;
-  embeddingsProvider: EmbeddingsProvider;
-} {
-  return createOpenAICompatiblePair({
+export function createGeminiEmbeddingsProvider(config: {
+  apiKey: string;
+  model: string;
+  dimensions: number;
+}): EmbeddingsProvider {
+  return new OpenAICompatibleEmbeddingsProvider({
     providerName: "gemini",
-    apiKey: config.apiKey,
     baseURL: GEMINI_OPENAI_COMPATIBLE_BASE_URL,
-    chatModel: config.chatModel,
-    embeddingModel: config.embeddingModel,
+    apiKey: config.apiKey,
+    model: config.model,
+    dimensions: config.dimensions,
   });
 }

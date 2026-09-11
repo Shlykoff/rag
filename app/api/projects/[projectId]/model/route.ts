@@ -1,106 +1,102 @@
 // app/api/projects/[projectId]/model/route.ts
 //
-// Read/set a project's two AI settings, both backed by the owner's
-// account-level keys (connected via app/api/profile/ai-providers/route.ts):
-//   - the chat model (`projects.active_ai_provider`) -- switchable any time;
-//   - the embedding model (`projects.embedding_provider`) -- fixed once the
-//     project has documents (vectors from different models aren't
-//     comparable, see lib/ai/index.ts's header).
-// Thin HTTP wrapper around lib/ai/credentials.ts: auth, ownership check (404,
-// not 403, on mismatch), and mapping outcomes to status codes.
+// Read/set a project's chat and embedding models, picked from the ai_models
+// catalog and backed by the owner's account-level keys. GET first fills
+// empty slots the owner's keys make unambiguous (lib/ai/model-autofill.ts).
 //
-// Request contract:
-//   GET /api/projects/{projectId}/model
-//   -> 401 { error: "unauthorized" } | 404 { error: "not_found" }
-//   -> 200 { activeProvider: "openai" | "anthropic" | "gemini" | null,
-//            embeddingProvider: "openai" | "gemini" | "voyage" | null,
-//            embeddingLocked: boolean,
-//            configured: { openai, anthropic, gemini, voyage: boolean } }
-//
-//   PUT /api/projects/{projectId}/model
-//   body: { provider: "openai" | "anthropic" | "gemini" }         -- chat model
-//      or { embeddingProvider: "openai" | "gemini" | "voyage" }   -- embedding model
-//   -> 401 | 404 | 400 { error: "invalid_request", details }
-//   -> 400 { error: "missing_credentials", message, provider, missing } -- key not connected yet
-//   -> 409 { error: "embedding_locked", message } -- project already has documents
-//   -> 200 { activeProvider } | { embeddingProvider }
-// missing_credentials / embedding_locked are expected user states, so they
-// are not logged via console.error.
+//   GET -> 200 { chatModelId, embeddingModelId, embeddingLocked,
+//                configured: { openai, anthropic, gemini, voyage },
+//                models: AIModelDTO[] }  -- active rows + any selected retired row, by sort_order
+//   PUT { chatModelId: uuid } | { embeddingModelId: uuid }
+//     -> 200 { chatModelId } | { embeddingModelId }
+//     -> 400 { error: "invalid_request", details }               malformed body
+//     -> 400 { error: "invalid_model", reason, message }         reason: not_found | wrong_kind | inactive
+//     -> 409 { error: "embedding_locked", message }              documents already embedded with the current model
+//     -> 422 { error: "missing_credentials", provider, message } no key for the model's provider
+//   Both: 401 { error: "unauthorized" }; 404 { error: "not_found" }, also for another user's project.
+// The 400 invalid_model / 409 / 422 outcomes are expected user states and aren't logged.
 
 import "server-only";
 import { z } from "zod";
 import { getServiceRoleClient } from "@/lib/supabase/service-client";
 import { getAuthenticatedUser, getRouteHandlerSupabaseClient, verifyProjectOwnership } from "@/lib/supabase/server-client";
 import {
-  getActiveProvider,
-  setActiveProvider,
-  getProjectEmbeddingState,
-  setProjectEmbeddingProvider,
+  autoFillProjectModels,
   getConfiguredProvidersMap,
+  getProjectModelState,
+  getProviderLabel,
+  listAIModels,
+  setProjectChatModel,
+  setProjectEmbeddingModel,
+  toAIModelDTO,
+  EmbeddingModelLockedError,
+  InvalidModelSelectionError,
   MissingProviderCredentialsError,
-  EmbeddingProviderLockedError,
+  type AIModelKind,
+  type InvalidModelReason,
 } from "@/lib/ai";
-import { isUuidShape } from "@/lib/validation/uuid";
+import { isUuidShape, uuidShapeSchema } from "@/lib/validation/uuid";
 import { parseJsonBody } from "@/lib/http/parse-json-body";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
 const PutBodySchema = z.union([
-  z.object({ provider: z.enum(["openai", "anthropic", "gemini"]) }).strict(),
-  z.object({ embeddingProvider: z.enum(["openai", "gemini", "voyage"]) }).strict(),
+  z.object({ chatModelId: uuidShapeSchema }).strict(),
+  z.object({ embeddingModelId: uuidShapeSchema }).strict(),
 ]);
 
-export async function GET(
-  _request: Request,
-  { params }: { params: Promise<{ projectId: string }> }
-): Promise<Response> {
+const INVALID_MODEL_MESSAGES: Record<InvalidModelReason, (slot: AIModelKind) => string> = {
+  not_found: () => "Такой модели нет в каталоге.",
+  wrong_kind: (slot) => (slot === "chat" ? "Эта модель не подходит для чата." : "Эта модель не подходит для эмбеддингов."),
+  inactive: () => "Эта модель больше недоступна для выбора.",
+};
+
+/** Auth + ownership (404, not 403, on mismatch) shared by GET and PUT. */
+async function resolveOwnedProject(
+  params: Promise<{ projectId: string }>
+): Promise<{ projectId: string; userId: string } | { response: Response }> {
   const { projectId } = await params;
   // Shape-check before touching the DB -- see app/api/projects/[projectId]/route.ts's identical guard.
-  if (!isUuidShape(projectId)) {
-    return Response.json({ error: "not_found" }, { status: 404 });
-  }
+  if (!isUuidShape(projectId)) return { response: Response.json({ error: "not_found" }, { status: 404 }) };
 
   const authClient = await getRouteHandlerSupabaseClient();
   const user = await getAuthenticatedUser(authClient);
-  if (!user) return Response.json({ error: "unauthorized" }, { status: 401 });
+  if (!user) return { response: Response.json({ error: "unauthorized" }, { status: 401 }) };
 
   const owned = await verifyProjectOwnership(authClient, projectId);
-  if (!owned) return Response.json({ error: "not_found" }, { status: 404 });
+  if (!owned) return { response: Response.json({ error: "not_found" }, { status: 404 }) };
+  return { projectId, userId: user.id };
+}
+
+export async function GET(_request: Request, { params }: { params: Promise<{ projectId: string }> }): Promise<Response> {
+  const resolved = await resolveOwnedProject(params);
+  if ("response" in resolved) return resolved.response;
+  const { projectId, userId } = resolved;
 
   const supabase = getServiceRoleClient();
   try {
-    const [activeProvider, embedding, configured] = await Promise.all([
-      getActiveProvider(supabase, projectId),
-      getProjectEmbeddingState(supabase, projectId),
-      getConfiguredProvidersMap(supabase, user.id),
-    ]);
-    return Response.json(
-      { activeProvider, embeddingProvider: embedding.provider, embeddingLocked: embedding.locked, configured },
-      { status: 200 }
-    );
+    const [configured, catalog] = await Promise.all([getConfiguredProvidersMap(supabase, userId), listAIModels(supabase)]);
+    try {
+      await autoFillProjectModels(supabase, userId, { projectId, configured, catalog });
+    } catch (err) {
+      // Best-effort: the settings still load, and the next read retries the fill.
+      console.error(`GET /api/projects/${projectId}/model: auto-filling models failed:`, err);
+    }
+    const state = await getProjectModelState(supabase, projectId);
+    const selected = new Set([state.chatModelId, state.embeddingModelId]);
+    const models = catalog.filter((model) => model.isActive || selected.has(model.id)).map(toAIModelDTO);
+    return Response.json({ ...state, configured, models }, { status: 200 });
   } catch (err) {
-    console.error(`GET /api/projects/${projectId}/model: failed to load provider state:`, err);
+    console.error(`GET /api/projects/${projectId}/model: failed to load model settings:`, err);
     return Response.json({ error: "internal_error", message: "Не удалось загрузить настройки модели." }, { status: 500 });
   }
 }
 
-export async function PUT(
-  request: Request,
-  { params }: { params: Promise<{ projectId: string }> }
-): Promise<Response> {
-  const { projectId } = await params;
-  // Shape-check before touching the DB -- see app/api/projects/[projectId]/route.ts's identical guard.
-  if (!isUuidShape(projectId)) {
-    return Response.json({ error: "not_found" }, { status: 404 });
-  }
-
-  const authClient = await getRouteHandlerSupabaseClient();
-  const user = await getAuthenticatedUser(authClient);
-  if (!user) return Response.json({ error: "unauthorized" }, { status: 401 });
-
-  const owned = await verifyProjectOwnership(authClient, projectId);
-  if (!owned) return Response.json({ error: "not_found" }, { status: 404 });
+export async function PUT(request: Request, { params }: { params: Promise<{ projectId: string }> }): Promise<Response> {
+  const resolved = await resolveOwnedProject(params);
+  if ("response" in resolved) return resolved.response;
+  const { projectId, userId } = resolved;
 
   const parsed = await parseJsonBody(request, PutBodySchema);
   if ("errorResponse" in parsed) return parsed.errorResponse;
@@ -108,27 +104,31 @@ export async function PUT(
 
   const supabase = getServiceRoleClient();
   try {
-    if ("provider" in body) {
-      await setActiveProvider(supabase, projectId, user.id, body.provider);
-      return Response.json({ activeProvider: body.provider }, { status: 200 });
+    if ("chatModelId" in body) {
+      const model = await setProjectChatModel(supabase, projectId, userId, body.chatModelId);
+      return Response.json({ chatModelId: model.id }, { status: 200 });
     }
-    await setProjectEmbeddingProvider(supabase, projectId, user.id, body.embeddingProvider);
-    return Response.json({ embeddingProvider: body.embeddingProvider }, { status: 200 });
+    const model = await setProjectEmbeddingModel(supabase, projectId, userId, body.embeddingModelId);
+    return Response.json({ embeddingModelId: model.id }, { status: 200 });
   } catch (err) {
-    if (err instanceof MissingProviderCredentialsError) {
+    if (err instanceof InvalidModelSelectionError) {
       return Response.json(
-        {
-          error: "missing_credentials",
-          message: `Сначала подключите API-ключ${err.missing.length > 1 ? "и" : ""} (${err.missing.join(
-            ", "
-          )}) на странице профиля, чтобы выбрать этого провайдера.`,
-          provider: err.provider,
-          missing: err.missing,
-        },
+        { error: "invalid_model", reason: err.reason, message: INVALID_MODEL_MESSAGES[err.reason](err.slot) },
         { status: 400 }
       );
     }
-    if (err instanceof EmbeddingProviderLockedError) {
+    if (err instanceof MissingProviderCredentialsError) {
+      const label = getProviderLabel(err.provider) ?? err.provider;
+      return Response.json(
+        {
+          error: "missing_credentials",
+          provider: err.provider,
+          message: `Сначала подключите API-ключ ${label} на странице профиля, чтобы выбрать эту модель.`,
+        },
+        { status: 422 }
+      );
+    }
+    if (err instanceof EmbeddingModelLockedError) {
       return Response.json(
         {
           error: "embedding_locked",

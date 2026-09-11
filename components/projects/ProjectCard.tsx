@@ -126,8 +126,12 @@ export function ProjectCard({ project }: { project: ProjectListItem }) {
         <span className="badge badge-neutral">
           {project.documentCount} {documentWord(project.documentCount)}
         </span>
-        <Link href={`/projects/${project.id}/model`} className={`badge ${project.activeAiProviderLabel ? "badge-success" : "badge-warning"}`}>
-          {project.activeAiProviderLabel ?? "модель не выбрана"}
+        <Link
+          href={`/projects/${project.id}/model`}
+          className={`badge ${project.chatModelName ? "badge-success" : "badge-warning"}`}
+          title="Модель чата — открыть настройки модели"
+        >
+          {project.chatModelName ? `Работает на: ${project.chatModelName}` : "модель не выбрана"}
         </Link>
         <Link href={`/projects/${project.id}/channels`} className={`badge ${project.telegramConnected ? "badge-success" : "badge-neutral"}`}>
           {project.telegramConnected ? "Telegram подключён" : "Telegram не подключён"}

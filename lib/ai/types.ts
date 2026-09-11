@@ -48,7 +48,7 @@ export interface ChatStreamResult {
 export interface ChatProvider {
   /** Machine-readable id used in usage_events.provider / logs, e.g. 'openai' | 'anthropic' | 'gemini'. */
   readonly providerName: string;
-  /** Concrete model name, e.g. 'gpt-4.1-mini', used in usage_events.model / logs. */
+  /** Concrete model id (ai_models.model_id), used in usage_events.model / logs. */
   readonly modelName: string;
   streamChat(input: {
     systemPrompt: string;
@@ -57,16 +57,15 @@ export interface ChatProvider {
 }
 
 /**
- * Embeddings, provider-agnostic. Every implementation outputs
- * `dimensions`-sized vectors, fixed at 1024 project-wide (see
- * lib/ai/providers/*), so document_chunks.embedding (vector(1024)) works
- * regardless of the active provider -- 1024 is Voyage's default and within
- * OpenAI/Gemini's shortenable range too (see CLAUDE.md for why). Switching
- * providers still requires a full re-embed: different models produce
- * incompatible vector spaces even at equal dimensionality.
+ * Embeddings, provider-agnostic. Outputs `dimensions`-sized vectors -- the
+ * catalog row's ai_models.dimensions, requested from the provider and
+ * checked on every returned vector. Vectors from different models don't
+ * compare even at equal length, so retrieval only matches chunks embedded by
+ * the same model (document_chunks.embedding_model) and dimension.
  */
 export interface EmbeddingsProvider {
   readonly providerName: string;
+  /** ai_models.model_id; written to document_chunks.embedding_model. */
   readonly modelName: string;
   readonly dimensions: number;
   /**
@@ -81,7 +80,7 @@ export interface EmbeddingsProvider {
   embed(texts: string[]): Promise<number[][]>;
 }
 
-/** What lib/ai/index.ts hands back to the rest of the app for the active AI_PROVIDER. */
+/** What getAIProviders() (lib/ai/index.ts) returns for one project's chat turn. */
 export interface AIProviderPair {
   chatProvider: ChatProvider;
   embeddingsProvider: EmbeddingsProvider;

@@ -1,7 +1,7 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { getAuthenticatedUser, getRouteHandlerSupabaseClient } from "@/lib/supabase/server-client";
-import { getProviderLabel, type ActiveAIProvider } from "@/lib/ai";
+import { PROJECT_CHAT_MODEL_EMBED } from "@/lib/ai";
 import { ProjectSubNav } from "@/components/projects/ProjectSubNav";
 
 export const dynamic = "force-dynamic";
@@ -9,7 +9,7 @@ export const dynamic = "force-dynamic";
 interface ProjectRow {
   id: string;
   name: string;
-  active_ai_provider: ActiveAIProvider | null;
+  chat_model: { display_name: string } | null;
 }
 
 // Wraps every page under /projects/[projectId]/** (chat, documents, model,
@@ -39,7 +39,7 @@ export default async function ProjectLayout({
 
   const { data, error } = await supabase
     .from("projects")
-    .select("id, name, active_ai_provider")
+    .select(`id, name, ${PROJECT_CHAT_MODEL_EMBED}`)
     .eq("id", projectId)
     .maybeSingle<ProjectRow>();
   if (error) {
@@ -49,7 +49,7 @@ export default async function ProjectLayout({
     notFound();
   }
 
-  const activeProviderLabel = data.active_ai_provider ? (getProviderLabel(data.active_ai_provider) ?? data.active_ai_provider) : null;
+  const chatModelName = data.chat_model?.display_name ?? null;
 
   return (
     <div className="project-shell">
@@ -59,8 +59,12 @@ export default async function ProjectLayout({
         </Link>
         <div className="project-header-title-row">
           <h1 className="project-header-title">{data.name}</h1>
-          <Link href={`/projects/${projectId}/model`} className={`badge ${activeProviderLabel ? "badge-success" : "badge-warning"}`}>
-            Работает на: {activeProviderLabel ?? "модель не выбрана"}
+          <Link
+            href={`/projects/${projectId}/model`}
+            className={`badge ${chatModelName ? "badge-success" : "badge-warning"}`}
+            title="Модель чата проекта — открыть настройки модели"
+          >
+            Работает на: {chatModelName ?? "модель не выбрана"}
           </Link>
         </div>
       </header>

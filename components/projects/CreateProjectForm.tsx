@@ -5,11 +5,9 @@
 // Creates a new project via POST /api/projects (name trimmed, 1..200
 // chars, validated server-side regardless of this form's own client-side
 // check). On success, navigates straight into the new project's /model
-// page rather than just refreshing the /projects list in place -- a
-// brand-new project has no active_ai_provider yet, and picking one is the
-// actual next required step before its chat/documents pages are useful at
-// all, so this is a deliberate nudge rather than leaving the user to
-// discover /model on their own.
+// page rather than just refreshing the /projects list in place -- unless
+// the user's keys leave only one choice (then the models are auto-filled),
+// a new project still needs its models picked before chat/documents work.
 
 import { useState, type FormEvent } from "react";
 import { useRouter } from "next/navigation";

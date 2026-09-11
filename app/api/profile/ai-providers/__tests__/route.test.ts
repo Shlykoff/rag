@@ -19,6 +19,7 @@ const mockGetServiceRoleClient = vi.fn();
 const mockSaveAIProviderCredential = vi.fn();
 const mockGetConfiguredProvidersMap = vi.fn();
 const mockDeleteAIProviderCredential = vi.fn();
+const mockAutoFillProjectModels = vi.fn();
 const mockCheckAICredentialsRateLimit = vi.fn();
 
 vi.mock("@/lib/supabase/server-client", () => ({
@@ -34,6 +35,7 @@ vi.mock("@/lib/ai", () => ({
   saveAIProviderCredential: (...args: unknown[]) => mockSaveAIProviderCredential(...args),
   getConfiguredProvidersMap: (...args: unknown[]) => mockGetConfiguredProvidersMap(...args),
   deleteAIProviderCredential: (...args: unknown[]) => mockDeleteAIProviderCredential(...args),
+  autoFillProjectModels: (...args: unknown[]) => mockAutoFillProjectModels(...args),
 }));
 
 vi.mock("@/lib/rate-limit/ai-credentials-rate-limiter", () => ({
@@ -163,6 +165,54 @@ describe("POST /api/profile/ai-providers", () => {
     expect(response.status).toBe(200);
     expect(await response.json()).toEqual({ status: "saved" });
     expect(mockSaveAIProviderCredential).toHaveBeenCalledWith({}, "user-1", "voyage", "pa-real-key");
+  });
+
+  it("auto-fills the user's project models after the key is saved", async () => {
+    mockGetRouteHandlerSupabaseClient.mockResolvedValue({});
+    mockGetAuthenticatedUser.mockResolvedValue({ id: "user-1", email: "a@b.com" });
+    mockGetServiceRoleClient.mockReturnValue({});
+    mockCheckAICredentialsRateLimit.mockReturnValue(ALLOWED_RATE_LIMIT);
+    mockSaveAIProviderCredential.mockResolvedValue(undefined);
+    mockAutoFillProjectModels.mockResolvedValue({ chat: null, embedding: null });
+
+    await POST(makeRequest("POST", { provider: "openai", apiKey: "sk-x" }));
+
+    expect(mockAutoFillProjectModels).toHaveBeenCalledWith({}, "user-1");
+    expect(mockSaveAIProviderCredential.mock.invocationCallOrder[0]).toBeLessThan(
+      mockAutoFillProjectModels.mock.invocationCallOrder[0]
+    );
+  });
+
+  it("still reports the key as saved when auto-fill fails, logging it", async () => {
+    mockGetRouteHandlerSupabaseClient.mockResolvedValue({});
+    mockGetAuthenticatedUser.mockResolvedValue({ id: "user-1", email: "a@b.com" });
+    mockGetServiceRoleClient.mockReturnValue({});
+    mockCheckAICredentialsRateLimit.mockReturnValue(ALLOWED_RATE_LIMIT);
+    mockSaveAIProviderCredential.mockResolvedValue(undefined);
+    mockAutoFillProjectModels.mockRejectedValue(new Error("db hiccup"));
+    const consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    const response = await POST(makeRequest("POST", { provider: "openai", apiKey: "sk-x" }));
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ status: "saved" });
+    expect(consoleErrorSpy).toHaveBeenCalled();
+    consoleErrorSpy.mockRestore();
+  });
+
+  it("does not auto-fill when saving the key fails", async () => {
+    mockGetRouteHandlerSupabaseClient.mockResolvedValue({});
+    mockGetAuthenticatedUser.mockResolvedValue({ id: "user-1", email: "a@b.com" });
+    mockGetServiceRoleClient.mockReturnValue({});
+    mockCheckAICredentialsRateLimit.mockReturnValue(ALLOWED_RATE_LIMIT);
+    mockSaveAIProviderCredential.mockRejectedValue(new Error("db down"));
+    const consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    const response = await POST(makeRequest("POST", { provider: "openai", apiKey: "sk-x" }));
+
+    expect(response.status).toBe(500);
+    expect(mockAutoFillProjectModels).not.toHaveBeenCalled();
+    consoleErrorSpy.mockRestore();
   });
 });
 

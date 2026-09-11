@@ -1,16 +1,11 @@
 // scripts/seed-ai-credentials.ts
 //
 // Populates the seeded demo account's account-level AI-provider credentials
-// (`ai_provider_credentials`) AND the seeded demo PROJECT's
-// `projects.active_ai_provider` (projects architecture pivot -- that
-// selection moved off the now-dropped `user_settings` table, see the
-// projects migration's header) from whichever of OPENAI_API_KEY /
-// ANTHROPIC_API_KEY / VOYAGE_API_KEY / GEMINI_API_KEY are set in
-// .env.local -- the SAME env vars that used to drive the old
-// process-global `AI_PROVIDER` selection (lib/ai/index.ts). Now that every
-// account (including the demo account) reads its own encrypted credentials
-// from the DB instead, those env vars' only remaining job is feeding THIS
-// script.
+// (`ai_provider_credentials`) and the seeded demo PROJECT's chat/embedding
+// models from whichever of OPENAI_API_KEY / ANTHROPIC_API_KEY /
+// VOYAGE_API_KEY / GEMINI_API_KEY are set in .env.local. The running app
+// never reads those env vars -- every account uses its own encrypted keys
+// from the DB -- so feeding this script is their only job.
 //
 // Why this has to be a companion script and can't just live in
 // supabase/seed.sql: seed.sql is plain SQL, with no access to
@@ -33,18 +28,15 @@
 //   - saveAIProviderCredential() upserts by (user_id, provider), so
 //     re-running with the same .env.local just re-encrypts and overwrites
 //     the same rows, never accumulating duplicates.
-//   - active_ai_provider is only ever set if it isn't ALREADY set -- this
-//     script never overwrites a choice a human already made (e.g. by
-//     visiting /profile and picking a different provider for the demo
-//     account on purpose).
+//   - the demo project's models are only set while still empty -- a
+//     choice already made (e.g. on the project's model page) is never
+//     overwritten.
 //
-// **Second job, added after the above shipped**: supabase/seed.sql seeds
-// the two demo documents' chunks with `embedding = NULL` (there was no real
-// AI provider key anywhere in the project at the time db-architect wrote
-// that file) and its own comment explicitly deferred re-embedding them to
-// "once an AI_PROVIDER key is configured" -- which, for the actual demo
-// account, only ever happens right here, right after the credential-saving
-// loop above runs. So immediately after seeding credentials, this script
+// **Second job**: supabase/seed.sql seeds the two demo documents' chunks
+// with `embedding = NULL` (plain SQL has no provider key to embed with) and
+// defers embedding them until a real key is configured -- which, for the
+// demo account, only happens right here, after the credential-saving loop
+// above runs. So immediately after seeding credentials, this script
 // also re-runs both demo documents through the real ingestion pipeline
 // (`ingestDocumentWithDefaultProviders`, see `reembedDemoDocuments` below) so
 // `npm run seed:ai-keys` alone is enough to make the seeded demo account's
@@ -65,17 +57,17 @@ import "server-only";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import {
   saveAIProviderCredential,
-  getActiveProvider,
-  setActiveProvider,
   hasAIProviderCredential,
   type AIProviderCredentialType,
 } from "../lib/ai/credentials";
+import { listAIModels, type AIModelKind } from "../lib/ai/catalog";
+import { getProjectModelState, setProjectChatModel, setProjectEmbeddingModel } from "../lib/ai/model-selection";
 import { getServiceRoleClient } from "../lib/supabase/service-client";
 import { ingestDocumentWithDefaultProviders } from "../lib/ingestion/ingest";
 
 /** Fixed demo user id, created by supabase/seed.sql (demo@example.com) -- see that file's own comment block for the full local-dev-only rationale. */
 const DEMO_USER_ID = "00000000-0000-0000-0000-000000000001";
-/** Fixed demo project id ("Demo Project"), also created by supabase/seed.sql -- owned by DEMO_USER_ID. Every project-scoped call in this script (active_ai_provider, document re-embedding) targets this id, not the account directly -- see the projects migration's header for why active_ai_provider moved off the account level. */
+/** Fixed demo project id ("Demo Project"), also created by supabase/seed.sql -- owned by DEMO_USER_ID. Model selection and document re-embedding target this project. */
 const DEMO_PROJECT_ID = "00000000-0000-0000-0000-000000000002";
 
 const ENV_KEY_BY_PROVIDER: Record<AIProviderCredentialType, string> = {
@@ -86,15 +78,14 @@ const ENV_KEY_BY_PROVIDER: Record<AIProviderCredentialType, string> = {
 };
 
 /**
- * The script's original job (adapted for the projects pivot): upsert
- * whichever `.env.local` provider keys are present as the demo ACCOUNT's
- * credentials (unchanged, account-level), then default the demo PROJECT's
- * `active_ai_provider` to 'gemini' if nothing has been chosen for it yet.
+ * The script's main job: upsert whichever `.env.local` provider keys are
+ * present as the demo ACCOUNT's credentials, then default the demo
+ * PROJECT's empty model slots to Gemini's recommended catalog models.
  * Split out from `main()` so the demo-document re-embed step below
  * (`reembedDemoDocuments`) can never prevent this part from completing --
  * see `main()`'s own comment for why that ordering matters.
  */
-async function seedCredentialsAndActiveProvider(supabase: SupabaseClient): Promise<void> {
+async function seedCredentialsAndDemoModels(supabase: SupabaseClient): Promise<void> {
   const seededThisRun: AIProviderCredentialType[] = [];
 
   for (const provider of Object.keys(ENV_KEY_BY_PROVIDER) as AIProviderCredentialType[]) {
@@ -113,10 +104,10 @@ async function seedCredentialsAndActiveProvider(supabase: SupabaseClient): Promi
     console.info(`seed-ai-credentials: stored an encrypted '${provider}' credential for the demo user.`);
   }
 
-  const currentActive = await getActiveProvider(supabase, DEMO_PROJECT_ID);
-  if (currentActive) {
+  const current = await getProjectModelState(supabase, DEMO_PROJECT_ID);
+  if (current.chatModelId && current.embeddingModelId) {
     console.info(
-      `seed-ai-credentials: the demo project's active_ai_provider is already '${currentActive}' -- leaving it as-is (this script never overrides a choice already made, e.g. via the project's model-selection UI).`
+      "seed-ai-credentials: the demo project already has chat and embedding models -- leaving them as-is (this script never overrides a choice already made)."
     );
     return;
   }
@@ -132,13 +123,29 @@ async function seedCredentialsAndActiveProvider(supabase: SupabaseClient): Promi
   if (!geminiIsConfigured) {
     console.warn(
       "seed-ai-credentials: GEMINI_API_KEY is not set (in this run or a previous one) -- cannot default " +
-        "the demo project's active_ai_provider to 'gemini'. Set GEMINI_API_KEY in .env.local and re-run " +
-        "`npm run seed:ai-keys`, or pick a provider manually for the demo project once its model-selection UI exists."
+        "the demo project's models to Gemini. Set GEMINI_API_KEY in .env.local and re-run " +
+        "`npm run seed:ai-keys`, or pick models on the demo project's model page."
     );
     return;
   }
-  await setActiveProvider(supabase, DEMO_PROJECT_ID, DEMO_USER_ID, "gemini");
-  console.info("seed-ai-credentials: set active_ai_provider = 'gemini' for the demo project.");
+
+  const catalog = await listAIModels(supabase);
+  const recommendedGemini = (kind: AIModelKind) =>
+    catalog.find((m) => m.provider === "gemini" && m.kind === kind && m.isRecommended && m.isActive);
+  const chatModel = recommendedGemini("chat");
+  const embeddingModel = recommendedGemini("embedding");
+  if (!chatModel || !embeddingModel) {
+    console.warn("seed-ai-credentials: the ai_models catalog has no recommended active Gemini chat/embedding model -- skipping.");
+    return;
+  }
+  if (!current.chatModelId) {
+    await setProjectChatModel(supabase, DEMO_PROJECT_ID, DEMO_USER_ID, chatModel.id);
+    console.info(`seed-ai-credentials: set the demo project's chat model to '${chatModel.modelId}'.`);
+  }
+  if (!current.embeddingModelId) {
+    await setProjectEmbeddingModel(supabase, DEMO_PROJECT_ID, DEMO_USER_ID, embeddingModel.id);
+    console.info(`seed-ai-credentials: set the demo project's embedding model to '${embeddingModel.modelId}'.`);
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -274,8 +281,8 @@ async function getDocumentText(supabase: SupabaseClient, doc: DemoDocumentRow): 
  * pipeline (lib/ingestion/ingest.ts, via the exact same
  * ingestDocumentWithDefaultProviders() entry point app/api/sources/upload
  * and every other source adapter uses) now that the demo user has real
- * credentials from seedCredentialsAndActiveProvider() above. Never throws:
- * every failure mode here (no active provider configured at all, a lookup
+ * credentials from seedCredentialsAndDemoModels() above. Never throws:
+ * every failure mode here (no embedding model chosen, a lookup
  * query failing, a single document's embed call failing because its
  * provider key is invalid/expired/rate-limited) is caught and logged as a
  * warning instead, per this task's explicit "safe at absent/broken keys"
@@ -284,10 +291,10 @@ async function getDocumentText(supabase: SupabaseClient, doc: DemoDocumentRow): 
  * required step.
  */
 async function reembedDemoDocuments(supabase: SupabaseClient): Promise<void> {
-  const activeProvider = await getActiveProvider(supabase, DEMO_PROJECT_ID);
-  if (!activeProvider) {
+  const { embeddingModelId } = await getProjectModelState(supabase, DEMO_PROJECT_ID);
+  if (!embeddingModelId) {
     console.warn(
-      "seed-ai-credentials: no active_ai_provider configured for the demo project -- skipping demo document " +
+      "seed-ai-credentials: the demo project has no embedding model -- skipping demo document " +
         "re-embedding. Re-run `npm run seed:ai-keys` once at least one working provider key is available."
     );
     return;
@@ -347,7 +354,7 @@ async function main(): Promise<void> {
 
   // Required step: must complete (or throw, failing the whole script) on
   // every run -- see this function's own doc comment.
-  await seedCredentialsAndActiveProvider(supabase);
+  await seedCredentialsAndDemoModels(supabase);
 
   // Best-effort step layered on top, per this task's requirement: never
   // let a re-embed failure (missing/invalid keys, a vendor outage, ...)
@@ -355,7 +362,7 @@ async function main(): Promise<void> {
   // itself -- reembedDemoDocuments() already catches everything it can
   // usefully attribute to a specific document/cause internally and logs a
   // warning; this outer catch is only a backstop for anything that
-  // slips past that (e.g. the initial getActiveProvider() call itself
+  // slips past that (e.g. the initial getProjectModelState() call itself
   // failing).
   await reembedDemoDocuments(supabase).catch((err: unknown) => {
     console.warn(

@@ -1,44 +1,82 @@
 // lib/ai/index.ts
 //
-// Provider-selection boundary. Every other module (ingestion, retrieval, API
-// routes) gets its providers from here -- getAIProviders() for a chat turn,
+// Provider-selection boundary. Ingestion, retrieval and API routes get their
+// providers from here -- getAIProviders() for a chat turn,
 // getEmbeddingsProvider() for ingestion -- never a concrete adapter from
-// lib/ai/providers/, and never a vendor SDK directly (CLAUDE.md rule 4).
+// lib/ai/providers/ and never a vendor SDK (CLAUDE.md rule 4).
 //
-// Bring-your-own-key, with two independent per-project settings:
-//   - projects.active_ai_provider: the chat model (openai | anthropic |
-//     gemini). Can change at any time -- it never touches stored vectors.
-//   - projects.embedding_provider: the embedding model (openai | gemini |
-//     voyage, all pinned to 1024 dims). Fixed once the project has
-//     documents: vectors from different models aren't comparable, and the
-//     retrieval RPC only matches chunks embedded by the project's current
-//     model.
-// Both are built from the project owner's own encrypted API keys
-// (lib/ai/credentials.ts).
+// Each project picks two independent models from the ai_models catalog
+// (lib/ai/catalog.ts):
+//   - chat_model_id: switchable at any time, it never touches stored vectors;
+//   - embedding_model_id: fixed once the project has documents, because
+//     retrieval only compares a question with chunks embedded by the same
+//     model and dimension.
+// Adapters are built from the catalog row (provider, model id, dimensions)
+// and the project owner's own encrypted key for that provider.
 
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { AnthropicChatProvider } from "./providers/anthropic";
-import { createOpenAICompatiblePair } from "./providers/openai";
+import { OpenAICompatibleChatProvider, OpenAICompatibleEmbeddingsProvider } from "./providers/openai";
 import { VoyageEmbeddingsProvider } from "./providers/voyage";
-import { createGeminiProvider } from "./providers/gemini";
+import { createGeminiChatProvider, createGeminiEmbeddingsProvider } from "./providers/gemini";
 import type { AIProviderPair, ChatProvider, EmbeddingsProvider } from "./types";
 import { AIProviderError } from "./errors";
+import { getAIModel, type AIModel, type AIModelKind } from "./catalog";
 import {
-  getActiveProvider,
+  CHAT_MODEL_PROVIDERS,
+  EMBEDDING_MODEL_PROVIDERS,
   getAIProviderCredential,
   type ActiveAIProvider,
   type AIProviderCredentialType,
   type EmbeddingProviderType,
 } from "./credentials";
 
+/** Adding a provider: write its adapter in lib/ai/providers/, add its enum value, add an entry here. */
+const CHAT_ADAPTERS = {
+  openai: (apiKey, modelId) => new OpenAICompatibleChatProvider({ apiKey, model: modelId }),
+  anthropic: (apiKey, modelId) => new AnthropicChatProvider({ apiKey, model: modelId }),
+  gemini: (apiKey, modelId) => createGeminiChatProvider({ apiKey, model: modelId }),
+} satisfies Record<ActiveAIProvider, (apiKey: string, modelId: string) => ChatProvider>;
+
+const EMBEDDING_ADAPTERS = {
+  openai: (apiKey, modelId, dimensions) => new OpenAICompatibleEmbeddingsProvider({ apiKey, model: modelId, dimensions }),
+  gemini: (apiKey, modelId, dimensions) => createGeminiEmbeddingsProvider({ apiKey, model: modelId, dimensions }),
+  voyage: (apiKey, modelId, dimensions) => new VoyageEmbeddingsProvider({ apiKey, model: modelId, dimensions }),
+} satisfies Record<EmbeddingProviderType, (apiKey: string, modelId: string, dimensions: number) => EmbeddingsProvider>;
+
+const PROVIDER_LABELS: Record<AIProviderCredentialType, string> = {
+  openai: "OpenAI",
+  anthropic: "Anthropic Claude",
+  gemini: "Google Gemini",
+  voyage: "Voyage AI",
+};
+
+export function getProviderLabel(provider: string): string | undefined {
+  return (PROVIDER_LABELS as Record<string, string | undefined>)[provider];
+}
+
+function isChatModelProvider(provider: AIProviderCredentialType): provider is ActiveAIProvider {
+  return (CHAT_MODEL_PROVIDERS as readonly string[]).includes(provider);
+}
+
+function isEmbeddingModelProvider(provider: AIProviderCredentialType): provider is EmbeddingProviderType {
+  return (EMBEDDING_MODEL_PROVIDERS as readonly string[]).includes(provider);
+}
+
 function noCredentials(message: string, userMessage: string): AIProviderError {
   return new AIProviderError({ provider: "none", kind: "no_credentials", retryable: false, message, userMessage });
 }
 
+const CHOOSE_MODEL_MESSAGE: Record<AIModelKind, string> = {
+  chat: "Выберите модель чата в настройках проекта (раздел «Модель»), чтобы начать общаться с ассистентом.",
+  embedding:
+    "Выберите модель эмбеддингов в настройках проекта (раздел «Модель»), чтобы добавлять документы и искать по ним.",
+};
+
 /**
- * Loads one provider's decrypted API key for the project owner, or throws
- * AIProviderError{kind:"no_credentials"}. Checked on every call: a key can
- * be deleted after a project started using it.
+ * The owner's decrypted key for `provider`, or AIProviderError{kind:
+ * "no_credentials"}. Checked on every call: a key can be deleted after a
+ * project started using it.
  */
 async function requireCredential(
   supabase: SupabaseClient,
@@ -49,76 +87,22 @@ async function requireCredential(
   if (!apiKey) {
     throw noCredentials(
       `getAIProviders: user ${ownerUserId} has no stored '${provider}' credential.`,
-      "Добавьте свой API-ключ AI-провайдера в профиле, чтобы начать общаться с ассистентом."
+      `Добавьте API-ключ ${PROVIDER_LABELS[provider]} в профиле: он нужен модели, выбранной в проекте.`
     );
   }
   return apiKey;
-}
-
-const openAIModels = () => ({
-  chatModel: process.env.OPENAI_CHAT_MODEL || "gpt-4.1-mini",
-  embeddingModel: process.env.OPENAI_EMBEDDING_MODEL || "text-embedding-3-small",
-});
-
-const geminiModels = () => ({
-  chatModel: process.env.GEMINI_CHAT_MODEL || "gemini-3.6-flash",
-  embeddingModel: process.env.GEMINI_EMBEDDING_MODEL || "gemini-embedding-001",
-});
-
-interface ChatProviderEntry {
-  /** Label for the "Работает на: ..." badge. */
-  label: string;
-  build: (apiKey: string) => ChatProvider;
-}
-
-/**
- * Single source of truth for which chat providers exist. Adding one: write
- * its adapter in lib/ai/providers/, add its ai_provider_type enum value, add
- * one entry here.
- */
-const CHAT_PROVIDERS = {
-  openai: {
-    label: "OpenAI",
-    build: (apiKey) => createOpenAICompatiblePair({ apiKey, ...openAIModels() }).chatProvider,
-  },
-  anthropic: {
-    label: "Anthropic Claude",
-    build: (apiKey) =>
-      new AnthropicChatProvider({ apiKey, chatModel: process.env.ANTHROPIC_CHAT_MODEL || "claude-sonnet-4-5" }),
-  },
-  gemini: {
-    label: "Google Gemini",
-    build: (apiKey) => createGeminiProvider({ apiKey, ...geminiModels() }).chatProvider,
-  },
-} satisfies Record<ActiveAIProvider, ChatProviderEntry>;
-
-/** Embedding providers a project can pick. Every one outputs 1024-dim vectors (document_chunks.embedding is vector(1024)). */
-const EMBEDDING_REGISTRY = {
-  openai: (apiKey) => createOpenAICompatiblePair({ apiKey, ...openAIModels() }).embeddingsProvider,
-  gemini: (apiKey) => createGeminiProvider({ apiKey, ...geminiModels() }).embeddingsProvider,
-  voyage: (apiKey) =>
-    new VoyageEmbeddingsProvider({ apiKey, embeddingModel: process.env.VOYAGE_EMBEDDING_MODEL || "voyage-3-large" }),
-} satisfies Record<EmbeddingProviderType, (apiKey: string) => EmbeddingsProvider>;
-
-export type SupportedAIProvider = keyof typeof CHAT_PROVIDERS;
-
-/** Valid chat-provider values, derived from the registry. */
-export const SUPPORTED_AI_PROVIDERS = Object.keys(CHAT_PROVIDERS) as SupportedAIProvider[];
-
-export function getProviderLabel(provider: string): string | undefined {
-  return (CHAT_PROVIDERS as Record<string, ChatProviderEntry>)[provider]?.label;
 }
 
 /** The `projects` columns getAIProviders()/getEmbeddingsProvider() read. */
 export interface ProjectAIConfigRow {
   id: string;
   user_id: string;
-  active_ai_provider: ActiveAIProvider | null;
-  embedding_provider: EmbeddingProviderType | null;
+  chat_model_id: string | null;
+  embedding_model_id: string | null;
 }
 
 export interface GetAIProvidersParams {
-  /** The project whose chat/embedding settings to build providers for. */
+  /** The project whose models to build providers for. */
   projectId: string;
   /** The project's owner (already server-validated by the caller), whose account-level keys are used. */
   ownerUserId: string;
@@ -132,20 +116,17 @@ export interface GetAIProvidersParams {
 }
 
 /**
- * Loads the project's AI settings via the service-role client and re-checks
- * it belongs to ownerUserId -- defense in depth against a server-side
- * scoping bug, not the primary enforcement boundary (that's the caller's own
- * ownership check). A mismatch throws a plain Error, not AIProviderError.
+ * Loads the project's model ids via the service-role client and re-checks it
+ * belongs to ownerUserId -- defense in depth against a server-side scoping
+ * bug, not the primary check (that's the caller's own). A mismatch throws a
+ * plain Error, not AIProviderError.
  */
-async function loadProjectAIConfig(
-  params: GetAIProvidersParams,
-  supabase: SupabaseClient
-): Promise<ProjectAIConfigRow> {
+async function loadProjectAIConfig(params: GetAIProvidersParams, supabase: SupabaseClient): Promise<ProjectAIConfigRow> {
   let project = params.preFetchedProjectRow ?? null;
   if (!project) {
     const { data, error } = await supabase
       .from("projects")
-      .select("id, user_id, active_ai_provider, embedding_provider")
+      .select("id, user_id, chat_model_id, embedding_model_id")
       .eq("id", params.projectId)
       .maybeSingle<ProjectAIConfigRow>();
     if (error) {
@@ -161,41 +142,60 @@ async function loadProjectAIConfig(
   return project;
 }
 
-async function buildEmbeddingsProvider(
+function requireModelId(modelId: string | null, projectId: string, kind: AIModelKind): string {
+  if (modelId) return modelId;
+  throw noCredentials(`getAIProviders: project ${projectId} has no ${kind} model chosen.`, CHOOSE_MODEL_MESSAGE[kind]);
+}
+
+async function loadModel(supabase: SupabaseClient, modelId: string, projectId: string): Promise<AIModel> {
+  const model = await getAIModel(supabase, modelId);
+  // Unreachable while the projects -> ai_models foreign keys hold.
+  if (!model) throw new Error(`getAIProviders: project ${projectId} references ai_models row ${modelId}, which does not exist`);
+  return model;
+}
+
+function buildChatProvider(model: AIModel, apiKey: string): ChatProvider {
+  if (model.kind !== "chat" || !isChatModelProvider(model.provider)) {
+    throw new Error(`getAIProviders: ai_models row ${model.id} (${model.provider}/${model.modelId}) is not a chat model`);
+  }
+  return CHAT_ADAPTERS[model.provider](apiKey, model.modelId);
+}
+
+function buildEmbeddingsProvider(model: AIModel, apiKey: string): EmbeddingsProvider {
+  if (model.kind !== "embedding" || !isEmbeddingModelProvider(model.provider) || model.dimensions === null) {
+    throw new Error(`getAIProviders: ai_models row ${model.id} (${model.provider}/${model.modelId}) is not an embedding model`);
+  }
+  return EMBEDDING_ADAPTERS[model.provider](apiKey, model.modelId, model.dimensions);
+}
+
+async function embeddingsProviderFor(
   project: ProjectAIConfigRow,
   ownerUserId: string,
   supabase: SupabaseClient
 ): Promise<EmbeddingsProvider> {
-  if (!project.embedding_provider) {
-    throw noCredentials(
-      `getAIProviders: project ${project.id} has no embedding_provider set.`,
-      "Выберите модель эмбеддингов для этого проекта, чтобы добавлять документы и искать по ним."
-    );
-  }
-  const apiKey = await requireCredential(supabase, ownerUserId, project.embedding_provider);
-  return EMBEDDING_REGISTRY[project.embedding_provider](apiKey);
+  const model = await loadModel(supabase, requireModelId(project.embedding_model_id, project.id, "embedding"), project.id);
+  return buildEmbeddingsProvider(model, await requireCredential(supabase, ownerUserId, model.provider));
 }
 
 /**
  * Builds the {chatProvider, embeddingsProvider} pair for one chat turn from
- * the project's two settings and its owner's keys. Throws
+ * the project's two catalog models and its owner's keys. Throws
  * AIProviderError{kind:"no_credentials"} when either model isn't chosen or
- * its key is missing (callers map this to a 422).
+ * its provider's key is missing (callers map this to a 422).
  *
  * Deliberately not memoized: adapter construction is cheap, and a cache
  * would need invalidation on every key/model change.
  */
 export async function getAIProviders(params: GetAIProvidersParams, supabase: SupabaseClient): Promise<AIProviderPair> {
   const project = await loadProjectAIConfig(params, supabase);
-  if (!project.active_ai_provider) {
-    throw noCredentials(
-      `getAIProviders: project ${project.id} has no active_ai_provider set.`,
-      "Добавьте и выберите AI-провайдера для этого проекта, чтобы начать общаться с ассистентом."
-    );
-  }
-  const chatKey = await requireCredential(supabase, params.ownerUserId, project.active_ai_provider);
-  const embeddingsProvider = await buildEmbeddingsProvider(project, params.ownerUserId, supabase);
-  return { chatProvider: CHAT_PROVIDERS[project.active_ai_provider].build(chatKey), embeddingsProvider };
+  // Both slots are checked before any lookup, so "choose a model" wins over "add a key".
+  const chatModelId = requireModelId(project.chat_model_id, project.id, "chat");
+  requireModelId(project.embedding_model_id, project.id, "embedding");
+
+  const chatModel = await loadModel(supabase, chatModelId, project.id);
+  const chatKey = await requireCredential(supabase, params.ownerUserId, chatModel.provider);
+  const embeddingsProvider = await embeddingsProviderFor(project, params.ownerUserId, supabase);
+  return { chatProvider: buildChatProvider(chatModel, chatKey), embeddingsProvider };
 }
 
 /** Embeddings only, for ingestion -- needs the project's embedding model, not a chat model. */
@@ -204,19 +204,7 @@ export async function getEmbeddingsProvider(
   supabase: SupabaseClient
 ): Promise<EmbeddingsProvider> {
   const project = await loadProjectAIConfig(params, supabase);
-  return buildEmbeddingsProvider(project, params.ownerUserId, supabase);
-}
-
-/**
- * Display label for a project's chat provider, for the "Работает на: ..."
- * badge, or null if unconfigured. Never throws. Skips the ownership check
- * (display-only) -- the caller must already have verified the viewer may
- * see this project.
- */
-export async function getActiveProviderLabel(projectId: string, supabase: SupabaseClient): Promise<string | null> {
-  const active = await getActiveProvider(supabase, projectId);
-  if (!active) return null;
-  return getProviderLabel(active) ?? null;
+  return embeddingsProviderFor(project, params.ownerUserId, supabase);
 }
 
 export type { ChatProvider, EmbeddingsProvider, AIProviderPair, ChatMessage, ChatStreamResult, TokenUsage } from "./types";
@@ -227,12 +215,23 @@ export {
   getAIProviderCredential,
   hasAIProviderCredential,
   deleteAIProviderCredential,
-  getActiveProvider,
-  setActiveProvider,
-  getProjectEmbeddingState,
-  setProjectEmbeddingProvider,
-  MissingProviderCredentialsError,
-  EmbeddingProviderLockedError,
   ALL_CREDENTIAL_PROVIDERS,
+  CHAT_MODEL_PROVIDERS,
+  EMBEDDING_MODEL_PROVIDERS,
   getConfiguredProvidersMap,
 } from "./credentials";
+export type { AIModel, AIModelDTO, AIModelKind } from "./catalog";
+export { listAIModels, getAIModel, toAIModelDTO } from "./catalog";
+export type { InvalidModelReason, ProjectModelState } from "./model-selection";
+export {
+  getProjectModelState,
+  setProjectChatModel,
+  setProjectEmbeddingModel,
+  getChatModelDisplayName,
+  PROJECT_CHAT_MODEL_EMBED,
+  InvalidModelSelectionError,
+  MissingProviderCredentialsError,
+  EmbeddingModelLockedError,
+} from "./model-selection";
+export type { AutoFillPicks, ConfiguredProviders } from "./model-autofill";
+export { pickAutoFillModels, resolveAutoFillModels, autoFillColumns, autoFillProjectModels } from "./model-autofill";

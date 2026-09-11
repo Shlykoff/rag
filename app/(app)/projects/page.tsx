@@ -1,6 +1,6 @@
 import { Suspense } from "react";
 import { getAuthenticatedUser, getRouteHandlerSupabaseClient } from "@/lib/supabase/server-client";
-import { getProviderLabel, type ActiveAIProvider } from "@/lib/ai";
+import { PROJECT_CHAT_MODEL_EMBED } from "@/lib/ai";
 import { CreateProjectForm } from "@/components/projects/CreateProjectForm";
 import { ProjectList } from "@/components/projects/ProjectList";
 import type { ProjectListItem } from "@/components/projects/types";
@@ -10,8 +10,8 @@ export const dynamic = "force-dynamic";
 interface ProjectRow {
   id: string;
   name: string;
-  active_ai_provider: ActiveAIProvider | null;
   documents: { count: number }[];
+  chat_model: { display_name: string } | null;
 }
 
 interface TelegramIntegrationRow {
@@ -71,8 +71,9 @@ async function ProjectsListSection({ supabase }: { supabase: Awaited<ReturnType<
   const [projectsResult, telegramResult] = await Promise.all([
     supabase
       .from("projects")
-      .select("id, name, active_ai_provider, documents(count)")
-      .order("created_at", { ascending: false }),
+      .select(`id, name, documents(count), ${PROJECT_CHAT_MODEL_EMBED}`)
+      .order("created_at", { ascending: false })
+      .returns<ProjectRow[]>(),
     // RLS (channel_integrations_select_own) already scopes this to
     // projects the caller owns -- see that table's migration -- so no
     // explicit project_id filter is needed here beyond channel = telegram.
@@ -90,11 +91,11 @@ async function ProjectsListSection({ supabase }: { supabase: Awaited<ReturnType<
     ((telegramResult.data ?? []) as TelegramIntegrationRow[]).map((row) => row.project_id)
   );
 
-  const projects: ProjectListItem[] = ((projectsResult.data ?? []) as ProjectRow[]).map((row) => ({
+  const projects: ProjectListItem[] = (projectsResult.data ?? []).map((row) => ({
     id: row.id,
     name: row.name,
     documentCount: row.documents?.[0]?.count ?? 0,
-    activeAiProviderLabel: row.active_ai_provider ? (getProviderLabel(row.active_ai_provider) ?? row.active_ai_provider) : null,
+    chatModelName: row.chat_model?.display_name ?? null,
     telegramConnected: telegramProjectIds.has(row.id),
   }));
 

@@ -12,14 +12,14 @@
 //
 // Also reused by components/profile/* (ProfileForm.tsx, ProviderKeyField.tsx)
 // for app/api/profile/ai-providers/route.ts and by components/projects/*
-// for app/api/projects/** (ModelPicker.tsx's GET/PUT,
+// for app/api/projects/** (ModelPicker.tsx's GET,
 // TelegramChannelPanel.tsx's GET/POST/DELETE) -- all of them follow the
 // same 401/429/{error,message} shapes, just over different resources.
-// `deleteJson`/`putJson` exist because the profile route needed a DELETE
-// with a JSON body (`{ provider }`, unlike `del()`'s no-body DELETE) and a
-// PUT at all; `patchJson` exists for the project rename endpoint's PATCH.
-// All of them still funnel through the same `normalizeResponse()` so the
-// unhappy-path handling doesn't fork per HTTP method.
+// `deleteJson` exists because the profile route needed a DELETE with a
+// JSON body (`{ provider }`, unlike `del()`'s no-body DELETE); `patchJson`
+// exists for the project rename endpoint's PATCH. All of them still funnel
+// through the same `normalizeResponse()` so the unhappy-path handling
+// doesn't fork per HTTP method.
 
 export interface SourceRequestSuccess<T> {
   ok: true;
@@ -31,7 +31,7 @@ export interface SourceRequestFailure {
   kind: "unauthorized" | "rate_limited" | "not_found" | "no_credentials" | "error";
   message: string;
   retryAfterMs?: number;
-  /** Raw `error` code from the response body, when present (e.g. "missing_credentials") -- only populated on kind === "error". Most callers only need `message`; this exists for the rare case where a caller needs to react to a *specific* error code rather than just display the message (see components/profile/ActiveProviderSection.tsx's handling of PUT's `missing_credentials` race). */
+  /** Raw `error` code from the response body, when present -- only populated on kind === "error", for a caller that must react to a specific code rather than just show `message`. */
   code?: string;
 }
 
@@ -78,19 +78,20 @@ async function normalizeResponse<T>(response: Response): Promise<SourceRequestRe
 
   if (response.status === 422) {
     // { error: "no_credentials", message } -- every app/api/sources/* route
-    // that ends up calling lib/ai/index.ts's provider lookups returns this
-    // exact shape when the signed-in user has no active AI provider
-    // configured, or their active provider's credential(s) are missing.
-    // Same contract as app/api/chat/route.ts's 422, surfaced as its own
-    // kind so source forms can show the same "add a provider" treatment
-    // ChatView.tsx already has, instead of a generic error banner. Any
+    // that builds the project's AI providers returns this shape when the
+    // project has no chat/embedding model chosen, or the key for a chosen
+    // model's provider is missing. Same contract as app/api/chat/route.ts's
+    // 422, surfaced as its own kind so source forms can point at the
+    // project's model page instead of showing a generic error banner. Any
     // other 422 body falls through to the generic "error" branch below.
     const body = (await response.json().catch(() => ({}))) as ErrorBody;
     if (body.error === "no_credentials") {
       return {
         ok: false,
         kind: "no_credentials",
-        message: body.message ?? "Добавьте и выберите AI-провайдера в профиле, чтобы добавить источник.",
+        message:
+          body.message ??
+          "Выберите модели проекта в разделе «Модель» (и при необходимости добавьте API-ключ в профиле), чтобы добавить источник.",
       };
     }
     return { ok: false, kind: "error", message: describeErrorBody(422, body), code: body.error };
@@ -128,19 +129,6 @@ export async function postJson<T>(url: string, body: unknown): Promise<SourceReq
   try {
     const response = await fetch(url, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
-    });
-    return await normalizeResponse<T>(response);
-  } catch {
-    return { ok: false, kind: "error", message: "Не удалось подключиться к серверу." };
-  }
-}
-
-export async function putJson<T>(url: string, body: unknown): Promise<SourceRequestResult<T>> {
-  try {
-    const response = await fetch(url, {
-      method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
     });

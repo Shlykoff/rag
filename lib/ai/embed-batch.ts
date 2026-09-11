@@ -28,7 +28,7 @@ export interface EmbedBatchDeps {
   provider: string;
   /** Max inputs per underlying API call (e.g. 100 for OpenAI, <=128 for Voyage). */
   batchSize: number;
-  /** Expected length of every returned embedding vector (fixed project-wide at 1024, see lib/ai/types.ts's EmbeddingsProvider doc comment) -- validated against every vector callBatch returns, not just the vector COUNT, so a vendor silently returning the wrong-sized vector fails loudly here instead of surfacing many layers away as a raw Postgres `vector(1024)` mismatch. */
+  /** Expected length of every returned vector (the catalog model's dimensions). Checked per vector, not just the count: a vendor ignoring the requested dimension must fail here, not store vectors retrieval can never match. */
   dimensions: number;
   /** Performs one API call for `batch`, returning vectors in the same order as `batch`. Throws on failure (any shape -- normalized internally). */
   callBatch: (batch: string[]) => Promise<number[][]>;

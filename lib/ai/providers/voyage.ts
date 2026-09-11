@@ -1,87 +1,71 @@
 // lib/ai/providers/voyage.ts
 //
-// Embeddings-only adapter, used exclusively to pair with
-// AnthropicChatProvider (AI_PROVIDER=anthropic) since Anthropic has no
-// embeddings API of its own. Wired together in lib/ai/index.ts.
+// Embeddings-only adapter. Anthropic has no embeddings API, so Voyage is the
+// embedding option for an account that only has Claude for chat; any
+// embedding model can pair with any chat model (see lib/ai/index.ts).
+// The voyage-4 family only accepts outputDimension in {256, 512, 1024, 2048},
+// so catalog rows for Voyage must use one of those.
 
 import { VoyageAIClient } from "voyageai";
 import type { EmbeddingsProvider } from "../types";
 import { embedInBatches } from "../embed-batch";
 import { AIProviderError } from "../errors";
 
-/** Fixed project-wide, matches pgvector's vector(1024) column (see CLAUDE.md). Voyage's output_dimension only accepts {256, 512, 1024, 2048} (no 1536), so 1024 -- Voyage's own default -- is the value every other provider is shortened down to as well. */
-export const VOYAGE_EMBEDDING_DIMENSIONS = 1024;
-
 /** Voyage's embed endpoint caps the input list at 128 items per request. */
 const EMBEDDING_BATCH_SIZE = 100;
 
 export interface VoyageConfig {
   apiKey: string;
-  embeddingModel: string;
+  model: string;
+  dimensions: number;
+}
+
+function malformedResponse(provider: string, message: string): AIProviderError {
+  return new AIProviderError({
+    provider,
+    kind: "unknown",
+    retryable: false,
+    message: `${provider} ${message}`,
+    userMessage: "Провайдер вернул некорректный ответ при генерации embeddings.",
+  });
 }
 
 export class VoyageEmbeddingsProvider implements EmbeddingsProvider {
   readonly providerName = "voyage";
   readonly modelName: string;
-  readonly dimensions = VOYAGE_EMBEDDING_DIMENSIONS;
+  readonly dimensions: number;
   private readonly client: VoyageAIClient;
 
   constructor(config: VoyageConfig) {
-    this.modelName = config.embeddingModel;
-    // maxRetries: 0 -- see providers/openai.ts constructor comment: our own
-    // lib/ai/retry.ts is the single retry layer for this project.
+    this.modelName = config.model;
+    this.dimensions = config.dimensions;
+    // maxRetries: 0 -- lib/ai/retry.ts is the only retry layer.
     this.client = new VoyageAIClient({ apiKey: config.apiKey, maxRetries: 0 });
   }
 
-  async embed(texts: string[]): Promise<number[][]> {
+  embed(texts: string[]): Promise<number[][]> {
     return embedInBatches(texts, {
       provider: this.providerName,
       batchSize: EMBEDDING_BATCH_SIZE,
       dimensions: this.dimensions,
       callBatch: async (batch) => {
-        // inputType intentionally left unset (Voyage default: symmetric
-        // embeddings). Voyage supports an asymmetric mode
-        // (inputType: 'document' for ingested chunks vs 'query' for the
-        // user's question) that can improve retrieval quality, but the
-        // shared EmbeddingsProvider.embed(texts) contract (lib/ai/types.ts)
-        // is used for both chunk ingestion (lib/ingestion/ingest.ts) and
-        // query embedding (lib/retrieval/search.ts) with no way to signal
-        // which one this call is -- and OpenAI/Gemini have no equivalent
-        // concept via the OpenAI-compatible embeddings endpoint. Symmetric
-        // mode keeps behavior identical and comparable across all three
-        // providers; revisit with an optional `inputType` parameter on the
-        // interface if Voyage's asymmetric mode turns out to matter for
-        // retrieval quality in practice.
+        // inputType is left unset (symmetric embeddings): EmbeddingsProvider
+        // .embed() serves both chunk ingestion and query embedding with no
+        // way to tell them apart, and OpenAI/Gemini have no equivalent
+        // through the compatible endpoint. Revisit with an optional
+        // `inputType` on the interface if asymmetric mode proves worth it.
         const response = await this.client.embed({
           input: batch,
           model: this.modelName,
           outputDimension: this.dimensions,
         });
         const data = response.data;
-        if (!data) {
-          throw new AIProviderError({
-            provider: this.providerName,
-            kind: "unknown",
-            retryable: false,
-            message: `${this.providerName} embed response had no 'data' field`,
-            userMessage:
-              "Провайдер вернул некорректный ответ при генерации embeddings.",
-          });
-        }
+        if (!data) throw malformedResponse(this.providerName, "embed response had no 'data' field");
         return data
           .slice()
           .sort((a, b) => (a.index ?? 0) - (b.index ?? 0))
           .map((item) => {
-            if (!item.embedding) {
-              throw new AIProviderError({
-                provider: this.providerName,
-                kind: "unknown",
-                retryable: false,
-                message: `${this.providerName} embed response item missing 'embedding'`,
-                userMessage:
-                  "Провайдер вернул некорректный ответ при генерации embeddings.",
-              });
-            }
+            if (!item.embedding) throw malformedResponse(this.providerName, "embed response item missing 'embedding'");
             return item.embedding;
           });
       },

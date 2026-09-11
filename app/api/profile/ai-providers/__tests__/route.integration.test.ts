@@ -97,6 +97,57 @@ describe.skipIf(!hasIntegrationEnv() || !process.env.CREDENTIALS_ENCRYPTION_KEY)
       }
     });
 
+    it("saving a key auto-fills empty model slots of all the user's projects, never a chosen one", async () => {
+      const user = await freshUser("profile-credentials-autofill");
+      try {
+        const { data: models, error: modelsError } = await supabase.from("ai_models").select("id, model_id");
+        if (modelsError) throw new Error(modelsError.message);
+        const idOf = (modelId: string) => (models as { id: string; model_id: string }[]).find((m) => m.model_id === modelId)!.id;
+
+        const { data: projects, error: projectsError } = await supabase
+          .from("projects")
+          .insert([
+            { user_id: user.id, name: "empty" },
+            { user_id: user.id, name: "chosen", chat_model_id: idOf("gpt-4.1-mini"), active_ai_provider: "openai" },
+          ])
+          .select("id, name");
+        if (projectsError) throw new Error(projectsError.message);
+        const idByName = Object.fromEntries((projects as { id: string; name: string }[]).map((p) => [p.name, p.id]));
+
+        const readModels = async (projectId: string) => {
+          const { data, error } = await supabase
+            .from("projects")
+            .select("chat_model_id, embedding_model_id")
+            .eq("id", projectId)
+            .single();
+          if (error) throw new Error(error.message);
+          return data;
+        };
+
+        expect((await POST(makePostRequest("openai", `sk-integration-${user.id}`))).status).toBe(200);
+
+        expect(await readModels(idByName.empty)).toEqual({
+          chat_model_id: idOf("gpt-5.6-luna"),
+          embedding_model_id: idOf("text-embedding-3-small"),
+        });
+        expect(await readModels(idByName.chosen)).toEqual({
+          chat_model_id: idOf("gpt-4.1-mini"),
+          embedding_model_id: idOf("text-embedding-3-small"),
+        });
+
+        // A second chat-capable key makes chat ambiguous: nothing new is filled, nothing is cleared.
+        const { error: resetError } = await supabase
+          .from("projects")
+          .update({ chat_model_id: null, active_ai_provider: null })
+          .eq("id", idByName.empty);
+        if (resetError) throw new Error(resetError.message);
+        expect((await POST(makePostRequest("anthropic", `sk-ant-integration-${user.id}`))).status).toBe(200);
+        expect((await readModels(idByName.empty)).chat_model_id).toBeNull();
+      } finally {
+        await deleteTestUser(supabase, user.id);
+      }
+    });
+
     it("saving independent providers' keys never clobbers each other", async () => {
       const user = await freshUser("profile-credentials-independent");
       try {
