@@ -234,7 +234,7 @@ export interface RefetchResult {
  * adapter matching `sourceType` and normalizes each one's differently-
  * shaped result into the one shape refreshDocumentFromSource actually
  * needs (extracted text + a StoredObject to re-upload alongside it).
- * Mirrors lib/ai/index.ts's PROVIDER_REGISTRY dispatch-by-key pattern --
+ * Mirrors lib/ai/index.ts's registry dispatch-by-key pattern --
  * one lookup table instead of the caller hand-branching on a string union.
  * `manual_upload` is deliberately not a valid input here: it has nothing
  * external to re-fetch, so the route rejects it with its own 400 BEFORE

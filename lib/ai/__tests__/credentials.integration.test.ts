@@ -23,7 +23,10 @@ import {
   deleteAIProviderCredential,
   getActiveProvider,
   setActiveProvider,
+  getProjectEmbeddingState,
+  setProjectEmbeddingProvider,
   MissingProviderCredentialsError,
+  EmbeddingProviderLockedError,
 } from "../credentials";
 import {
   createTestProject,
@@ -149,26 +152,11 @@ describe.skipIf(!hasIntegrationEnv() || !process.env.CREDENTIALS_ENCRYPTION_KEY)
         }
       });
 
-      it("setActiveProvider('anthropic') requires BOTH an anthropic AND a voyage credential -- rejects with only one saved", async () => {
-        const u = await createTestUser(supabase, "ai-credentials-active-anthropic-partial");
+      it("setActiveProvider('anthropic') needs only the anthropic key -- embeddings are a separate per-project choice", async () => {
+        const u = await createTestUser(supabase, "ai-credentials-active-anthropic");
         try {
           const project = await createTestProject(supabase, u.id);
           await saveAIProviderCredential(supabase, u.id, "anthropic", "claude-key-only");
-          const err = await setActiveProvider(supabase, project.id, u.id, "anthropic").catch((e: unknown) => e);
-          expect(err).toBeInstanceOf(MissingProviderCredentialsError);
-          expect((err as InstanceType<typeof MissingProviderCredentialsError>).missing).toEqual(["voyage"]);
-          expect(await getActiveProvider(supabase, project.id)).toBeNull();
-        } finally {
-          await deleteTestUser(supabase, u.id);
-        }
-      });
-
-      it("setActiveProvider('anthropic') succeeds once BOTH anthropic and voyage credentials exist", async () => {
-        const u = await createTestUser(supabase, "ai-credentials-active-anthropic-full");
-        try {
-          const project = await createTestProject(supabase, u.id);
-          await saveAIProviderCredential(supabase, u.id, "anthropic", "claude-key");
-          await saveAIProviderCredential(supabase, u.id, "voyage", "voyage-key");
           await setActiveProvider(supabase, project.id, u.id, "anthropic");
           expect(await getActiveProvider(supabase, project.id)).toBe("anthropic");
         } finally {
@@ -201,6 +189,101 @@ describe.skipIf(!hasIntegrationEnv() || !process.env.CREDENTIALS_ENCRYPTION_KEY)
             /belongs to user/
           );
           expect(await getActiveProvider(supabase, project.id)).toBeNull();
+        } finally {
+          await deleteTestUser(supabase, owner.id);
+          await deleteTestUser(supabase, impostor.id);
+        }
+      });
+    });
+
+    describe("project embedding provider", () => {
+      async function addDocument(projectId: string): Promise<void> {
+        const { error } = await supabase
+          .from("documents")
+          .insert({ project_id: projectId, title: "doc", source_type: "manual_upload" });
+        if (error) throw new Error(error.message);
+      }
+
+      it("starts unset and unlocked", async () => {
+        const u = await createTestUser(supabase, "embedding-fresh");
+        try {
+          const project = await createTestProject(supabase, u.id);
+          expect(await getProjectEmbeddingState(supabase, project.id)).toEqual({ provider: null, locked: false });
+        } finally {
+          await deleteTestUser(supabase, u.id);
+        }
+      });
+
+      it("rejects a provider whose key the owner hasn't saved, without writing anything", async () => {
+        const u = await createTestUser(supabase, "embedding-missing-key");
+        try {
+          const project = await createTestProject(supabase, u.id);
+          await expect(setProjectEmbeddingProvider(supabase, project.id, u.id, "voyage")).rejects.toBeInstanceOf(
+            MissingProviderCredentialsError
+          );
+          expect((await getProjectEmbeddingState(supabase, project.id)).provider).toBeNull();
+        } finally {
+          await deleteTestUser(supabase, u.id);
+        }
+      });
+
+      it("can be changed freely while the project has no documents", async () => {
+        const u = await createTestUser(supabase, "embedding-switch");
+        try {
+          const project = await createTestProject(supabase, u.id);
+          await saveAIProviderCredential(supabase, u.id, "gemini", "gemini-key");
+          await saveAIProviderCredential(supabase, u.id, "openai", "openai-key");
+          await setProjectEmbeddingProvider(supabase, project.id, u.id, "gemini");
+          await setProjectEmbeddingProvider(supabase, project.id, u.id, "openai");
+          expect(await getProjectEmbeddingState(supabase, project.id)).toEqual({ provider: "openai", locked: false });
+        } finally {
+          await deleteTestUser(supabase, u.id);
+        }
+      });
+
+      it("is locked once the project has documents: switching throws, re-selecting the same provider is a no-op", async () => {
+        const u = await createTestUser(supabase, "embedding-locked");
+        try {
+          const project = await createTestProject(supabase, u.id);
+          await saveAIProviderCredential(supabase, u.id, "gemini", "gemini-key");
+          await saveAIProviderCredential(supabase, u.id, "openai", "openai-key");
+          await setProjectEmbeddingProvider(supabase, project.id, u.id, "gemini");
+          await addDocument(project.id);
+
+          expect(await getProjectEmbeddingState(supabase, project.id)).toEqual({ provider: "gemini", locked: true });
+          await expect(setProjectEmbeddingProvider(supabase, project.id, u.id, "openai")).rejects.toBeInstanceOf(
+            EmbeddingProviderLockedError
+          );
+          await expect(setProjectEmbeddingProvider(supabase, project.id, u.id, "gemini")).resolves.toBeUndefined();
+          expect((await getProjectEmbeddingState(supabase, project.id)).provider).toBe("gemini");
+        } finally {
+          await deleteTestUser(supabase, u.id);
+        }
+      });
+
+      it("allows the first choice even if the project already has documents (nothing was embedded with another model)", async () => {
+        const u = await createTestUser(supabase, "embedding-first-choice");
+        try {
+          const project = await createTestProject(supabase, u.id);
+          await saveAIProviderCredential(supabase, u.id, "gemini", "gemini-key");
+          await addDocument(project.id);
+          await setProjectEmbeddingProvider(supabase, project.id, u.id, "gemini");
+          expect((await getProjectEmbeddingState(supabase, project.id)).provider).toBe("gemini");
+        } finally {
+          await deleteTestUser(supabase, u.id);
+        }
+      });
+
+      it("rejects a project owned by a different user than ownerUserId", async () => {
+        const owner = await createTestUser(supabase, "embedding-owner");
+        const impostor = await createTestUser(supabase, "embedding-impostor");
+        try {
+          const project = await createTestProject(supabase, owner.id);
+          await saveAIProviderCredential(supabase, impostor.id, "gemini", "impostor-key");
+          await expect(setProjectEmbeddingProvider(supabase, project.id, impostor.id, "gemini")).rejects.toThrow(
+            /belongs to user/
+          );
+          expect((await getProjectEmbeddingState(supabase, project.id)).provider).toBeNull();
         } finally {
           await deleteTestUser(supabase, owner.id);
           await deleteTestUser(supabase, impostor.id);

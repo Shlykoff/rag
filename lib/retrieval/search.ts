@@ -177,6 +177,8 @@ export async function runRetrieval(
     query_embedding: queryEmbedding,
     match_count: matchCount,
     p_project_id: projectId,
+    // Only chunks embedded by this same model are comparable with the query vector.
+    p_embedding_model: deps.embeddingsProvider.modelName,
   });
 
   if (error) {

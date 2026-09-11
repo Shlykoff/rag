@@ -79,9 +79,12 @@ export type GatewayAnswerResult =
   | { kind: "no_credentials" }
   | { kind: "error" };
 
+/** Same shape as lib/ai's ProjectAIConfigRow, so it can be handed to getAIProviders() as preFetchedProjectRow. */
 interface ProjectOwnerRow {
   id: string;
   user_id: string;
+  active_ai_provider: "openai" | "anthropic" | "gemini" | null;
+  embedding_provider: "openai" | "gemini" | "voyage" | null;
 }
 
 /**
@@ -104,7 +107,7 @@ export async function answerExternalMessage(req: GatewayAnswerRequest): Promise<
   // treated as a generic, logged `error`.
   const { data: project, error: projectError } = await supabase
     .from("projects")
-    .select("id, user_id")
+    .select("id, user_id, active_ai_provider, embedding_provider")
     .eq("id", req.projectId)
     .maybeSingle<ProjectOwnerRow>();
   if (projectError) {

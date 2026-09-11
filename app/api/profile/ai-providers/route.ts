@@ -30,11 +30,8 @@
 //
 //   POST /api/profile/ai-providers
 //   body: { provider: "openai" | "anthropic" | "gemini" | "voyage", apiKey: string }
-//     Every provider (including 'voyage') is saved through this exact same
-//     { provider, apiKey } body, keeping this endpoint's request shape
-//     uniform -- the frontend's "Anthropic (+ Voyage)" form section makes
-//     two POST calls, one per key, the same way it already needs two GET
-//     `configured` flags to show two independent statuses.
+//     Every provider (including 'voyage', an embeddings-only key) is saved
+//     through this exact same { provider, apiKey } body.
 //   -> 401 { error: "unauthorized" }
 //   -> 400 { error: "invalid_request", details }
 //   -> 429 { error: "rate_limited", message, retryAfterMs }

@@ -125,19 +125,50 @@ describe.skipIf(!hasIntegrationEnv() || !process.env.CREDENTIALS_ENCRYPTION_KEY)
       expect(row?.active_ai_provider).toBe("gemini");
     });
 
-    it("anthropic requires BOTH its own key and a voyage key -- missing just voyage still blocks activation with a real 400", async () => {
-      const project = await createTestProject(serviceClient, ownerA.id, "Anthropic pairing");
+    it("anthropic needs only its own key -- no Voyage key required to activate it as the chat model", async () => {
+      const project = await createTestProject(serviceClient, ownerA.id, "Anthropic chat");
       currentAuthClient = ownerA.client;
       currentUser = { id: ownerA.id, email: ownerA.email };
 
       await saveAIProviderCredential(serviceClient, ownerA.id, "anthropic", `sk-ant-integration-test-${project.id}`);
-      // Deliberately no 'voyage' credential saved for this user.
 
       const response = await PUT(makeRequest("PUT", { provider: "anthropic" }), makeParams(project.id));
-      expect(response.status).toBe(400);
-      const body = await response.json();
-      expect(body.error).toBe("missing_credentials");
-      expect(body.missing).toEqual(["voyage"]);
+      expect(response.status).toBe(200);
+      expect(await response.json()).toEqual({ activeProvider: "anthropic" });
+    });
+
+    it("the embedding model can be picked while the project is empty, then 409 once it has documents", async () => {
+      const project = await createTestProject(serviceClient, ownerA.id, "Embedding lock");
+      currentAuthClient = ownerA.client;
+      currentUser = { id: ownerA.id, email: ownerA.email };
+
+      await saveAIProviderCredential(serviceClient, ownerA.id, "gemini", `AIza-integration-test-${project.id}`);
+      await saveAIProviderCredential(serviceClient, ownerA.id, "openai", `sk-integration-test-${project.id}`);
+
+      const setResponse = await PUT(makeRequest("PUT", { embeddingProvider: "gemini" }), makeParams(project.id));
+      expect(setResponse.status).toBe(200);
+      expect(await setResponse.json()).toEqual({ embeddingProvider: "gemini" });
+      expect(await (await GET(makeRequest("GET"), makeParams(project.id))).json()).toMatchObject({
+        embeddingProvider: "gemini",
+        embeddingLocked: false,
+      });
+
+      const { error: docError } = await serviceClient
+        .from("documents")
+        .insert({ project_id: project.id, title: "Indexed doc", source_type: "manual_upload" });
+      expect(docError).toBeNull();
+
+      expect(await (await GET(makeRequest("GET"), makeParams(project.id))).json()).toMatchObject({
+        embeddingProvider: "gemini",
+        embeddingLocked: true,
+      });
+
+      const switchResponse = await PUT(makeRequest("PUT", { embeddingProvider: "openai" }), makeParams(project.id));
+      expect(switchResponse.status).toBe(409);
+      expect((await switchResponse.json()).error).toBe("embedding_locked");
+
+      const { data: row } = await serviceClient.from("projects").select("embedding_provider").eq("id", project.id).maybeSingle();
+      expect(row?.embedding_provider).toBe("gemini");
     });
   }
 );
