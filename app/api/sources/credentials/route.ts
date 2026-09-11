@@ -63,8 +63,11 @@ export async function POST(request: Request): Promise<Response> {
     return Response.json({ error: "invalid_request", details: formatCheck.invalidMessage }, { status: 400 });
   }
 
-  const supabase = getServiceRoleClient();
-  await saveSourceCredential(supabase, user.id, parsed.data.sourceType, parsed.data.credential);
+  try {
+    await saveSourceCredential(getServiceRoleClient(), user.id, parsed.data.sourceType, parsed.data.credential);
+  } catch (err) {
+    return internalError("POST", err, "Не удалось сохранить ключ источника.");
+  }
   return Response.json({ status: "saved" }, { status: 200 });
 }
 
@@ -73,10 +76,19 @@ export async function GET(): Promise<Response> {
   const user = await getAuthenticatedUser(authClient);
   if (!user) return Response.json({ error: "unauthorized" }, { status: 401 });
 
-  const supabase = getServiceRoleClient();
-  const [notion, googleDrive] = await Promise.all([
-    hasSourceCredential(supabase, user.id, "notion"),
-    hasSourceCredential(supabase, user.id, "google_drive"),
-  ]);
-  return Response.json({ notion, google_drive: googleDrive }, { status: 200 });
+  try {
+    const supabase = getServiceRoleClient();
+    const [notion, googleDrive] = await Promise.all([
+      hasSourceCredential(supabase, user.id, "notion"),
+      hasSourceCredential(supabase, user.id, "google_drive"),
+    ]);
+    return Response.json({ notion, google_drive: googleDrive }, { status: 200 });
+  } catch (err) {
+    return internalError("GET", err, "Не удалось загрузить статус подключения источников.");
+  }
+}
+
+function internalError(method: string, err: unknown, message: string): Response {
+  console.error(`${method} /api/sources/credentials failed:`, err);
+  return Response.json({ error: "internal_error", message }, { status: 500 });
 }

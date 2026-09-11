@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { ingestDocument, type NormalizedDocument } from "../ingest";
 import type { EmbeddingsProvider } from "../../ai/types";
+import { AIProviderError } from "../../ai/errors";
 import type { SupabaseClient } from "@supabase/supabase-js";
 
 interface DocumentRow {
@@ -184,14 +185,23 @@ describe("ingestDocument", () => {
       providerName: "fake",
       modelName: "fake-model",
       dimensions: 3,
-      embed: vi.fn().mockRejectedValue(new Error("provider down")),
+      embed: vi.fn().mockRejectedValue(
+        new AIProviderError({
+          provider: "fake",
+          kind: "server_error",
+          retryable: true,
+          message: "fake API server error (503): provider down",
+          userMessage: "Сервис временно недоступен.",
+        })
+      ),
     };
     await expect(
       ingestDocument(baseDoc, { supabase, embeddingsProvider: failingEmbeddings })
     ).rejects.toThrow(/provider down/);
     const finalUpdate = documentUpdates[documentUpdates.length - 1].payload;
     expect(finalUpdate.processing_status).toBe("error");
-    expect(finalUpdate.processing_error).toMatch(/provider down/);
+    // The UI shows processing_error, so it carries the user-facing text, not the vendor detail.
+    expect(finalUpdate.processing_error).toBe("Сервис временно недоступен.");
     // The old (still-servable) chunk set must be left completely alone on
     // an embed failure -- the delete call must never even happen.
     expect(deletedDocumentIds).toHaveLength(0);
@@ -219,6 +229,9 @@ describe("ingestDocument", () => {
     ).rejects.toThrow(/insert failed/);
     const finalUpdate = documentUpdates[documentUpdates.length - 1].payload;
     expect(finalUpdate.processing_status).toBe("error");
+    // Internal DB detail stays in the server log, never in the UI-visible processing_error.
+    expect(finalUpdate.processing_error).toBeTruthy();
+    expect(finalUpdate.processing_error).not.toMatch(/insert failed/);
   });
 
   it("re-running ingestDocument (simulating a manual Refresh) deletes existing chunks again before inserting the new set", async () => {

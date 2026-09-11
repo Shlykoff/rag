@@ -211,3 +211,50 @@ describe("DELETE /api/profile/ai-providers", () => {
     expect(mockDeleteAIProviderCredential).toHaveBeenCalledWith({}, "user-1", "gemini");
   });
 });
+
+describe("/api/profile/ai-providers DB failures", () => {
+  afterEach(() => {
+    vi.clearAllMocks();
+    vi.restoreAllMocks();
+  });
+
+  function signedIn() {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    mockGetRouteHandlerSupabaseClient.mockResolvedValue({});
+    mockGetAuthenticatedUser.mockResolvedValue({ id: "user-1", email: "a@b.com" });
+    mockGetServiceRoleClient.mockReturnValue({});
+    mockCheckAICredentialsRateLimit.mockReturnValue(ALLOWED_RATE_LIMIT);
+  }
+
+  it("GET returns a JSON 500 instead of throwing", async () => {
+    signedIn();
+    mockGetConfiguredProvidersMap.mockRejectedValue(new Error("db down"));
+
+    const response = await GET();
+
+    expect(response.status).toBe(500);
+    expect(await response.json()).toMatchObject({ error: "internal_error" });
+  });
+
+  it("POST returns a JSON 500 that echoes neither the key nor the DB error", async () => {
+    signedIn();
+    mockSaveAIProviderCredential.mockRejectedValue(new Error("db down"));
+
+    const response = await POST(makeRequest("POST", { provider: "openai", apiKey: "sk-secret-value" }));
+
+    expect(response.status).toBe(500);
+    const payload = await response.json();
+    expect(payload.error).toBe("internal_error");
+    expect(JSON.stringify(payload)).not.toMatch(/sk-secret-value|db down/);
+  });
+
+  it("DELETE returns a JSON 500 instead of throwing", async () => {
+    signedIn();
+    mockDeleteAIProviderCredential.mockRejectedValue(new Error("db down"));
+
+    const response = await DELETE(makeRequest("DELETE", { provider: "openai" }));
+
+    expect(response.status).toBe(500);
+    expect(await response.json()).toMatchObject({ error: "internal_error" });
+  });
+});

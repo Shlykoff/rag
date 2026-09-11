@@ -77,6 +77,18 @@ async function setProcessingStatus(
   }
 }
 
+const GENERIC_INGEST_ERROR = "Не удалось обработать документ. Попробуйте ещё раз позже.";
+
+/** A document with no extractable text -- its message is safe to show as-is. */
+class EmptyDocumentError extends Error {}
+
+/** processing_error is rendered in the UI, so only user-safe text goes there; details go to the server log. */
+function userFacingIngestError(err: unknown): string {
+  if (err instanceof AIProviderError) return err.userMessage;
+  if (err instanceof EmptyDocumentError) return err.message;
+  return GENERIC_INGEST_ERROR;
+}
+
 /**
  * Runs the full chunk -> embed -> store pipeline for one already-normalized
  * document. Idempotent: safe to call again for the same documentId (e.g.
@@ -123,12 +135,7 @@ export async function ingestDocument(
     const chunks = chunkText(doc.text, chunkOptions);
 
     if (chunks.length === 0) {
-      const message = "Документ не содержит текста для обработки.";
-      await setProcessingStatus(supabase, doc.documentId, {
-        processing_status: "error",
-        processing_error: message,
-      });
-      throw new Error(`ingestDocument: ${message} (document ${doc.documentId})`);
+      throw new EmptyDocumentError("Документ не содержит текста для обработки.");
     }
 
     const vectors = await embeddingsProvider.embed(chunks.map((c) => c.content));
@@ -210,10 +217,10 @@ export async function ingestDocument(
       embeddingModel: embeddingsProvider.modelName,
     };
   } catch (err) {
-    const message = err instanceof AIProviderError ? err.message : err instanceof Error ? err.message : String(err);
+    console.error(`ingestDocument: failed for document ${doc.documentId}:`, err instanceof Error ? err.message : err);
     await setProcessingStatus(supabase, doc.documentId, {
       processing_status: "error",
-      processing_error: message,
+      processing_error: userFacingIngestError(err),
     });
     throw err;
   }
@@ -255,10 +262,9 @@ export async function ingestDocumentWithDefaultProviders(
     // leaving the document stuck in 'pending' with no visible error. This
     // performs the same status transition ingestDocument()'s catch block
     // would, then rethrows so the caller still sees the failure.
-    const message = err instanceof Error ? err.message : String(err);
     await setProcessingStatus(supabase, doc.documentId, {
       processing_status: "error",
-      processing_error: message,
+      processing_error: userFacingIngestError(err),
     });
     throw err;
   }

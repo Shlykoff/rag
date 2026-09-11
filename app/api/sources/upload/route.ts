@@ -37,6 +37,7 @@ import { processManualUpload, MANUAL_UPLOAD_MAX_BYTES } from "@/lib/sources/manu
 import { createDocumentFromSource } from "@/lib/sources/pipeline";
 import { sourceErrorResponse, sourceIngestRateLimitedResponse } from "@/lib/sources/http-error";
 import { checkSourceIngestRateLimit } from "@/lib/rate-limit/source-ingest-rate-limiter";
+import { isUuidShape } from "@/lib/validation/uuid";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -56,8 +57,8 @@ export async function POST(request: Request): Promise<Response> {
   }
 
   const projectId = formData.get("projectId");
-  if (typeof projectId !== "string" || projectId.length === 0) {
-    return Response.json({ error: "invalid_request", details: "Missing 'projectId' field." }, { status: 400 });
+  if (typeof projectId !== "string" || !isUuidShape(projectId)) {
+    return Response.json({ error: "invalid_request", details: "Missing or malformed 'projectId' field." }, { status: 400 });
   }
 
   const owned = await verifyProjectOwnership(authClient, projectId);
