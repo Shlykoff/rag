@@ -249,7 +249,11 @@ function replyTextForGatewayResult(result: GatewayAnswerResult): string {
  * anyway, as a defensive backstop, not as the primary error-handling
  * mechanism.
  */
-export async function handleTelegramWebhook(request: Request, integration: ChannelIntegrationConfig): Promise<void> {
+export async function handleTelegramWebhook(
+  request: Request,
+  integration: ChannelIntegrationConfig,
+  options: TelegramWebhookOptions = {}
+): Promise<void> {
   const parsed = await parseIncoming(request, integration);
   if (parsed.kind !== "message") {
     // "ignore" (non-text update, duplicate, malformed body) or
@@ -260,27 +264,52 @@ export async function handleTelegramWebhook(request: Request, integration: Chann
   }
 
   const { message } = parsed;
-  const command = extractCommand(message.text);
-
-  if (command === "start") {
-    await safeSendReply(integration, message.replyTarget, START_MESSAGE);
+  const reply = () => replyToMessage(message, integration);
+  if (options.defer) {
+    options.defer(reply);
     return;
   }
-  if (command === "new") {
-    const supabase = getServiceRoleClient();
-    await resetConversation(supabase, integration.projectId, message.externalParticipantId);
-    await safeSendReply(integration, message.replyTarget, NEW_CHAT_MESSAGE);
-    return;
+  await reply();
+}
+
+export interface TelegramWebhookOptions {
+  /**
+   * Schedules the slow part (the RAG answer + the reply) to run after the
+   * HTTP response is sent -- the route passes next/server's after(). The
+   * update is already claimed by then, so if the whole turn ran inside the
+   * request and the function timed out, the message would be lost for good.
+   * Without it the reply runs inline.
+   */
+  defer?: (task: () => Promise<void>) => void;
+}
+
+async function replyToMessage(message: IncomingChannelMessage, integration: ChannelIntegrationConfig): Promise<void> {
+  try {
+    const command = extractCommand(message.text);
+
+    if (command === "start") {
+      await safeSendReply(integration, message.replyTarget, START_MESSAGE);
+      return;
+    }
+    if (command === "new") {
+      await resetConversation(getServiceRoleClient(), integration.projectId, message.externalParticipantId);
+      await safeSendReply(integration, message.replyTarget, NEW_CHAT_MESSAGE);
+      return;
+    }
+
+    // Everything else: the one seam into the core RAG pipeline (see this
+    // file's/lib/gateway/answer.ts's own import-boundary header comments).
+    const result = await answerExternalMessage({
+      projectId: integration.projectId,
+      channel: "telegram",
+      externalParticipantId: message.externalParticipantId,
+      message: message.text,
+    });
+
+    await safeSendReply(integration, message.replyTarget, replyTextForGatewayResult(result));
+  } catch (err) {
+    // Each step above is already built not to throw; this backstop matters
+    // for a deferred task, which has no caller left to catch anything.
+    console.error(`telegram adapter: failed to reply for integration ${integration.id}:`, err);
   }
-
-  // Everything else: the one seam into the core RAG pipeline (see this
-  // file's/lib/gateway/answer.ts's own import-boundary header comments).
-  const result = await answerExternalMessage({
-    projectId: integration.projectId,
-    channel: "telegram",
-    externalParticipantId: message.externalParticipantId,
-    message: message.text,
-  });
-
-  await safeSendReply(integration, message.replyTarget, replyTextForGatewayResult(result));
 }
