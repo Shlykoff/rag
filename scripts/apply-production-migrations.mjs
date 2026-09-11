@@ -2,10 +2,9 @@
 // Applies supabase/migrations/*.sql to the hosted production database as
 // the LAST step of every Vercel build -- deliberately after `next build`,
 // not before (see package.json's "build" script: `next build && node
-// scripts/apply-production-migrations.mjs`). No-ops for local/CI/Preview
-// builds -- VERCEL_ENV is only "production" on an actual production
-// deployment -- so this never touches the hosted database from anywhere
-// else. A failed migration fails the whole build (the previous deployment
+// scripts/apply-production-migrations.mjs`). No-ops for local/CI builds --
+// VERCEL_ENV is only "production" on an actual production deployment -- so
+// this never touches the hosted database from anywhere else. A failed migration fails the whole build (the previous deployment
 // stays live) rather than shipping app code the database schema doesn't
 // match yet.
 //
