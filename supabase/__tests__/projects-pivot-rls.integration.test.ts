@@ -155,6 +155,7 @@ describe.skipIf(!hasIntegrationEnv())("projects pivot: RLS + grants (integration
         query_embedding: deterministicVector(42),
         match_count: 10,
         p_project_id: projectA,
+        p_embedding_model: "integration-fake-model",
       });
       expect(error).toBeNull();
       expect(data.length).toBeGreaterThan(0);
@@ -170,6 +171,7 @@ describe.skipIf(!hasIntegrationEnv())("projects pivot: RLS + grants (integration
         query_embedding: deterministicVector(42),
         match_count: 10,
         p_project_id: projectA,
+        p_embedding_model: "integration-fake-model",
       });
       expect(error).not.toBeNull();
     });

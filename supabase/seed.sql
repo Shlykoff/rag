@@ -41,7 +41,7 @@
 -- Embeddings: document_chunks.embedding is left NULL below with an
 -- explicit placeholder comment. There is no AI provider key available at
 -- this stage of the project (db-architect works schema-only), so a real
--- 1024-dim vector cannot be produced here. rag-pipeline-specialist is
+-- embedding cannot be produced here. rag-pipeline-specialist is
 -- expected to re-run these two documents through the real ingestion
 -- pipeline (chunk + embed) once an AI_PROVIDER key is configured -- the
 -- chunk rows below exist so the shape of "a document has chunks" can be
