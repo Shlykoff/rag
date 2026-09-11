@@ -21,7 +21,7 @@ import type {
   EmbeddingsProvider,
 } from "../types";
 import { embedInBatches } from "../embed-batch";
-import { wrapAiSdkStream } from "../stream-utils";
+import { fromStreamTextResult, logStreamError, wrapAiSdkStream } from "../stream-utils";
 
 /** Fixed project-wide so pgvector's `vector(1024)` column works unchanged across providers (see CLAUDE.md) -- 1024 is Voyage's own default and the common denominator across all three providers' supported dimensions. */
 export const OPENAI_EMBEDDING_DIMENSIONS = 1024;
@@ -94,12 +94,15 @@ class OpenAICompatibleCore {
     const model = this.aiSdk.chat(this.chatModelName);
     return wrapAiSdkStream(
       () =>
-        streamText({
-          model,
-          system: systemPrompt,
-          messages,
-          maxRetries: 0, // see the constructor comment: our own retry wrapper is the only retry layer
-        }),
+        fromStreamTextResult(
+          streamText({
+            model,
+            system: systemPrompt,
+            messages,
+            maxRetries: 0, // see the constructor comment: our own retry wrapper is the only retry layer
+            onError: logStreamError(this.providerName),
+          })
+        ),
       { provider: this.providerName }
     );
   }

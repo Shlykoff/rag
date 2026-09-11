@@ -40,6 +40,58 @@ export interface AiSdkStreamLike {
   text: PromiseLike<string>;
 }
 
+/** The subset of a Vercel AI SDK streamText() `fullStream` part this module reads. */
+export interface FullStreamPartLike {
+  type: string;
+  text?: string;
+  error?: unknown;
+}
+
+/** Structural subset of the Vercel AI SDK's StreamTextResult that fromStreamTextResult() needs. */
+export interface StreamTextResultLike {
+  fullStream: AsyncIterable<FullStreamPartLike>;
+  usage: PromiseLike<RawStreamUsage>;
+  text: PromiseLike<string>;
+}
+
+async function* textDeltasOrThrow(fullStream: AsyncIterable<FullStreamPartLike>): AsyncGenerator<string> {
+  for await (const part of fullStream) {
+    if (part.type === "text-delta" && part.text) yield part.text;
+    else if (part.type === "error") throw part.error;
+  }
+}
+
+/**
+ * Adapts a streamText() result for wrapAiSdkStream(). The SDK's own
+ * `textStream` silently drops error parts, so a failed request looks like an
+ * empty successful stream and nothing gets retried or classified; reading
+ * `fullStream` and throwing on its `error` part fixes that. `usage`/`text`
+ * stay lazy getters: the SDK only creates those promises when first read, so
+ * a discarded (retried) attempt never leaves a rejected promise unhandled.
+ */
+export function fromStreamTextResult(result: StreamTextResultLike): AiSdkStreamLike {
+  return {
+    textStream: textDeltasOrThrow(result.fullStream),
+    get usage() {
+      return result.usage;
+    },
+    get text() {
+      return result.text;
+    },
+  };
+}
+
+/**
+ * streamText()'s default onError prints the raw error object, which carries
+ * the whole request body (system prompt + retrieved document text). Log the
+ * normalized one-line message instead.
+ */
+export function logStreamError(provider: string): (event: { error: unknown }) => void {
+  return ({ error }) => {
+    console.error(`${provider} chat stream error: ${normalizeProviderError(error, provider).message}`);
+  };
+}
+
 export interface StreamRetryOptions {
   provider: string;
   maxRetries?: number;
